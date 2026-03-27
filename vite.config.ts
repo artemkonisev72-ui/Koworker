@@ -4,6 +4,16 @@ import { sveltekit } from '@sveltejs/kit/vite';
 
 export default defineConfig({
 	plugins: [tailwindcss(), sveltekit()],
+	server: {
+		host: '0.0.0.0', // Слушать на всех интерфейсах (0.0.0.0)
+		port: 5173,      // Основной порт Vite
+		strictPort: true,
+		cors: true,      // Разрешить CORS запросы
+		hmr: {
+			host: '192.168.3.7', // Явный IP сервера для Hot Module Replacement
+			port: 5173
+		}
+	},
 	test: {
 		expect: { requireAssertions: true },
 		projects: [
