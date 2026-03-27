@@ -8,8 +8,9 @@ import { PROXYAPI_API_KEY } from '$env/static/private';
 
 const BASE_URL = 'https://api.proxyapi.ru/google/v1beta/models';
 
-// Доступные модели через ProxyAPI
-type GeminiModel = 'gemini-2.0-flash' | 'gemini-2.5-pro-preview-03-25';
+// gemini-2.0-flash подтверждённо работает через ProxyAPI
+// TODO: заменить на Pro-модель когда будет известно точное имя
+type GeminiModel = 'gemini-2.0-flash';
 
 interface GeminiMessage {
 	role: 'user' | 'model';
@@ -77,7 +78,7 @@ export async function generatePythonCode(userMessage: string, retryContext?: str
 		{ role: 'user', parts: [{ text: systemPrompt + '\n\n' + userContent }] }
 	];
 
-	const response = await generate('gemini-2.5-pro-preview-03-25', messages);
+	const response = await generate('gemini-2.0-flash', messages);
 
 	// Извлекаем код из markdown-блока если присутствует
 	const codeMatch = response.match(/```python\n([\s\S]*?)```/);
