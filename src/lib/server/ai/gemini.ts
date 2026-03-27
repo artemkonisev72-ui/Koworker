@@ -8,7 +8,8 @@ import { PROXYAPI_API_KEY } from '$env/static/private';
 
 const BASE_URL = 'https://api.proxyapi.ru/google/v1beta/models';
 
-type GeminiModel = 'gemini-3.1-flash-preview' | 'gemini-3.1-pro-preview';
+// Доступные модели через ProxyAPI
+type GeminiModel = 'gemini-2.0-flash' | 'gemini-2.5-pro-preview-03-25';
 
 interface GeminiMessage {
 	role: 'user' | 'model';
@@ -22,11 +23,14 @@ interface GeminiResponse {
 }
 
 async function generate(model: GeminiModel, messages: GeminiMessage[]): Promise<string> {
-	const url = `${BASE_URL}/${model}:generateContent?key=${PROXYAPI_API_KEY}`;
+	const url = `${BASE_URL}/${model}:generateContent`;
 
 	const res = await fetch(url, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
+		headers: {
+			'Content-Type': 'application/json',
+			'Authorization': `Bearer ${PROXYAPI_API_KEY}`
+		},
 		body: JSON.stringify({ contents: messages })
 	});
 
@@ -47,7 +51,7 @@ export async function routeQuestion(userMessage: string): Promise<boolean> {
 
 Вопрос: ${userMessage}`;
 
-	const response = await generate('gemini-3.1-flash-preview', [{ role: 'user', parts: [{ text: prompt }] }]);
+	const response = await generate('gemini-2.0-flash', [{ role: 'user', parts: [{ text: prompt }] }]);
 	return response.trim().toUpperCase().startsWith('YES');
 }
 
@@ -73,7 +77,7 @@ export async function generatePythonCode(userMessage: string, retryContext?: str
 		{ role: 'user', parts: [{ text: systemPrompt + '\n\n' + userContent }] }
 	];
 
-	const response = await generate('gemini-3.1-pro-preview', messages);
+	const response = await generate('gemini-2.5-pro-preview-03-25', messages);
 
 	// Извлекаем код из markdown-блока если присутствует
 	const codeMatch = response.match(/```python\n([\s\S]*?)```/);
@@ -107,7 +111,7 @@ ${params.executionResult}
 
 ВАЖНО: Числовые значения бери ТОЛЬКО из "РЕЗУЛЬТАТ ВЫЧИСЛЕНИЙ".`;
 
-	return generate('gemini-3.1-flash-preview', [{ role: 'user', parts: [{ text: prompt }] }]);
+	return generate('gemini-2.0-flash', [{ role: 'user', parts: [{ text: prompt }] }]);
 }
 
 // ── Flash: ответ без вычислений (общий вопрос) ────────────────────────────────
@@ -118,5 +122,5 @@ export async function answerGeneralQuestion(userMessage: string): Promise<string
 
 Вопрос: ${userMessage}`;
 
-	return generate('gemini-3.1-flash-preview', [{ role: 'user', parts: [{ text: prompt }] }]);
+	return generate('gemini-2.0-flash', [{ role: 'user', parts: [{ text: prompt }] }]);
 }
