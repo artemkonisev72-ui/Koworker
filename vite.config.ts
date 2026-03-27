@@ -10,7 +10,7 @@ export default defineConfig({
 		strictPort: true,
 		cors: true,      // Разрешить CORS запросы
 		hmr: {
-			host: '79.164.121.156', // Явный IP сервера для Hot Module Replacement
+			host: '192.168.3.7', // Явный IP сервера для Hot Module Replacement
 			port: 5173
 		}
 	},

@@ -1,16 +1,24 @@
 /**
  * db.ts — Prisma Client singleton
  * Prisma 7.x uses the driver adapter pattern.
- * Uses @prisma/adapter-pg with the pg Pool for PostgreSQL.
+ * PrismaPg requires a pg.Pool instance (not a raw config object).
  */
 import { PrismaClient } from '../../../generated/prisma/client.js';
 import { PrismaPg } from '@prisma/adapter-pg';
+import pg from 'pg';
 import { DATABASE_URL } from '$env/static/private';
+
+const { Pool } = pg;
 
 const globalForPrisma = globalThis as unknown as { prisma: PrismaClient };
 
 function createPrismaClient(): PrismaClient {
-	const adapter = new PrismaPg({ connectionString: DATABASE_URL });
+	if (!DATABASE_URL) {
+		throw new Error('[DB] DATABASE_URL is not defined. Check your .env file on the server.');
+	}
+	const pool = new Pool({ connectionString: DATABASE_URL });
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const adapter = new PrismaPg(pool as any);
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	return new PrismaClient({ adapter } as any);
 }
