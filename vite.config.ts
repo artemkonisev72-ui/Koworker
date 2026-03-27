@@ -10,8 +10,8 @@ export default defineConfig({
 		strictPort: true,
 		cors: true,      // Разрешить CORS запросы
 		hmr: {
-			host: '192.168.3.7', // Явный IP сервера для Hot Module Replacement
-			port: 5173
+			// При доступе через SSH-туннель браузер видит localhost, а не IP сервера
+			clientPort: 5173
 		}
 	},
 	test: {

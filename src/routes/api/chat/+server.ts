@@ -97,6 +97,11 @@ export const POST: RequestHandler = async ({ request }) => {
 					}
 				}
 			})
+				.catch((pipelineErr) => {
+					// Ошибка пайплайна — отправляем клиенту вместо тихого зависания
+					console.error('[SSE] Pipeline error:', pipelineErr);
+					send({ type: 'error', message: String(pipelineErr) });
+				})
 				.finally(() => {
 					clearInterval(pingInterval);
 					sendDone();
