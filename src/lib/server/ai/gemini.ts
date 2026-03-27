@@ -42,6 +42,13 @@ const PRO_CHAIN: GeminiModel[] = [
 	'gemini-2.0-flash-lite',
 ];
 
+const VISION_CHAIN: GeminiModel[] = [
+	'gemini-3.1-pro-preview',
+	'gemini-3-pro-preview',
+	'gemini-2.5-pro',
+	'gemini-2.0-flash', // Flash тоже мультимодальный
+];
+
 // ── Назначение моделей по сложности ───────────────────────────────────────
 // [роутер/сборщик Flash, генератор кода]
 const TIER_MODELS: Record<ComplexityTier, { flash: GeminiModel; code: GeminiModel; assemble: GeminiModel }> = {
@@ -53,7 +60,13 @@ const TIER_MODELS: Record<ComplexityTier, { flash: GeminiModel; code: GeminiMode
 
 interface GeminiMessage {
 	role: 'user' | 'model';
-	parts: Array<{ text: string }>;
+	parts: Array<{
+		text?: string;
+		inline_data?: {
+			mime_type: string;
+			data: string; // base64
+		};
+	}>;
 }
 
 interface GeminiResponse {
@@ -214,4 +227,38 @@ export async function answerGeneralQuestion(
 	return generateWithFallback(flash, FLASH_CHAIN, [
 		{ role: 'user', parts: [{ text: prompt }] }
 	]);
+}
+
+// ── Vision: анализ изображения ──────────────────────────────────────────────
+export async function analyzeImage(
+	base64Data: string,
+	mimeType: string,
+	tier: ComplexityTier = 4 // Для зрения всегда используем лучший доступный tier
+): Promise<string> {
+	const prompt = `Проанализируй изображение задачи по точным наукам (математика, физика, инженерия).
+
+ИНСТРУКЦИЯ:
+1. Извлеки полный текст условия задачи.
+2. Если на картинке есть графики, чертежи, схемы или таблицы — опиши их максимально подробно текстом (координаты точек, направления сил, значения в узлах и т.д.), чтобы другая LLM могла решить задачу только по твоему описанию.
+3. Если на картинке рукописный текст — расшифруй его.
+
+Твой ответ должен содержать ТОЛЬКО текстовое описание задачи без лишних вступлений.`;
+
+	const messages: GeminiMessage[] = [
+		{
+			role: 'user',
+			parts: [
+				{ text: prompt },
+				{
+					inline_data: {
+						mime_type: mimeType,
+						data: base64Data
+					}
+				}
+			]
+		}
+	];
+
+	const startModel = VISION_CHAIN[0];
+	return generateWithFallback(startModel, VISION_CHAIN, messages);
 }

@@ -42,6 +42,7 @@ model Message {
   generatedCode String?     @db.Text
   executionLogs String?     @db.Text
   graphData     Json?
+  imageData     String?     @db.Text
   createdAt     DateTime    @default(now())
   chat          Chat        @relation(fields: [chatId], references: [id], onDelete: Cascade)
 

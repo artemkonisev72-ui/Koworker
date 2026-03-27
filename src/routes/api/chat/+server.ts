@@ -19,17 +19,24 @@ import { json, error } from '@sveltejs/kit';
 
 export const POST: RequestHandler = async ({ request }) => {
 	console.log('[SSE] POST /api/chat received');
-	let body: { chatId?: string; message?: string };
+	let body: { chatId?: string; message?: string; imageData?: { base64: string; mimeType: string } };
 
 	try {
-		body = (await request.json()) as { chatId?: string; message?: string };
-		console.log('[SSE] body chatId:', body.chatId, '| message:', body.message?.slice(0, 60));
+		body = (await request.json()) as typeof body;
+		console.log(
+			'[SSE] body chatId:',
+			body.chatId,
+			'| message:',
+			body.message?.slice(0, 60),
+			'| image:',
+			!!body.imageData
+		);
 	} catch {
 		console.error('[SSE] Failed to parse JSON body');
 		return error(400, 'Invalid JSON body');
 	}
 
-	const { chatId, message } = body;
+	const { chatId, message, imageData } = body;
 
 	if (!chatId || !message?.trim()) {
 		console.error('[SSE] Missing chatId or message');
@@ -48,7 +55,8 @@ export const POST: RequestHandler = async ({ request }) => {
 		data: {
 			chatId,
 			role: 'USER',
-			content: message
+			content: message,
+			imageData: imageData ? JSON.stringify(imageData) : null
 		}
 	});
 
@@ -73,37 +81,39 @@ export const POST: RequestHandler = async ({ request }) => {
 			}, 5000);
 
 			// Запускаем пайплайн асинхронно
-			runPipeline(message, async (event) => {
-				send(event);
+			runPipeline(
+				message,
+				async (event) => {
+					send(event);
 
-				// Сохраняем финальный ответ в БД
-				if (event.type === 'result') {
-					try {
-						await prisma.message.create({
-							data: {
-								chatId,
-								role: 'ASSISTANT',
-								content: event.content,
-								generatedCode: event.generatedCode ?? null,
-								executionLogs: event.executionLogs ?? null,
-								graphData: event.graphData ? JSON.stringify(event.graphData) : undefined
+					// Сохраняем финальный ответ в БД
+					if (event.type === 'result') {
+						try {
+							await prisma.message.create({
+								data: {
+									chatId,
+									role: 'ASSISTANT',
+									content: event.content,
+									generatedCode: event.generatedCode ?? null,
+									executionLogs: event.executionLogs ?? null,
+									graphData: event.graphData ? JSON.stringify(event.graphData) : undefined
+								}
+							});
+
+							// Обновляем заголовок чата если это первое сообщение
+							const msgCount = await prisma.message.count({ where: { chatId } });
+							if (msgCount <= 2) {
+								const title = message.slice(0, 60) + (message.length > 60 ? '...' : '');
+								await prisma.chat.update({ where: { id: chatId }, data: { title } });
 							}
-						});
-
-						// Обновляем заголовок чата если это первое сообщение
-						const msgCount = await prisma.message.count({ where: { chatId } });
-						if (msgCount <= 2) {
-							// 1 user + 1 assistant
-							const title = message.slice(0, 60) + (message.length > 60 ? '...' : '');
-							await prisma.chat.update({ where: { id: chatId }, data: { title } });
+						} catch (dbErr) {
+							console.error('[SSE] DB save error:', dbErr);
 						}
-					} catch (dbErr) {
-						console.error('[SSE] DB save error:', dbErr);
 					}
-				}
-			})
+				},
+				imageData
+			)
 				.catch((pipelineErr) => {
-					// Ошибка пайплайна — отправляем клиенту вместо тихого зависания
 					console.error('[SSE] Pipeline error:', pipelineErr);
 					send({ type: 'error', message: String(pipelineErr) });
 				})
@@ -138,6 +148,7 @@ export const GET: RequestHandler = async ({ url }) => {
 			content: true,
 			generatedCode: true,
 			graphData: true,
+			imageData: true,
 			createdAt: true
 		}
 	});

@@ -12,6 +12,7 @@
 		role: 'USER' | 'ASSISTANT' | 'SYSTEM';
 		content: string;
 		graphData?: GraphPoint[] | null;
+		imageData?: string | null; // JSON string of {base64, mimeType}
 		createdAt?: string;
 		isStreaming?: boolean;
 	}
@@ -27,6 +28,10 @@
 	let sidebarOpen = $state(true);
 	let messagesEnd: HTMLDivElement | undefined = $state();
 	let inputEl: HTMLTextAreaElement | undefined = $state();
+	let fileInputEl: HTMLInputElement | undefined = $state();
+
+	// Image upload state
+	let selectedImage = $state<{ base64: string; mimeType: string } | null>(null);
 
 	// ── Init ──────────────────────────────────────────────────────────────────
 	onMount(async () => {
@@ -89,6 +94,24 @@
 		messagesEnd?.scrollIntoView({ behavior: 'smooth' });
 	}
 
+	function handleFileChange(e: Event) {
+		const target = e.target as HTMLInputElement;
+		const file = target.files?.[0];
+		if (!file) return;
+
+		const reader = new FileReader();
+		reader.onload = (event) => {
+			const base64 = (event.target?.result as string).split(',')[1];
+			selectedImage = { base64, mimeType: file.type };
+		};
+		reader.readAsDataURL(file);
+	}
+
+	function removeImage() {
+		selectedImage = null;
+		if (fileInputEl) fileInputEl.value = '';
+	}
+
 	// ── SSE Send ──────────────────────────────────────────────────────────────
 	async function sendMessage() {
 		const text = inputValue.trim();
@@ -107,9 +130,14 @@
 			id: crypto.randomUUID(),
 			role: 'USER',
 			content: text,
+			imageData: selectedImage ? JSON.stringify(selectedImage) : null,
 			createdAt: new Date().toISOString()
 		};
 		messages = [...messages, userMsg];
+
+		const imageData = selectedImage;
+		selectedImage = null; // Clear input
+		if (fileInputEl) fileInputEl.value = '';
 
 		// Placeholder for assistant response
 		const assistantId = crypto.randomUUID();
@@ -126,7 +154,11 @@
 		const res = await fetch('/api/chat', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ chatId: activeChatId, message: text })
+			body: JSON.stringify({ 
+				chatId: activeChatId, 
+				message: text,
+				imageData: imageData
+			})
 		});
 
 		if (!res.ok || !res.body) {
@@ -332,6 +364,10 @@
 										<div class="status-text">{statusMessage}</div>
 									{/if}
 								{:else if msg.role === 'USER'}
+									{#if msg.imageData}
+										{@const img = JSON.parse(msg.imageData)}
+										<img src={`data:${img.mimeType};base64,${img.base64}`} alt="Uploaded task" class="user-uploaded-img" />
+									{/if}
 									<p class="user-text">{msg.content}</p>
 								{:else}
 									<MessageRenderer message={msg} />
@@ -361,17 +397,45 @@
 			{/if}
 
 			<div class="input-container">
-				<textarea
-					id="main-input"
-					bind:this={inputEl}
-					bind:value={inputValue}
-					onkeydown={handleKeydown}
-					oninput={autoResize}
-					placeholder="Опишите задачу... (Enter — отправить, Shift+Enter — новая строка)"
-					rows="1"
+				<!-- File upload button -->
+				<button 
+					class="attach-btn" 
+					onclick={() => fileInputEl?.click()} 
 					disabled={isLoading}
-					class="message-input"
-				></textarea>
+					title="Прикрепить фото задачи"
+				>
+					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+					</svg>
+				</button>
+				
+				<input 
+					type="file" 
+					accept="image/*" 
+					hidden 
+					bind:this={fileInputEl} 
+					onchange={handleFileChange} 
+				/>
+
+				<div class="input-wrapper">
+					{#if selectedImage}
+						<div class="image-preview">
+							<img src={`data:${selectedImage.mimeType};base64,${selectedImage.base64}`} alt="Preview" />
+							<button class="remove-img-btn" onclick={removeImage}>×</button>
+						</div>
+					{/if}
+					<textarea
+						id="main-input"
+						bind:this={inputEl}
+						bind:value={inputValue}
+						onkeydown={handleKeydown}
+						oninput={autoResize}
+						placeholder="Опишите задачу или прикрепите фото..."
+						rows="1"
+						disabled={isLoading}
+						class="message-input"
+					></textarea>
+				</div>
 
 				<button
 					class="send-btn"
@@ -794,6 +858,93 @@
 	padding: 0 0.25rem;
 }
 
+/* ── Input container refinements ────────────────────────────────────────── */
+.input-container {
+	display: flex;
+	align-items: flex-end;
+	gap: 0.75rem;
+	background: var(--bg-card);
+	border: 1px solid var(--border-medium);
+	border-radius: var(--radius-xl);
+	padding: 0.5rem 0.75rem;
+	transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.input-container:focus-within {
+	border-color: var(--accent-primary);
+	box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.attach-btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 36px;
+	height: 36px;
+	border: none;
+	background: transparent;
+	color: var(--text-secondary);
+	border-radius: 50%;
+	cursor: pointer;
+	transition: all var(--transition-fast);
+	flex-shrink: 0;
+	margin-bottom: 2px;
+}
+
+.attach-btn:hover:not(:disabled) {
+	background: var(--bg-elevated);
+	color: var(--accent-primary);
+	transform: rotate(15deg);
+}
+
+.input-wrapper {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	min-width: 0;
+}
+
+.image-preview {
+	position: relative;
+	width: fit-content;
+	padding-top: 0.5rem;
+}
+
+.image-preview img {
+	max-width: 120px;
+	max-height: 120px;
+	border-radius: var(--radius-md);
+	border: 1px solid var(--border-subtle);
+	object-fit: cover;
+}
+
+.remove-img-btn {
+	position: absolute;
+	top: -2px;
+	right: -8px;
+	width: 20px;
+	height: 20px;
+	background: var(--error);
+	color: white;
+	border: none;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 14px;
+	cursor: pointer;
+	box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+.user-uploaded-img {
+	max-width: 100%;
+	max-height: 300px;
+	border-radius: var(--radius-md);
+	margin-bottom: 0.5rem;
+	display: block;
+	cursor: zoom-in;
+}
 .status-spinner {
 	width: 12px; height: 12px;
 	border: 2px solid var(--accent-primary);
@@ -801,21 +952,6 @@
 	border-radius: 50%;
 	animation: spin 0.8s linear infinite;
 	flex-shrink: 0;
-}
-
-.input-container {
-	display: flex;
-	gap: 0.75rem;
-	align-items: flex-end;
-	background: var(--bg-input);
-	border: 1px solid var(--border-medium);
-	border-radius: var(--radius-xl);
-	padding: 0.5rem 0.5rem 0.5rem 1rem;
-	transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
-}
-.input-container:focus-within {
-	border-color: var(--accent-primary);
-	box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
 .message-input {
@@ -849,6 +985,7 @@
 	justify-content: center;
 	transition: opacity var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
 	box-shadow: var(--shadow-glow);
+	margin-bottom: 2px;
 }
 .send-btn:hover:not(:disabled) { opacity: 0.9; transform: scale(1.05); }
 .send-btn:active:not(:disabled) { transform: scale(0.95); }

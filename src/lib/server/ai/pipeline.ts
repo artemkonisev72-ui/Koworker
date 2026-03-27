@@ -8,7 +8,13 @@
  * Модель выбирается автоматически на основе оценки сложности (1-4 tier).
  * При недоступности модели — автоматический откат на модель ниже.
  */
-import { routeQuestion, generatePythonCode, assembleFinalAnswer, answerGeneralQuestion } from './gemini.js';
+import {
+	routeQuestion,
+	generatePythonCode,
+	assembleFinalAnswer,
+	answerGeneralQuestion,
+	analyzeImage
+} from './gemini.js';
 import { assessComplexity } from './complexity.js';
 import { workerPool, SandboxError } from '../sandbox/worker-pool.js';
 
@@ -33,25 +39,39 @@ const MAX_RETRIES = 2;
 
 export async function runPipeline(
 	userMessage: string,
-	onStatus: (event: PipelineStatus) => void
+	onStatus: (event: PipelineStatus) => void,
+	imageData?: { base64: string; mimeType: string }
 ): Promise<void> {
 	console.log('[Pipeline] START message:', userMessage.slice(0, 80));
+	let currentContext = userMessage;
+
 	try {
+		// ── Шаг 0: Анализ изображения (Vision) ──────────────────────────────
+		if (imageData) {
+			console.log('[Pipeline] Analyzing image...');
+			onStatus({ type: 'status', message: 'Анализ изображения...' });
+			const visionDescription = await analyzeImage(imageData.base64, imageData.mimeType);
+			console.log('[Pipeline] Vision description received, length:', visionDescription.length);
+			
+			// Склеиваем описание картинки с текстом пользователя
+			currentContext = `[ОПИСАНИЕ ИЗОБРАЖЕНИЯ]:\n${visionDescription}\n\n[ЗАПРОС ПОЛЬЗОВАТЕЛЯ]:\n${userMessage}`;
+		}
+
 		// ── Оценка сложности (мгновенно, без LLM) ────────────────────────────
-		const complexity = assessComplexity(userMessage);
+		const complexity = assessComplexity(currentContext);
 		console.log(`[Complexity] tier=${complexity.tier} score=${complexity.score} reason="${complexity.reason}"`);
 		const tier = complexity.tier;
 
 		// ── Шаг 1: Маршрутизация (Flash) ─────────────────────────────────────
 		console.log('[Pipeline] Step 1: routing...');
 		onStatus({ type: 'status', message: 'Анализ задачи...' });
-		const needsComputation = await routeQuestion(userMessage, tier);
+		const needsComputation = await routeQuestion(currentContext, tier);
 		console.log('[Pipeline] Step 1 done: needsComputation =', needsComputation);
 
 		if (!needsComputation) {
 			console.log('[Pipeline] General question — calling answerGeneralQuestion');
 			onStatus({ type: 'status', message: 'Формирование ответа...' });
-			const answer = await answerGeneralQuestion(userMessage, tier);
+			const answer = await answerGeneralQuestion(currentContext, tier);
 			console.log('[Pipeline] General answer received, length:', answer.length);
 			onStatus({ type: 'result', content: answer });
 			return;
@@ -60,7 +80,7 @@ export async function runPipeline(
 		// ── Шаг 2: Генерация кода (Pro/Flash по tier) ────────────────────────
 		console.log('[Pipeline] Step 2: generating Python code...');
 		onStatus({ type: 'status', message: 'Генерация кода решения...' });
-		let pythonCode = await generatePythonCode(userMessage, tier);
+		let pythonCode = await generatePythonCode(currentContext, tier);
 		console.log('[Pipeline] Step 2 done, code length:', pythonCode.length);
 
 		// ── Шаг 3: Выполнение в Sandbox + Retry ──────────────────────────────
@@ -73,7 +93,7 @@ export async function runPipeline(
 				console.log(`[Pipeline] Retry ${attempt}/${MAX_RETRIES}, lastError:`, lastError?.slice(0, 200));
 				onStatus({ type: 'status', message: `Исправление ошибки (попытка ${attempt}/${MAX_RETRIES})...` });
 				pythonCode = await generatePythonCode(
-					userMessage,
+					currentContext,
 					tier,
 					`Предыдущий код:\n\`\`\`python\n${pythonCode}\n\`\`\`\n\nОшибка:\n${lastError}`
 				);
@@ -130,7 +150,7 @@ export async function runPipeline(
 			: rawStdout;
 
 		const finalAnswer = await assembleFinalAnswer(
-			{ userMessage, pythonCode, executionResult: executionSummary },
+			{ userMessage: currentContext, pythonCode, executionResult: executionSummary },
 			tier
 		);
 		console.log('[Pipeline] Step 4 done, answer length:', finalAnswer.length);
