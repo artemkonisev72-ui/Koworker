@@ -18,8 +18,16 @@ if (!parentPort) {
 // ── Инициализация Pyodide ────────────────────────────────────────────────────
 let pyodide: PyodideInterface | null = null;
 
+// Буфер для вывода текущей задачи (заполняется до runTask, сбрасывается после)
+let currentStdout = '';
+
 async function init(): Promise<void> {
-	pyodide = await loadPyodide();
+	pyodide = await loadPyodide({
+		// Перехватываем stdout/stderr на уровне Pyodide, не используя process.stdout.fd
+		// (в worker_threads fd === undefined, что и вызывало ошибку)
+		stdout: (s: string) => { currentStdout += s + '\n'; },
+		stderr: (s: string) => { currentStdout += s + '\n'; }
+	});
 	// Устанавливаем sympy и numpy один раз при старте воркера
 	await pyodide.loadPackage(['sympy', 'numpy']);
 	parentPort!.postMessage({ type: 'ready' });
@@ -32,23 +40,17 @@ async function runTask(id: string, code: string): Promise<void> {
 		return;
 	}
 
-	// Перехватываем stdout в буфер
-	let stdout = '';
-	pyodide.setStdout({
-		batched: (s: string) => {
-			stdout += s + '\n';
-		}
-	});
+	// Сбрасываем буфер перед выполнением (stdout/stderr уже перехвачены в loadPyodide)
+	currentStdout = '';
 
 	try {
 		await pyodide.runPythonAsync(code);
-		parentPort!.postMessage({ id, ok: true, stdout: stdout.trim() });
+		parentPort!.postMessage({ id, ok: true, stdout: currentStdout.trim() });
 	} catch (err: unknown) {
 		const error = err instanceof Error ? err.message : String(err);
 		parentPort!.postMessage({ id, ok: false, error });
 	} finally {
-		// Сбрасываем stdout
-		pyodide.setStdout({ batched: () => {} });
+		currentStdout = '';
 	}
 }
 
