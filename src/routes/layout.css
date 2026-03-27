@@ -1,0 +1,178 @@
+/* ── layout.css ─────────────────────────────────────────────────────────────
+   Global design system for the PWA AI-Assistant
+   ─────────────────────────────────────────────────────────────────────────── */
+
+@import 'tailwindcss';
+@import 'katex/dist/katex.min.css';
+
+/* ── Design Tokens ─────────────────────────────────────────────────────────── */
+:root {
+	/* Colors */
+	--bg-base: #0b0b14;
+	--bg-surface: #12121f;
+	--bg-elevated: #1a1a2e;
+	--bg-card: #1e1e35;
+	--bg-input: #16162a;
+
+	--border-subtle: rgba(255, 255, 255, 0.07);
+	--border-medium: rgba(255, 255, 255, 0.12);
+
+	--accent-primary: #6c63ff;
+	--accent-secondary: #a78bfa;
+	--accent-glow: rgba(108, 99, 255, 0.35);
+	--accent-gradient: linear-gradient(135deg, #6c63ff 0%, #a78bfa 100%);
+
+	--text-primary: #f0f0fa;
+	--text-secondary: #8888bb;
+	--text-muted: #555580;
+	--text-code: #c9d1d9;
+
+	--success: #34d399;
+	--warning: #fbbf24;
+	--error: #f87171;
+
+	/* Typography */
+	--font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+	--font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+
+	/* Spacing */
+	--sidebar-width: 280px;
+	--header-height: 56px;
+
+	/* Radii */
+	--radius-sm: 6px;
+	--radius-md: 10px;
+	--radius-lg: 16px;
+	--radius-xl: 22px;
+
+	/* Shadows */
+	--shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+	--shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+	--shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
+	--shadow-glow: 0 0 24px var(--accent-glow);
+
+	/* Transitions */
+	--transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+	--transition-base: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Reset & Base ──────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+	box-sizing: border-box;
+	margin: 0;
+	padding: 0;
+}
+
+html, body {
+	height: 100%;
+	overflow: hidden;
+}
+
+body {
+	font-family: var(--font-sans);
+	background-color: var(--bg-base);
+	color: var(--text-primary);
+	font-size: 15px;
+	line-height: 1.6;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+	width: 5px;
+	height: 5px;
+}
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+	background: var(--border-medium);
+	border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ── Selection ─────────────────────────────────────────────────────────────── */
+::selection {
+	background: var(--accent-glow);
+	color: var(--text-primary);
+}
+
+/* ── KaTeX overrides ──────────────────────────────────────────────────────── */
+.katex { font-size: 1.05em; color: inherit; }
+.katex-display { overflow-x: auto; padding: 0.5rem 0; }
+
+/* ── Message prose styles ─────────────────────────────────────────────────── */
+.prose {
+	color: var(--text-primary);
+	line-height: 1.75;
+}
+.prose h1, .prose h2, .prose h3 {
+	color: var(--text-primary);
+	margin: 1.25em 0 0.5em;
+	line-height: 1.3;
+}
+.prose h1 { font-size: 1.4em; font-weight: 700; }
+.prose h2 { font-size: 1.2em; font-weight: 600; }
+.prose h3 { font-size: 1.05em; font-weight: 600; }
+.prose p { margin: 0.6em 0; }
+.prose strong { color: var(--accent-secondary); font-weight: 600; }
+.prose em { color: var(--text-secondary); }
+.prose ul, .prose ol { padding-left: 1.5em; margin: 0.5em 0; }
+.prose li { margin: 0.2em 0; }
+.prose code {
+	font-family: var(--font-mono);
+	font-size: 0.88em;
+	background: rgba(108, 99, 255, 0.12);
+	color: var(--accent-secondary);
+	padding: 0.15em 0.4em;
+	border-radius: var(--radius-sm);
+	border: 1px solid rgba(108, 99, 255, 0.2);
+}
+.prose pre {
+	background: var(--bg-base);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-md);
+	padding: 1rem;
+	overflow-x: auto;
+	margin: 0.75rem 0;
+}
+.prose pre code {
+	background: none;
+	border: none;
+	padding: 0;
+	color: var(--text-code);
+	font-size: 0.85em;
+}
+.prose blockquote {
+	border-left: 3px solid var(--accent-primary);
+	padding-left: 1rem;
+	color: var(--text-secondary);
+	margin: 0.75rem 0;
+}
+.prose hr {
+	border: none;
+	border-top: 1px solid var(--border-subtle);
+	margin: 1rem 0;
+}
+.prose a {
+	color: var(--accent-secondary);
+	text-decoration: underline;
+	text-decoration-color: rgba(167, 139, 250, 0.4);
+}
+.prose a:hover { text-decoration-color: var(--accent-secondary); }
+
+/* ── Utility animations ────────────────────────────────────────────────────── */
+@keyframes fadeInUp {
+	from { opacity: 0; transform: translateY(12px); }
+	to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse-soft {
+	0%, 100% { opacity: 1; }
+	50%       { opacity: 0.5; }
+}
+@keyframes spin {
+	to { transform: rotate(360deg); }
+}
+@keyframes typing-dot {
+	0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+	40%           { transform: scale(1); opacity: 1; }
+}

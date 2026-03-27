@@ -1,0 +1,17 @@
+{
+	"name": "CoWorker AI — Точные науки",
+	"short_name": "CoWorker",
+	"description": "AI-ассистент для решения инженерных и математических задач",
+	"start_url": "/",
+	"display": "standalone",
+	"background_color": "#0b0b14",
+	"theme_color": "#6c63ff",
+	"icons": [
+		{
+			"src": "/favicon.svg",
+			"sizes": "any",
+			"type": "image/svg+xml",
+			"purpose": "any maskable"
+		}
+	]
+}

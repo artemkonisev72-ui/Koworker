@@ -1,0 +1,49 @@
+// PWA AI-Ассистент для точных наук — Prisma Schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  createdAt DateTime @default(now())
+  chats     Chat[]
+}
+
+model Chat {
+  id        String    @id @default(cuid())
+  userId    String
+  title     String    @default("Новый чат")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  Message[]
+
+  @@index([userId])
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+model Message {
+  id            String      @id @default(cuid())
+  chatId        String
+  role          MessageRole
+  content       String      @db.Text
+  generatedCode String?     @db.Text
+  executionLogs String?     @db.Text
+  graphData     Json?
+  createdAt     DateTime    @default(now())
+  chat          Chat        @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId])
+}
