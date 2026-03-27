@@ -34,22 +34,28 @@ export async function runPipeline(
 	userMessage: string,
 	onStatus: (event: PipelineStatus) => void
 ): Promise<void> {
+	console.log('[Pipeline] START message:', userMessage.slice(0, 80));
 	try {
 		// ── Шаг 1: Маршрутизация (Flash) ─────────────────────────────────────
+		console.log('[Pipeline] Step 1: routing...');
 		onStatus({ type: 'status', message: 'Анализ задачи...' });
 		const needsComputation = await routeQuestion(userMessage);
+		console.log('[Pipeline] Step 1 done: needsComputation =', needsComputation);
 
 		if (!needsComputation) {
-			// Общий вопрос — отвечаем напрямую через Flash
+			console.log('[Pipeline] General question — calling answerGeneralQuestion');
 			onStatus({ type: 'status', message: 'Формирование ответа...' });
 			const answer = await answerGeneralQuestion(userMessage);
+			console.log('[Pipeline] General answer received, length:', answer.length);
 			onStatus({ type: 'result', content: answer });
 			return;
 		}
 
 		// ── Шаг 2: Генерация кода (Pro) ──────────────────────────────────────
+		console.log('[Pipeline] Step 2: generating Python code...');
 		onStatus({ type: 'status', message: 'Генерация кода решения...' });
 		let pythonCode = await generatePythonCode(userMessage);
+		console.log('[Pipeline] Step 2 done, code length:', pythonCode.length);
 
 		// ── Шаг 3: Выполнение в Sandbox + Retry ──────────────────────────────
 		let lastError: string | null = null;
@@ -58,20 +64,20 @@ export async function runPipeline(
 
 		for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
 			if (attempt > 0) {
+				console.log(`[Pipeline] Retry ${attempt}/${MAX_RETRIES}, lastError:`, lastError?.slice(0, 200));
 				onStatus({ type: 'status', message: `Исправление ошибки (попытка ${attempt}/${MAX_RETRIES})...` });
-				// Retry: отправляем traceback обратно в Pro для исправления
 				pythonCode = await generatePythonCode(userMessage, `Предыдущий код:\n\`\`\`python\n${pythonCode}\n\`\`\`\n\nОшибка:\n${lastError}`);
 			}
 
+			console.log(`[Pipeline] Step 3: sandbox execute, attempt ${attempt}`);
 			onStatus({ type: 'status', message: attempt === 0 ? 'Выполнение вычислений...' : `Выполнение исправленного кода...` });
 
 			try {
 				const result = await workerPool.execute(pythonCode);
 				rawStdout = result.stdout;
+				console.log('[Pipeline] Sandbox OK, stdout:', rawStdout.slice(0, 200));
 
-				// JSON Fallback: парсим с защитой от мусора в stdout
 				try {
-					// Ищем первый валидный JSON-объект в stdout
 					const jsonMatch = rawStdout.match(/\{[\s\S]*\}/);
 					if (jsonMatch) {
 						sandboxOutput = JSON.parse(jsonMatch[0]) as SandboxOutput;
@@ -79,18 +85,17 @@ export async function runPipeline(
 						sandboxOutput = { result: rawStdout };
 					}
 				} catch {
-					// Если JSON невалидный — используем raw stdout как результат
 					sandboxOutput = { result: rawStdout };
 				}
 
 				lastError = null;
-				break; // Успех — выходим из цикла retry
+				break;
 
 			} catch (err) {
+				console.error(`[Pipeline] Sandbox error (attempt ${attempt}):`, err);
 				if (err instanceof SandboxError) {
 					lastError = err.message;
 					if (attempt >= MAX_RETRIES) {
-						// Исчерпаны все попытки
 						onStatus({
 							type: 'error',
 							message: `Не удалось выполнить вычисления после ${MAX_RETRIES + 1} попыток:\n${lastError}`
@@ -98,12 +103,13 @@ export async function runPipeline(
 						return;
 					}
 				} else {
-					throw err; // Неожиданная ошибка — пробрасываем
+					throw err;
 				}
 			}
 		}
 
 		// ── Шаг 4: Сборка ответа (Flash) ─────────────────────────────────────
+		console.log('[Pipeline] Step 4: assembling final answer...');
 		onStatus({ type: 'status', message: 'Формирование ответа...' });
 
 		const executionSummary = sandboxOutput
@@ -115,8 +121,8 @@ export async function runPipeline(
 			pythonCode,
 			executionResult: executionSummary
 		});
+		console.log('[Pipeline] Step 4 done, answer length:', finalAnswer.length);
 
-		// Извлекаем graphData если есть
 		const graphData = sandboxOutput?.graph_points ?? undefined;
 
 		onStatus({
@@ -126,9 +132,11 @@ export async function runPipeline(
 			executionLogs: rawStdout,
 			graphData
 		});
+		console.log('[Pipeline] DONE');
 
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
+		console.error('[Pipeline] UNCAUGHT ERROR:', err);
 		onStatus({ type: 'error', message: `Внутренняя ошибка: ${message}` });
 	}
 }

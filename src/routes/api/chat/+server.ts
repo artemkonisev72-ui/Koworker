@@ -18,23 +18,28 @@ import { prisma } from '$lib/server/db.js';
 import { json, error } from '@sveltejs/kit';
 
 export const POST: RequestHandler = async ({ request }) => {
+	console.log('[SSE] POST /api/chat received');
 	let body: { chatId?: string; message?: string };
 
 	try {
 		body = (await request.json()) as { chatId?: string; message?: string };
+		console.log('[SSE] body chatId:', body.chatId, '| message:', body.message?.slice(0, 60));
 	} catch {
+		console.error('[SSE] Failed to parse JSON body');
 		return error(400, 'Invalid JSON body');
 	}
 
 	const { chatId, message } = body;
 
 	if (!chatId || !message?.trim()) {
+		console.error('[SSE] Missing chatId or message');
 		return error(400, 'chatId and message are required');
 	}
 
 	// Проверяем существование чата
 	const chat = await prisma.chat.findUnique({ where: { id: chatId } });
 	if (!chat) {
+		console.error('[SSE] Chat not found:', chatId);
 		return error(404, 'Chat not found');
 	}
 
