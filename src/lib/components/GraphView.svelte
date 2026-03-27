@@ -41,16 +41,16 @@
 			showNavigation: false
 		});
 
-		// Override board colors for dark theme
-		board.options.grid.strokeColor = 'rgba(255,255,255,0.05)';
-		board.options.axis.strokeColor = 'rgba(255,255,255,0.25)';
+		// Override board colors for theme
+		board.options.grid.strokeColor = 'var(--border-subtle)';
+		board.options.axis.strokeColor = 'var(--border-medium)';
 
-		// Plot the curve
+		// Plot the curve - Monochrome
 		board.create(
 			'curve',
 			[points.map((p) => p.x), points.map((p) => p.y)],
 			{
-				strokeColor: '#6c63ff',
+				strokeColor: 'var(--text-primary)',
 				strokeWidth: 2.5,
 				highlight: false
 			}
@@ -79,20 +79,21 @@
 <style>
 	.graph-wrapper {
 		margin: 1rem 0;
-		border: 1px solid rgba(108, 99, 255, 0.2);
-		border-radius: 12px;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
 		overflow: hidden;
-		background: #0b0b14;
+		background: var(--bg-elevated);
 	}
 
 	.graph-title {
 		padding: 0.5rem 1rem;
-		font-size: 0.8rem;
+		font-size: 0.75rem;
 		font-weight: 600;
-		color: var(--accent-secondary);
+		color: var(--text-secondary);
 		letter-spacing: 0.05em;
 		text-transform: uppercase;
-		border-bottom: 1px solid rgba(108, 99, 255, 0.15);
+		border-bottom: 1px solid var(--border-subtle);
+		background: var(--bg-surface);
 	}
 
 	.graph-board {

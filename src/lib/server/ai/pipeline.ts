@@ -3,12 +3,13 @@
  * Стейт-машина пайплайна решения задачи.
  *
  * Архитектура (строго по спецификации):
- *   Router (Flash) → CodeGen (Pro) → Sandbox (Pyodide) → [Retry ≤2] → Assembler (Flash)
+ *   Complexity → Router (Flash) → CodeGen (Pro) → Sandbox (Pyodide) → [Retry ≤2] → Assembler (Flash)
  *
- * Эмиттит событие на каждом шаге через колбэк onStatus,
- * который SSE-слой транслирует клиенту.
+ * Модель выбирается автоматически на основе оценки сложности (1-4 tier).
+ * При недоступности модели — автоматический откат на модель ниже.
  */
 import { routeQuestion, generatePythonCode, assembleFinalAnswer, answerGeneralQuestion } from './gemini.js';
+import { assessComplexity } from './complexity.js';
 import { workerPool, SandboxError } from '../sandbox/worker-pool.js';
 
 export type PipelineStatus =
@@ -36,25 +37,30 @@ export async function runPipeline(
 ): Promise<void> {
 	console.log('[Pipeline] START message:', userMessage.slice(0, 80));
 	try {
+		// ── Оценка сложности (мгновенно, без LLM) ────────────────────────────
+		const complexity = assessComplexity(userMessage);
+		console.log(`[Complexity] tier=${complexity.tier} score=${complexity.score} reason="${complexity.reason}"`);
+		const tier = complexity.tier;
+
 		// ── Шаг 1: Маршрутизация (Flash) ─────────────────────────────────────
 		console.log('[Pipeline] Step 1: routing...');
 		onStatus({ type: 'status', message: 'Анализ задачи...' });
-		const needsComputation = await routeQuestion(userMessage);
+		const needsComputation = await routeQuestion(userMessage, tier);
 		console.log('[Pipeline] Step 1 done: needsComputation =', needsComputation);
 
 		if (!needsComputation) {
 			console.log('[Pipeline] General question — calling answerGeneralQuestion');
 			onStatus({ type: 'status', message: 'Формирование ответа...' });
-			const answer = await answerGeneralQuestion(userMessage);
+			const answer = await answerGeneralQuestion(userMessage, tier);
 			console.log('[Pipeline] General answer received, length:', answer.length);
 			onStatus({ type: 'result', content: answer });
 			return;
 		}
 
-		// ── Шаг 2: Генерация кода (Pro) ──────────────────────────────────────
+		// ── Шаг 2: Генерация кода (Pro/Flash по tier) ────────────────────────
 		console.log('[Pipeline] Step 2: generating Python code...');
 		onStatus({ type: 'status', message: 'Генерация кода решения...' });
-		let pythonCode = await generatePythonCode(userMessage);
+		let pythonCode = await generatePythonCode(userMessage, tier);
 		console.log('[Pipeline] Step 2 done, code length:', pythonCode.length);
 
 		// ── Шаг 3: Выполнение в Sandbox + Retry ──────────────────────────────
@@ -66,11 +72,18 @@ export async function runPipeline(
 			if (attempt > 0) {
 				console.log(`[Pipeline] Retry ${attempt}/${MAX_RETRIES}, lastError:`, lastError?.slice(0, 200));
 				onStatus({ type: 'status', message: `Исправление ошибки (попытка ${attempt}/${MAX_RETRIES})...` });
-				pythonCode = await generatePythonCode(userMessage, `Предыдущий код:\n\`\`\`python\n${pythonCode}\n\`\`\`\n\nОшибка:\n${lastError}`);
+				pythonCode = await generatePythonCode(
+					userMessage,
+					tier,
+					`Предыдущий код:\n\`\`\`python\n${pythonCode}\n\`\`\`\n\nОшибка:\n${lastError}`
+				);
 			}
 
 			console.log(`[Pipeline] Step 3: sandbox execute, attempt ${attempt}`);
-			onStatus({ type: 'status', message: attempt === 0 ? 'Выполнение вычислений...' : `Выполнение исправленного кода...` });
+			onStatus({
+				type: 'status',
+				message: attempt === 0 ? 'Выполнение вычислений...' : `Выполнение исправленного кода...`
+			});
 
 			try {
 				const result = await workerPool.execute(pythonCode);
@@ -108,7 +121,7 @@ export async function runPipeline(
 			}
 		}
 
-		// ── Шаг 4: Сборка ответа (Flash) ─────────────────────────────────────
+		// ── Шаг 4: Сборка ответа (Flash/Pro по tier) ─────────────────────────
 		console.log('[Pipeline] Step 4: assembling final answer...');
 		onStatus({ type: 'status', message: 'Формирование ответа...' });
 
@@ -116,11 +129,10 @@ export async function runPipeline(
 			? JSON.stringify(sandboxOutput, null, 2)
 			: rawStdout;
 
-		const finalAnswer = await assembleFinalAnswer({
-			userMessage,
-			pythonCode,
-			executionResult: executionSummary
-		});
+		const finalAnswer = await assembleFinalAnswer(
+			{ userMessage, pythonCode, executionResult: executionSummary },
+			tier
+		);
 		console.log('[Pipeline] Step 4 done, answer length:', finalAnswer.length);
 
 		const graphData = sandboxOutput?.graph_points ?? undefined;

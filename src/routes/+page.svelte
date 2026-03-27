@@ -477,10 +477,10 @@
 	gap: 0.5rem;
 	margin: 0.75rem;
 	padding: 0.6rem 1rem;
-	background: var(--accent-gradient);
-	border: none;
+	background: var(--accent-primary);
+	border: 1px solid var(--border-subtle);
 	border-radius: var(--radius-md);
-	color: white;
+	color: var(--bg-base);
 	font-size: 0.85rem;
 	font-weight: 600;
 	cursor: pointer;
@@ -522,8 +522,9 @@
 }
 .chat-item:hover { background: var(--bg-elevated); color: var(--text-primary); }
 .chat-item.active {
-	background: rgba(108, 99, 255, 0.15);
-	color: var(--accent-secondary);
+	background: var(--bg-elevated);
+	color: var(--accent-primary);
+	font-weight: 600;
 }
 
 .chat-icon { flex-shrink: 0; }
@@ -702,8 +703,8 @@
 }
 
 .assistant-avatar {
-	background: var(--accent-gradient);
-	color: white;
+	background: var(--accent-primary);
+	color: var(--bg-base);
 	font-size: 0.65rem;
 }
 
@@ -722,10 +723,11 @@
 }
 
 .user-bubble {
-	background: var(--accent-gradient);
-	color: white;
+	background: var(--accent-primary);
+	color: var(--bg-base);
 	border-bottom-right-radius: var(--radius-sm);
 }
+
 
 .assistant-bubble {
 	background: var(--bg-card);
