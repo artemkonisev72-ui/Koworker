@@ -10,16 +10,19 @@ import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import path from 'path';
 
+import fs from 'node:fs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.NODE_ENV !== 'production';
 
-// In dev: tsx executes the TypeScript worker directly (no compilation needed).
-// In prod: the worker is pre-compiled to pyodide-worker.js by `npm run build:worker`.
-const WORKER_SCRIPT = isDev
-	? path.resolve(__dirname, 'pyodide-worker.ts')
-	: path.resolve(__dirname, 'pyodide-worker.js');
+// Пытаемся найти скомпилированный JS воркер. 
+// Если его нет (например, на локальном компьютере), пробуем запустить .ts.
+const JS_WORKER = path.resolve(__dirname, 'pyodide-worker.js');
+const TS_WORKER = path.resolve(__dirname, 'pyodide-worker.ts');
 
-const WORKER_OPTIONS = isDev ? { execArgv: ['--import', 'tsx/esm'] } : {};
+const WORKER_SCRIPT = fs.existsSync(JS_WORKER) ? JS_WORKER : TS_WORKER;
+
+// Флаг tsx нужен ТОЛЬКО если мы запускаем сырой .ts файл
+const WORKER_OPTIONS = WORKER_SCRIPT.endsWith('.ts') ? { execArgv: ['--import', 'tsx/esm'] } : {};
 
 const TASK_TIMEOUT_MS = 10_000; // 10 секунд на задачу
 const MAX_TASKS_PER_WORKER = 10; // Lifecycle Policy
