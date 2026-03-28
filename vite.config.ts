@@ -1,6 +1,10 @@
 import { defineConfig } from 'vitest/config';
 import tailwindcss from '@tailwindcss/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
+import dns from 'node:dns';
+
+// Жестко заставляем Node.js/Vite использовать только IPv4 для всех сетевых запросов (fetch, db и др.)
+dns.setDefaultResultOrder('ipv4first');
 
 export default defineConfig({
 	plugins: [tailwindcss(), sveltekit()],
