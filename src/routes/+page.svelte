@@ -510,6 +510,11 @@
 						<option value="gemini-3-pro-preview">Gemini 3.0 Pro</option>
 						<option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
 					</optgroup>
+					<optgroup label="Gemini 2.5">
+						<option value="gemini-2.5-pro">Gemini 2.5 Pro (Умная)</option>
+						<option value="gemini-2.5-flash">Gemini 2.5 Flash (Быстрая)</option>
+						<option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite (Самая быстрая)</option>
+					</optgroup>
 				</select>
 			</div>
 		</header>

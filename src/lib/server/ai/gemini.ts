@@ -12,24 +12,33 @@ export type GeminiModel =
 	| 'gemini-3.1-pro-preview'
 	| 'gemini-3-pro-preview'
 	| 'gemini-3-flash-preview'
-	| 'gemini-3.1-flash-lite-preview';
+	| 'gemini-3.1-flash-lite-preview'
+	| 'gemini-2.5-pro'
+	| 'gemini-2.5-flash'
+	| 'gemini-2.5-flash-lite';
 
 const FLASH_CHAIN: GeminiModel[] = [
 	'gemini-3.1-flash-preview',
 	'gemini-3-flash-preview',
-	'gemini-3.1-flash-lite-preview'
+	'gemini-2.5-flash',
+	'gemini-3.1-flash-lite-preview',
+	'gemini-2.5-flash-lite'
 ];
 
 const PRO_CHAIN: GeminiModel[] = [
 	'gemini-3.1-pro-preview',
 	'gemini-3-pro-preview',
-	'gemini-3.1-flash-preview'
+	'gemini-2.5-pro',
+	'gemini-3.1-flash-preview',
+	'gemini-2.5-flash'
 ];
 
 const VISION_CHAIN: GeminiModel[] = [
 	'gemini-3.1-pro-preview',
 	'gemini-3-pro-preview',
-	'gemini-3.1-flash-preview'
+	'gemini-2.5-pro',
+	'gemini-3.1-flash-preview',
+	'gemini-2.5-flash'
 ];
 
 interface GeminiMessage {
@@ -75,7 +84,7 @@ async function generateWithFallback(
 			return { text, model };
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			const isRetryable = msg.includes('400') || msg.includes('503') || msg.includes('Model not supported');
+			const isRetryable = msg.includes('400') || msg.includes('404') || msg.includes('503') || msg.includes('not found') || msg.includes('NOT_FOUND') || msg.includes('Model not supported');
 			if (isRetryable && i < effectiveChain.length - 1) {
 				console.warn(`[Gemini] Model ${model} unavailable, falling back...`);
 				continue;
