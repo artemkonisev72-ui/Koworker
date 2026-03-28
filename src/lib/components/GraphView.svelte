@@ -39,21 +39,16 @@
 			grid: true,
 			showCopyright: false,
 			showNavigation: false,
-			showInfobox: true,
+			showInfobox: false, // Отключаем стандартный инфобокс в пользу Glider
 			showScreenshot: false
 		});
 
 		// Override board colors for theme
 		board.options.grid.strokeColor = 'var(--border-subtle)';
 		board.options.axis.strokeColor = 'var(--border-medium)';
-		
-		// Style infobox (the tooltip)
-		board.options.infobox.strokeColor = 'var(--text-primary)';
-		board.options.infobox.fillColor = 'var(--bg-elevated)';
-		board.options.infobox.fontSize = 12;
 
 		// Plot the curve - Monochrome
-		board.create(
+		const curve = board.create(
 			'curve',
 			[points.map((p) => p.x), points.map((p) => p.y)],
 			{
@@ -64,6 +59,46 @@
 				highlightStrokeWidth: 3
 			}
 		);
+
+		// Создаем Glider - точку, которая следует по кривой
+		const glider = board.create('point', [xMin, points[0].y], {
+			name: '',
+			slideObject: curve,
+			visible: true,
+			size: 3,
+			fillColor: 'var(--bg-base)',
+			strokeColor: 'var(--accent-primary)',
+			strokeWidth: 2,
+			withLabel: true,
+			label: {
+				position: 'urt',
+				offset: [10, 10],
+				fontSize: 12,
+				fontFamily: 'var(--font-mono)',
+				color: 'var(--text-primary)',
+				strokeColor: 'none',
+				highlight: false,
+				cssClass: 'graph-tooltip-label'
+			}
+		});
+
+		glider.on('drag', () => {
+			glider.setAttribute({
+				name: `x: ${glider.X().toFixed(2)}, y: ${glider.Y().toFixed(2)}`
+			});
+		});
+
+		// При наведении (движении мыши по доске) перемещаем Glider за курсором
+		board.on('move', (e: any) => {
+			const coords = board.getUsrCoordsOfMouse(e);
+			glider.moveTo([coords[1], coords[2]]);
+			glider.setAttribute({
+				name: `x: ${glider.X().toFixed(2)}, y: ${glider.Y().toFixed(2)}`
+			});
+		});
+
+		// Начальное состояние имени
+		glider.setAttribute({ name: `x: ${glider.X().toFixed(2)}, y: ${glider.Y().toFixed(2)}` });
 	});
 
 	onDestroy(() => {
@@ -110,16 +145,16 @@
 		height: 300px;
 	}
 
+	:global(.graph-tooltip-label) {
+		background: var(--bg-elevated);
+		padding: 2px 6px;
+		border-radius: 4px;
+		border: 1px solid var(--border-subtle);
+		box-shadow: var(--shadow-sm);
+		font-weight: 600;
+	}
+
 	:global(.jxgbox_infobox) {
-		background-color: var(--bg-elevated) !important;
-		border: 1px solid var(--border-subtle) !important;
-		padding: 4px 8px !important;
-		border-radius: 4px !important;
-		font-family: var(--font-mono) !important;
-		font-size: 11px !important;
-		color: var(--text-primary) !important;
-		box-shadow: var(--shadow-sm) !important;
-		backdrop-filter: blur(4px);
-		z-index: 100 !important;
+		display: none !important;
 	}
 </style>
