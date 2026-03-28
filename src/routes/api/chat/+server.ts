@@ -17,8 +17,10 @@ import { runPipeline, type PipelineStatus } from '$lib/server/ai/pipeline.js';
 import { prisma } from '$lib/server/db.js';
 import { json, error } from '@sveltejs/kit';
 
-export const POST: RequestHandler = async ({ request }) => {
+export const POST: RequestHandler = async ({ locals, request }) => {
 	console.log('[SSE] POST /api/chat received');
+	if (!locals.user) return error(401, 'Unauthorized');
+	
 	let body: { chatId?: string; message?: string; imageData?: { base64: string; mimeType: string } };
 
 	try {
