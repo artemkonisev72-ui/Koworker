@@ -30,6 +30,7 @@ export interface GraphPoint {
 
 export interface GraphData {
 	title?: string;
+	type?: 'function' | 'diagram';
 	points: GraphPoint[];
 }
 

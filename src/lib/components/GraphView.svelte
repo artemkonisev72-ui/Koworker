@@ -10,7 +10,7 @@
 		y: number;
 	}
 
-	let { points, title = 'График' }: { points: GraphPoint[]; title?: string } = $props();
+	let { points, title = 'График', type = 'function' }: { points: GraphPoint[]; title?: string; type?: 'function' | 'diagram' } = $props();
 
 	let boardEl: HTMLDivElement | undefined = $state();
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -59,6 +59,27 @@
 				highlightStrokeWidth: 3
 			}
 		);
+
+		// Если это эпюра (diagram), заштриховываем область между кривой и осью X
+		if (type === 'diagram') {
+			const xCoords = points.map(p => p.x);
+			const yCoords = points.map(p => p.y);
+			
+			// Создаем полигон: (x[0], 0) -> (x[0], y[0]) -> ... -> (x[n], y[n]) -> (x[n], 0)
+			board.create('polygon', [
+				[xCoords[0], 0],
+				...points.map(p => [p.x, p.y]),
+				[xCoords[xCoords.length - 1], 0]
+			], {
+				fillColor: 'var(--accent-primary)',
+				fillOpacity: 0.15,
+				withLines: false,
+				borders: { visible: false },
+				vertices: { visible: false },
+				highlight: false,
+				layer: 0 // Под линией графика и сеткой
+			});
+		}
 
 		// Создаем Glider - точку, которая следует по кривой
 		const glider = board.create('point', [xMin, points[0].y], {

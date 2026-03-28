@@ -7,7 +7,7 @@
 	import MessageRenderer from '$lib/components/MessageRenderer.svelte';
 
 	interface GraphPoint { x: number; y: number; }
-	interface GraphData { title?: string; points: GraphPoint[]; }
+	interface GraphData { title?: string; type?: 'function' | 'diagram'; points: GraphPoint[]; }
 	interface ChatMessage {
 		id: string;
 		role: 'USER' | 'ASSISTANT' | 'SYSTEM';
