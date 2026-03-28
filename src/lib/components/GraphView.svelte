@@ -90,8 +90,12 @@
 
 		// При наведении (движении мыши по доске) перемещаем Glider за курсором
 		board.on('move', (e: any) => {
-			const coords = board.getUsrCoordsOfMouse(e);
-			glider.moveTo([coords[1], coords[2]]);
+			const ev = e.nativeEvent || e;
+			// Более надежный способ получения координат в JSXGraph
+			const pos = board.getMousePosition(ev);
+			const coords = new JXG.Coords(JXG.COORDS_BY_SCREEN, pos, board);
+			
+			glider.moveTo([coords.usrCoords[1], coords.usrCoords[2]], 0);
 			glider.setAttribute({
 				name: `x: ${glider.X().toFixed(2)}, y: ${glider.Y().toFixed(2)}`
 			});
