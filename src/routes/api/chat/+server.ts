@@ -98,7 +98,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 									content: event.content,
 									generatedCode: event.generatedCode ?? null,
 									executionLogs: event.executionLogs ?? null,
-									graphData: event.graphData ? JSON.stringify(event.graphData) : undefined
+									graphData: event.graphData ? JSON.stringify(event.graphData) : undefined,
+									usedModels: event.usedModels ? JSON.stringify(event.usedModels) : undefined
 								}
 							});
 
@@ -150,6 +151,7 @@ export const GET: RequestHandler = async ({ url }) => {
 			content: true,
 			generatedCode: true,
 			graphData: true,
+			usedModels: true,
 			imageData: true,
 			createdAt: true
 		}

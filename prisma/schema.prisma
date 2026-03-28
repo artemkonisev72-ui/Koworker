@@ -53,7 +53,8 @@ model Message {
   content       String      @db.Text
   generatedCode String?     @db.Text
   executionLogs String?     @db.Text
-  graphData     Json?
+  graphData     Json?       // Теперь массив объектов [{ title, points: [{x,y}, ...] }]
+  usedModels    Json?       // Список моделей: ["gemini-3.1-pro-preview", ...]
   imageData     String?     @db.Text
   createdAt     DateTime    @default(now())
   chat          Chat        @relation(fields: [chatId], references: [id], onDelete: Cascade)
