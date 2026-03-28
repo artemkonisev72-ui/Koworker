@@ -216,7 +216,15 @@
 			window.location.href = '/login';
 		}
 	}
- 
+	// ── Вспомогательная функция для ID ────────────────────────────────────────
+	function generateSafeId() {
+		if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+			return crypto.randomUUID();
+		}
+		// Fallback для небезопасных соединений (HTTP IP-адреса)
+		return 'temp-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+	}
+
  	async function sendMessage() {
 		const text = inputValue.trim();
 		if (!text || isLoading) return;
@@ -231,7 +239,7 @@
 
 		// Optimistically add user message
 		const userMsg: ChatMessage = {
-			id: crypto.randomUUID(),
+			id: generateSafeId(),
 			role: 'USER',
 			content: text,
 			imageData: selectedImage ? JSON.stringify(selectedImage) : null,
@@ -244,7 +252,7 @@
 		if (fileInputEl) fileInputEl.value = '';
 
 		// Placeholder for assistant response
-		const assistantId = crypto.randomUUID();
+		const assistantId = generateSafeId();
 		const assistantPlaceholder: ChatMessage = {
 			id: assistantId,
 			role: 'ASSISTANT',
