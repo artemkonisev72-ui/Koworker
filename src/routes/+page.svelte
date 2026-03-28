@@ -504,6 +504,7 @@
 					<optgroup label="Gemini 3.1">
 						<option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Умная)</option>
 						<option value="gemini-3.1-flash-preview">Gemini 3.1 Flash (Быстрая)</option>
+						<option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash-Lite (Самая быстрая)</option>
 					</optgroup>
 					<optgroup label="Gemini 3.0">
 						<option value="gemini-3-pro-preview">Gemini 3.0 Pro</option>

@@ -2,19 +2,22 @@
  * gemini.ts
  * Тонкая обёртка над Gemini API через шлюз ProxyAPI (proxyapi.ru).
  */
-import { PROXYAPI_API_KEY } from '$env/static/private';
+import { GEMINI_API_KEY } from '$env/static/private';
+import { GoogleGenAI } from '@google/genai';
 
-const BASE_URL = 'https://api.proxyapi.ru/google/v1beta/models';
+const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 export type GeminiModel =
 	| 'gemini-3.1-flash-preview'
 	| 'gemini-3.1-pro-preview'
 	| 'gemini-3-pro-preview'
-	| 'gemini-3-flash-preview';
+	| 'gemini-3-flash-preview'
+	| 'gemini-3.1-flash-lite-preview';
 
 const FLASH_CHAIN: GeminiModel[] = [
 	'gemini-3.1-flash-preview',
-	'gemini-3-flash-preview'
+	'gemini-3-flash-preview',
+	'gemini-3.1-flash-lite-preview'
 ];
 
 const PRO_CHAIN: GeminiModel[] = [
@@ -25,45 +28,33 @@ const PRO_CHAIN: GeminiModel[] = [
 
 const VISION_CHAIN: GeminiModel[] = [
 	'gemini-3.1-pro-preview',
-	'gemini-3-pro-preview'
+	'gemini-3-pro-preview',
+	'gemini-3.1-flash-preview'
 ];
 
 interface GeminiMessage {
 	role: 'user' | 'model';
 	parts: Array<{
 		text?: string;
-		inline_data?: {
-			mime_type: string;
+		inlineData?: {
+			mimeType: string;
 			data: string;
 		};
 	}>;
 }
 
-interface GeminiResponse {
-	candidates: Array<{
-		content: { parts: Array<{ text: string }> };
-	}>;
-}
-
 async function generate(model: GeminiModel, messages: GeminiMessage[]): Promise<string> {
-	const url = `${BASE_URL}/${model}:generateContent`;
-
-	const res = await fetch(url, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'Authorization': `Bearer ${PROXYAPI_API_KEY}`
-		},
-		body: JSON.stringify({ contents: messages })
+	// Официальный SDK ожидает contents в camelCase
+	const response = await ai.models.generateContent({
+		model: model,
+		contents: messages,
 	});
 
-	if (!res.ok) {
-		const body = await res.text();
-		throw new Error(`Gemini API error ${res.status}: ${body}`);
+	if (!response.text) {
+		throw new Error(`Gemini API returned empty text (Model: ${model})`);
 	}
 
-	const data = (await res.json()) as GeminiResponse;
-	return data.candidates[0]?.content?.parts[0]?.text ?? '';
+	return response.text;
 }
 
 async function generateWithFallback(
@@ -144,7 +135,7 @@ export async function analyzeImage(base64Data: string, mimeType: string, forcedM
 	const prompt = `Проанализируй изображение. Извлеки условие и опиши схемы для решения.\nОтвет ТОЛЬКО текстом.`;
 	const messages: GeminiMessage[] = [{
 		role: 'user',
-		parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64Data } }]
+		parts: [{ text: prompt }, { inlineData: { mimeType: mimeType, data: base64Data } }]
 	}];
 	return generateWithFallback(VISION_CHAIN[0], VISION_CHAIN, messages, forcedModel);
 }
