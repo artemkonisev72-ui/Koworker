@@ -45,12 +45,14 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		return error(400, 'chatId and message are required');
 	}
 
-	// Проверяем существование чата
+	// Проверяем существование чата и получаем предпочтения модели
 	const chat = await prisma.chat.findUnique({ where: { id: chatId } });
 	if (!chat) {
 		console.error('[SSE] Chat not found:', chatId);
 		return error(404, 'Chat not found');
 	}
+
+	const forcedModel = chat.modelPreference === 'auto' ? null : chat.modelPreference;
 
 	// Сохраняем сообщение пользователя
 	await prisma.message.create({
@@ -114,7 +116,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 						}
 					}
 				},
-				imageData
+				imageData,
+				forcedModel
 			)
 				.catch((pipelineErr) => {
 					console.error('[SSE] Pipeline error:', pipelineErr);

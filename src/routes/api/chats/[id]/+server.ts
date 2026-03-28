@@ -7,9 +7,9 @@ export const PATCH: RequestHandler = async ({ params, locals, request }) => {
 	if (!locals.user) return error(401, 'Unauthorized');
 
 	const { id } = params;
-	const body = await request.json() as { title?: string; isPinned?: boolean };
+	const body = await request.json() as { title?: string; isPinned?: boolean; modelPreference?: string };
 
-	const chat = await prisma.chat.findUnique({ where: { id } });
+	const chat = await prisma.chat.findUnique({ where: { id: id } });
 
 	if (!chat) return error(404, 'Chat not found');
 	if (chat.userId !== locals.user.id) return error(403, 'Forbidden');
@@ -18,7 +18,8 @@ export const PATCH: RequestHandler = async ({ params, locals, request }) => {
 		where: { id },
 		data: {
 			title: body.title !== undefined ? body.title : undefined,
-			isPinned: body.isPinned !== undefined ? body.isPinned : undefined
+			isPinned: body.isPinned !== undefined ? body.isPinned : undefined,
+			modelPreference: body.modelPreference !== undefined ? body.modelPreference : undefined
 		}
 	});
 

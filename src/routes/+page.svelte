@@ -7,16 +7,18 @@
 	import MessageRenderer from '$lib/components/MessageRenderer.svelte';
 
 	interface GraphPoint { x: number; y: number; }
+	interface GraphData { title?: string; points: GraphPoint[]; }
 	interface ChatMessage {
 		id: string;
 		role: 'USER' | 'ASSISTANT' | 'SYSTEM';
 		content: string;
-		graphData?: GraphPoint[] | null;
+		graphData?: GraphData[] | string | null;
 		imageData?: string | null; // JSON string of {base64, mimeType}
+		usedModels?: string[] | string | null;
 		createdAt?: string;
 		isStreaming?: boolean;
 	}
-	interface Chat { id: string; title: string; updatedAt: string; isPinned: boolean; }
+	interface Chat { id: string; title: string; updatedAt: string; isPinned: boolean; modelPreference: string; }
 
 	// ── Props ─────────────────────────────────────────────────────────────────
 	let { data }: { data: import('./$types').PageData } = $props();
@@ -40,6 +42,7 @@
 	// Derived
 	let pinnedChats = $derived(chats.filter(c => c.isPinned));
 	let otherChats = $derived(chats.filter(c => !c.isPinned));
+	let activeChat = $derived(chats.find(c => c.id === activeChatId));
 
 	// Image upload state
 	let selectedImage = $state<{ base64: string; mimeType: string } | null>(null);
@@ -134,6 +137,23 @@
 		}
 	}
 
+	async function updateModelPreference(preference: string) {
+		if (!activeChatId) return;
+		try {
+			const res = await fetch(`/api/chats/${activeChatId}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ modelPreference: preference })
+			});
+			if (res.ok) {
+				const updated = await res.json();
+				chats = chats.map(c => c.id === activeChatId ? updated : c);
+			}
+		} catch (e) {
+			console.error('Failed to update model preference', e);
+		}
+	}
+
 	async function selectChat(chatId: string) {
 		if (activeChatId === chatId) return;
 		activeChatId = chatId;
@@ -146,11 +166,14 @@
 			const res = await fetch(`/api/chat?chatId=${chatId}`);
 			if (res.ok) {
 				const data = await res.json();
-				messages = data.map((m: ChatMessage & { graphData?: string | GraphPoint[] }) => ({
+				messages = data.map((m: any) => ({
 					...m,
 					graphData: typeof m.graphData === 'string'
 						? JSON.parse(m.graphData)
-						: m.graphData
+						: m.graphData,
+					usedModels: typeof m.usedModels === 'string'
+						? JSON.parse(m.usedModels)
+						: m.usedModels
 				}));
 				await scrollToBottom();
 			}
@@ -276,7 +299,8 @@
 						content?: string;
 						generatedCode?: string;
 						executionLogs?: string;
-						graphData?: GraphPoint[];
+						graphData?: GraphData[];
+						usedModels?: string[];
 					};
 
 					if (event.type === 'status') {
@@ -467,6 +491,25 @@
 						<span></span><span></span><span></span>
 					</span>
 				{/if}
+			</div>
+
+			<div class="model-selector">
+				<select 
+					value={activeChat?.modelPreference || 'auto'} 
+					onchange={(e) => updateModelPreference(e.currentTarget.value)}
+					class="model-select"
+					disabled={isLoading}
+				>
+					<option value="auto">✨ Авто-режим</option>
+					<optgroup label="Gemini 3.1">
+						<option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Умная)</option>
+						<option value="gemini-3.1-flash-preview">Gemini 3.1 Flash (Быстрая)</option>
+					</optgroup>
+					<optgroup label="Gemini 3.0">
+						<option value="gemini-3-pro-preview">Gemini 3.0 Pro</option>
+						<option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
+					</optgroup>
+				</select>
 			</div>
 		</header>
 
@@ -748,6 +791,58 @@
 	overflow: hidden;
 }
 
+.header-status {
+	display: flex;
+	align-items: center;
+	opacity: 0;
+	transition: opacity var(--transition-base);
+}
+.header-status.active { opacity: 1; }
+
+.model-selector {
+	margin-left: auto;
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.model-select {
+	background: var(--bg-elevated);
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-sm);
+	color: var(--text-secondary);
+	font-size: 0.75rem;
+	font-weight: 600;
+	padding: 0.4rem 0.6rem;
+	cursor: pointer;
+	transition: all var(--transition-fast);
+	font-family: var(--font-mono);
+	outline: none;
+}
+
+.model-select:hover:not(:disabled) {
+	border-color: var(--accent-primary);
+	color: var(--text-primary);
+}
+
+.model-select:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.model-select optgroup {
+	background: var(--bg-surface);
+	color: var(--text-muted);
+	font-style: normal;
+	font-weight: 700;
+	font-family: var(--font-sans);
+}
+
+.model-select option {
+	background: var(--bg-base);
+	color: var(--text-primary);
+	font-family: var(--font-sans);
+}
 .chat-actions {
 	display: flex;
 	gap: 0.25rem;
