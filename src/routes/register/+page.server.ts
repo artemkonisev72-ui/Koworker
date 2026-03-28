@@ -1,0 +1,47 @@
+import { fail, redirect } from '@sveltejs/kit';
+import type { Actions, PageServerLoad } from './$types';
+import { prisma } from '$lib/server/db';
+import { hashPassword, createSession } from '$lib/server/auth';
+
+export const load: PageServerLoad = async ({ locals }) => {
+	if (locals.user) {
+		throw redirect(302, '/');
+	}
+};
+
+export const actions: Actions = {
+	default: async ({ request, cookies }) => {
+		const data = await request.formData();
+		const email = data.get('email')?.toString();
+		const password = data.get('password')?.toString();
+		const name = data.get('name')?.toString();
+
+		if (!email || !password) {
+			return fail(400, { email, message: 'Email и пароль обязательны' });
+		}
+
+		const existing = await prisma.user.findUnique({ where: { email } });
+		if (existing) {
+			return fail(400, { email, message: 'Пользователь с таким email уже существует' });
+		}
+
+		const user = await prisma.user.create({
+			data: {
+				email,
+				name,
+				passwordHash: hashPassword(password)
+			}
+		});
+
+		const sessionId = await createSession(user.id);
+		cookies.set('session', sessionId, {
+			path: '/',
+			httpOnly: true,
+			sameSite: 'strict',
+			secure: process.env.NODE_ENV === 'production',
+			maxAge: 60 * 60 * 24 * 30 // 30 days
+		});
+
+		throw redirect(302, '/');
+	}
+};

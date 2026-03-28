@@ -1,0 +1,189 @@
+<script lang="ts">
+	let { data } = $props();
+
+	async function logout() {
+		const res = await fetch('/api/auth/logout', { method: 'POST' });
+		if (res.ok) {
+			window.location.href = '/login';
+		}
+	}
+</script>
+
+<div class="account-container">
+	<div class="account-card">
+		<header class="account-header">
+			<a href="/" class="back-link">
+				<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<path d="M19 12H5M12 19l-7-7 7-7"/>
+				</svg>
+				Назад к чату
+			</a>
+			<h1>Личный кабинет</h1>
+		</header>
+
+		<div class="profile-section">
+			<div class="profile-avatar">
+				{data.user?.name?.[0] || data.user?.email?.[0] || '?'}
+			</div>
+			<div class="profile-info">
+				<h2>{data.user?.name || 'Пользователь'}</h2>
+				<p>{data.user?.email}</p>
+			</div>
+		</div>
+
+		<div class="account-details">
+			<div class="detail-item">
+				<span class="label">ID пользователя</span>
+				<span class="value">{data.user?.id}</span>
+			</div>
+			<div class="detail-item">
+				<span class="label">Статус</span>
+				<span class="value status-active">Активен</span>
+			</div>
+		</div>
+
+		<button class="logout-btn" onclick={logout}>
+			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>
+			</svg>
+			Выйти из системы
+		</button>
+	</div>
+</div>
+
+<style>
+	.account-container {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		min-height: 100vh;
+		background: var(--bg-base);
+		padding: 1.5rem;
+	}
+
+	.account-card {
+		width: 100%;
+		max-width: 500px;
+		background: var(--bg-card);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-lg);
+		padding: 2.5rem;
+		box-shadow: var(--shadow-lg);
+		animation: fadeInUp 0.4s ease;
+	}
+
+	.account-header {
+		margin-bottom: 2.5rem;
+	}
+
+	.back-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+		color: var(--text-secondary);
+		text-decoration: none;
+		font-size: 0.85rem;
+		margin-bottom: 1.5rem;
+		transition: color var(--transition-fast);
+	}
+
+	.back-link:hover {
+		color: var(--text-primary);
+	}
+
+	.account-header h1 {
+		font-size: 1.75rem;
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+
+	.profile-section {
+		display: flex;
+		align-items: center;
+		gap: 1.5rem;
+		padding-bottom: 2rem;
+		border-bottom: 1px solid var(--border-subtle);
+		margin-bottom: 2rem;
+	}
+
+	.profile-avatar {
+		width: 64px;
+		height: 64px;
+		background: var(--accent-primary);
+		color: var(--bg-base);
+		border-radius: 50%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 1.5rem;
+		font-weight: 700;
+		text-transform: uppercase;
+	}
+
+	.profile-info h2 {
+		font-size: 1.25rem;
+		font-weight: 600;
+		color: var(--text-primary);
+		margin-bottom: 0.25rem;
+	}
+
+	.profile-info p {
+		color: var(--text-secondary);
+		font-size: 0.95rem;
+	}
+
+	.account-details {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+		margin-bottom: 2.5rem;
+	}
+
+	.detail-item {
+		display: flex;
+		justify-content: space-between;
+		padding: 0.75rem 0;
+		border-bottom: 1px dashed var(--border-subtle);
+	}
+
+	.detail-item .label {
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+	}
+
+	.detail-item .value {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+
+	.status-active {
+		color: #10b981 !important;
+	}
+
+	.logout-btn {
+		width: 100%;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.75rem;
+		padding: 1rem;
+		background: transparent;
+		color: #ef4444;
+		border: 1px solid #ef4444;
+		border-radius: var(--radius-md);
+		font-weight: 600;
+		cursor: pointer;
+		transition: all var(--transition-fast);
+	}
+
+	.logout-btn:hover {
+		background: #ef4444;
+		color: white;
+	}
+
+	@keyframes fadeInUp {
+		from { opacity: 0; transform: translateY(10px); }
+		to { opacity: 1; transform: translateY(0); }
+	}
+</style>

@@ -7,7 +7,6 @@
  * Поддерживает автоматический откат на модель ниже при ошибке 400/503.
  */
 import { PROXYAPI_API_KEY } from '$env/static/private';
-import type { ComplexityTier } from './complexity.js';
 
 const BASE_URL = 'https://api.proxyapi.ru/google/v1beta/models';
 
@@ -16,47 +15,24 @@ export type GeminiModel =
 	| 'gemini-3.1-flash-preview'
 	| 'gemini-3.1-pro-preview'
 	| 'gemini-3-pro-preview'
-	| 'gemini-3-flash-preview'
-	| 'gemini-2.5-pro'
-	| 'gemini-2.5-flash'
-	| 'gemini-2.5-flash-lite'
-	| 'gemini-2.0-flash'
-	| 'gemini-2.0-flash-lite';
+	| 'gemini-3-flash-preview';
 
-// Полная цепочка отката от лучшей к запасной
+// Полная цепочка отката
 const FLASH_CHAIN: GeminiModel[] = [
 	'gemini-3.1-flash-preview',
-	'gemini-3-flash-preview',
-	'gemini-2.5-flash',
-	'gemini-2.5-flash-lite',
-	'gemini-2.0-flash',
-	'gemini-2.0-flash-lite',
+	'gemini-3-flash-preview'
 ];
 
 const PRO_CHAIN: GeminiModel[] = [
 	'gemini-3.1-pro-preview',
 	'gemini-3-pro-preview',
-	'gemini-2.5-pro',
-	'gemini-2.5-flash',
-	'gemini-2.0-flash',
-	'gemini-2.0-flash-lite',
+	'gemini-3.1-flash-preview' // Fallback to flash if pro is down
 ];
 
 const VISION_CHAIN: GeminiModel[] = [
 	'gemini-3.1-pro-preview',
-	'gemini-3-pro-preview',
-	'gemini-2.5-pro',
-	'gemini-2.0-flash', // Flash тоже мультимодальный
+	'gemini-3-pro-preview'
 ];
-
-// ── Назначение моделей по сложности ───────────────────────────────────────
-// [роутер/сборщик Flash, генератор кода]
-const TIER_MODELS: Record<ComplexityTier, { flash: GeminiModel; code: GeminiModel; assemble: GeminiModel }> = {
-	1: { flash: 'gemini-2.5-flash-lite', code: 'gemini-2.0-flash',       assemble: 'gemini-2.5-flash-lite' },
-	2: { flash: 'gemini-2.5-flash',      code: 'gemini-2.5-flash',       assemble: 'gemini-2.5-flash'      },
-	3: { flash: 'gemini-2.5-flash',      code: 'gemini-2.5-pro',         assemble: 'gemini-2.5-flash'      },
-	4: { flash: 'gemini-3-flash-preview', code: 'gemini-3.1-pro-preview', assemble: 'gemini-3-pro-preview'  },
-};
 
 interface GeminiMessage {
 	role: 'user' | 'model';
@@ -126,21 +102,19 @@ async function generateWithFallback(
 	throw new Error('[Gemini] All models in fallback chain exhausted');
 }
 
-// ── Экспорт: выбор моделей по tier ────────────────────────────────────────
-export function getModelsForTier(tier: ComplexityTier) {
-	return TIER_MODELS[tier];
-}
+
 
 // ── Flash: маршрутизация ───────────────────────────────────────────────────
-export async function routeQuestion(userMessage: string, tier: ComplexityTier = 2): Promise<boolean> {
+export async function routeQuestion(userMessage: string): Promise<boolean> {
 	const prompt = `Определи, является ли следующий вопрос математической или инженерной задачей, требующей точных вычислений (термех, сопромат, матанализ, физика, алгебра, геометрия и т.п.).
 
 Ответь ТОЛЬКО: YES или NO.
 
 Вопрос: ${userMessage}`;
 
-	const { flash } = TIER_MODELS[tier];
-	const response = await generateWithFallback(flash, FLASH_CHAIN, [
+
+	const startModel = FLASH_CHAIN[0];
+	const response = await generateWithFallback(startModel, FLASH_CHAIN, [
 		{ role: 'user', parts: [{ text: prompt }] }
 	]);
 	return response.trim().toUpperCase().startsWith('YES');
@@ -149,7 +123,6 @@ export async function routeQuestion(userMessage: string, tier: ComplexityTier = 
 // ── Pro: генерация Python-кода ─────────────────────────────────────────────
 export async function generatePythonCode(
 	userMessage: string,
-	tier: ComplexityTier = 2,
 	retryContext?: string
 ): Promise<string> {
 	const systemPrompt = `Ты — генератор Python-кода для точных научных вычислений.
@@ -172,8 +145,8 @@ export async function generatePythonCode(
 		{ role: 'user', parts: [{ text: systemPrompt + '\n\n' + userContent }] }
 	];
 
-	const { code } = TIER_MODELS[tier];
-	const response = await generateWithFallback(code, PRO_CHAIN, messages);
+	const startModel = PRO_CHAIN[0];
+	const response = await generateWithFallback(startModel, PRO_CHAIN, messages);
 
 	// Извлекаем код из markdown-блока если присутствует
 	const codeMatch = response.match(/```python\n([\s\S]*?)```/);
@@ -182,8 +155,7 @@ export async function generatePythonCode(
 
 // ── Flash: финальная сборка ───────────────────────────────────────────────
 export async function assembleFinalAnswer(
-	params: { userMessage: string; pythonCode: string; executionResult: string },
-	tier: ComplexityTier = 2
+	params: { userMessage: string; pythonCode: string; executionResult: string }
 ): Promise<string> {
 	const prompt = `Ты — заслуженный преподаватель и инженер по точным наукам. Твоя задача — представить решение задачи в классическом академическом виде.
 
@@ -205,16 +177,15 @@ ${params.executionResult}
 
 Пиши на грамотном русском языке в уважительном тоне.`;
 
-	const { assemble } = TIER_MODELS[tier];
-	return generateWithFallback(assemble, FLASH_CHAIN, [
+	const startModel = FLASH_CHAIN[0];
+	return generateWithFallback(startModel, FLASH_CHAIN, [
 		{ role: 'user', parts: [{ text: prompt }] }
 	]);
 }
 
 // ── Flash: ответ без вычислений ────────────────────────────────────────────
 export async function answerGeneralQuestion(
-	userMessage: string,
-	tier: ComplexityTier = 2
+	userMessage: string
 ): Promise<string> {
 	const prompt = `Ты — заслуженный преподаватель по точным наукам. Ответь на вопрос или поясни теорию максимально понятно и академично.
 Используй LaTeX для всех формул ($...$ или $$...$$).
@@ -222,8 +193,8 @@ export async function answerGeneralQuestion(
 
 Вопрос: ${userMessage}`;
 
-	const { flash } = TIER_MODELS[tier];
-	return generateWithFallback(flash, FLASH_CHAIN, [
+	const startModel = FLASH_CHAIN[0];
+	return generateWithFallback(startModel, FLASH_CHAIN, [
 		{ role: 'user', parts: [{ text: prompt }] }
 	]);
 }
@@ -231,8 +202,7 @@ export async function answerGeneralQuestion(
 // ── Vision: анализ изображения ──────────────────────────────────────────────
 export async function analyzeImage(
 	base64Data: string,
-	mimeType: string,
-	tier: ComplexityTier = 4 // Для зрения всегда используем лучший доступный tier
+	mimeType: string
 ): Promise<string> {
 	const prompt = `Проанализируй изображение задачи по точным наукам (математика, физика, инженерия).
 

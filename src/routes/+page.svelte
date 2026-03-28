@@ -16,7 +16,10 @@
 		createdAt?: string;
 		isStreaming?: boolean;
 	}
-	interface Chat { id: string; title: string; updatedAt: string; }
+	interface Chat { id: string; title: string; updatedAt: string; isPinned: boolean; }
+
+	// ── Props ─────────────────────────────────────────────────────────────────
+	let { data }: { data: import('./$types').PageData } = $props();
 
 	// ── State ─────────────────────────────────────────────────────────────────
 	let chats = $state<Chat[]>([]);
@@ -29,6 +32,14 @@
 	let messagesEnd: HTMLDivElement | undefined = $state();
 	let inputEl: HTMLTextAreaElement | undefined = $state();
 	let fileInputEl: HTMLInputElement | undefined = $state();
+
+	// Editing state
+	let editingChatId = $state<string | null>(null);
+	let editingTitle = $state('');
+
+	// Derived
+	let pinnedChats = $derived(chats.filter(c => c.isPinned));
+	let otherChats = $derived(chats.filter(c => !c.isPinned));
 
 	// Image upload state
 	let selectedImage = $state<{ base64: string; mimeType: string } | null>(null);
@@ -61,6 +72,65 @@
 			}
 		} catch (e) {
 			console.error('Failed to create chat', e);
+		}
+	}
+
+	async function deleteChat(id: string) {
+		if (!confirm('Удалить этот чат?')) return;
+		try {
+			const res = await fetch(`/api/chats/${id}`, { method: 'DELETE' });
+			if (res.ok) {
+				chats = chats.filter(c => c.id !== id);
+				if (activeChatId === id) {
+					activeChatId = null;
+					messages = [];
+				}
+			}
+		} catch (e) {
+			console.error('Failed to delete chat', e);
+		}
+	}
+
+	async function pinChat(chat: Chat) {
+		try {
+			const res = await fetch(`/api/chats/${chat.id}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ isPinned: !chat.isPinned })
+			});
+			if (res.ok) {
+				const updated = await res.json();
+				chats = chats.map(c => c.id === chat.id ? updated : c);
+			}
+		} catch (e) {
+			console.error('Failed to pin chat', e);
+		}
+	}
+
+	function startEditing(chat: Chat) {
+		editingChatId = chat.id;
+		editingTitle = chat.title;
+	}
+
+	async function saveTitle() {
+		if (!editingChatId || !editingTitle.trim()) {
+			editingChatId = null;
+			return;
+		}
+		try {
+			const res = await fetch(`/api/chats/${editingChatId}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ title: editingTitle })
+			});
+			if (res.ok) {
+				const updated = await res.json();
+				chats = chats.map(c => c.id === editingChatId ? updated : c);
+			}
+		} catch (e) {
+			console.error('Failed to rename chat', e);
+		} finally {
+			editingChatId = null;
 		}
 	}
 
@@ -112,8 +182,19 @@
 		if (fileInputEl) fileInputEl.value = '';
 	}
 
+	function focus(node: HTMLInputElement) {
+		node.focus();
+	}
+
 	// ── SSE Send ──────────────────────────────────────────────────────────────
-	async function sendMessage() {
+	async function logout() {
+		const res = await fetch('/api/auth/logout', { method: 'POST' });
+		if (res.ok) {
+			window.location.href = '/login';
+		}
+	}
+ 
+ 	async function sendMessage() {
 		const text = inputValue.trim();
 		if (!text || isLoading) return;
 
@@ -277,25 +358,86 @@
 			Новый чат
 		</button>
 
-		<div class="chat-list">
-			{#if chats.length === 0}
-				<div class="chat-list-empty">Нет чатов. Создайте первый!</div>
+		<div class="sidebar-content">
+			{#if pinnedChats.length > 0}
+				<div class="chat-section-label">Закрепленные</div>
+				<div class="chat-list pinned">
+					{#each pinnedChats as chat (chat.id)}
+						{@render chatItem(chat)}
+					{/each}
+				</div>
 			{/if}
-			{#each chats as chat (chat.id)}
+
+			<div class="chat-section-label">{pinnedChats.length > 0 ? 'Все чаты' : 'Чаты'}</div>
+			<div class="chat-list">
+				{#if chats.length === 0}
+					<div class="chat-list-empty">Нет чатов. Создайте первый!</div>
+				{/if}
+				{#each otherChats as chat (chat.id)}
+					{@render chatItem(chat)}
+				{/each}
+			</div>
+		</div>
+
+		{#snippet chatItem(chat: Chat)}
+			<div class="chat-item-wrapper" class:active={chat.id === activeChatId}>
 				<button
 					class="chat-item"
-					class:active={chat.id === activeChatId}
 					onclick={() => selectChat(chat.id)}
 				>
 					<svg class="chat-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 						<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
 					</svg>
-					<span class="chat-title">{chat.title}</span>
+					{#if editingChatId === chat.id}
+						<input
+							type="text"
+							class="edit-title-input"
+							bind:value={editingTitle}
+							onkeydown={(e) => e.key === 'Enter' && saveTitle()}
+							onblur={saveTitle}
+							use:focus
+						/>
+					{:else}
+						<span class="chat-title">{chat.title}</span>
+					{/if}
 				</button>
-			{/each}
-		</div>
+				
+				<div class="chat-actions">
+					<button class="action-btn" onclick={() => pinChat(chat)} title={chat.isPinned ? "Открепить" : "Закрепить"}>
+						<svg width="12" height="12" viewBox="0 0 24 24" fill={chat.isPinned ? "currentColor" : "none"} stroke="currentColor" stroke-width="2">
+							<path d="M21 10V8l-2.09-.41A3 3 0 0 1 17 4.68V3h-1v1.68a3 3 0 0 1-1.91 2.91L12 8v2l2.09.41A3 3 0 0 1 16 13.32V15h1v-1.68a3 3 0 0 1 1.91-2.91L21 10zM12 15h10M16.5 15v6"/>
+						</svg>
+					</button>
+					<button class="action-btn" onclick={() => startEditing(chat)} title="Переименовать">
+						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
+						</svg>
+					</button>
+					<button class="action-btn delete" onclick={() => deleteChat(chat.id)} title="Удалить">
+						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+						</svg>
+					</button>
+				</div>
+			</div>
+		{/snippet}
 
 		<div class="sidebar-footer">
+			{#if data.user}
+				<div class="user-info">
+					<a href="/account" class="user-details-link">
+						<div class="user-details">
+							<span class="user-name">{data.user.name || 'Пользователь'}</span>
+							<span class="user-email">{data.user.email}</span>
+						</div>
+					</a>
+					<button class="logout-btn" onclick={logout} title="Выйти">
+						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>
+						</svg>
+					</button>
+				</div>
+			{/if}
 			<div class="model-badge">
 				<span class="model-dot"></span>
 				Gemini Flash + Pro
@@ -555,40 +697,152 @@
 .new-chat-btn:active { transform: translateY(0); }
 
 .chat-list {
-	flex: 1;
 	overflow-y: auto;
 	padding: 0.25rem 0.5rem;
 }
 
-.chat-list-empty {
-	padding: 2rem 1rem;
-	text-align: center;
+.chat-section-label {
+	padding: 1rem 1rem 0.5rem;
+	font-size: 0.7rem;
+	font-weight: 700;
 	color: var(--text-muted);
-	font-size: 0.8rem;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.chat-item-wrapper {
+	display: flex;
+	align-items: center;
+	padding-right: 0.5rem;
+	border-radius: var(--radius-md);
+	transition: background var(--transition-fast);
+	margin-bottom: 2px;
+}
+
+.chat-item-wrapper:hover {
+	background: var(--bg-elevated);
+}
+
+.chat-item-wrapper.active {
+	background: var(--bg-elevated);
+}
+
+.chat-item-wrapper.active .chat-title {
+	color: var(--text-primary);
+	font-weight: 600;
 }
 
 .chat-item {
 	display: flex;
 	align-items: center;
 	gap: 0.5rem;
-	width: 100%;
+	flex: 1;
 	padding: 0.55rem 0.75rem;
 	background: transparent;
 	border: none;
-	border-radius: var(--radius-md);
 	color: var(--text-secondary);
 	font-size: 0.83rem;
 	text-align: left;
 	cursor: pointer;
-	transition: background var(--transition-fast), color var(--transition-fast);
 	white-space: nowrap;
 	overflow: hidden;
 }
-.chat-item:hover { background: var(--bg-elevated); color: var(--text-primary); }
-.chat-item.active {
+
+.chat-actions {
+	display: flex;
+	gap: 0.25rem;
+	opacity: 0;
+	transition: opacity var(--transition-fast);
+}
+
+.chat-item-wrapper:hover .chat-actions {
+	opacity: 1;
+}
+
+.action-btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	border: none;
+	background: transparent;
+	color: var(--text-muted);
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+	transition: all var(--transition-fast);
+}
+
+.action-btn:hover {
+	background: var(--bg-base);
+	color: var(--text-primary);
+}
+
+.action-btn.delete:hover {
+	color: #ef4444;
+}
+
+.edit-title-input {
+	background: var(--bg-base);
+	border: 1px solid var(--accent-primary);
+	border-radius: var(--radius-sm);
+	color: var(--text-primary);
+	font-size: 0.83rem;
+	padding: 2px 4px;
+	width: 100%;
+}
+
+.sidebar-content {
+	flex: 1;
+	overflow-y: auto;
+}
+
+.user-info {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 0.75rem;
 	background: var(--bg-elevated);
-	color: var(--accent-primary);
+	border-radius: var(--radius-md);
+	margin-bottom: 0.75rem;
+}
+
+.user-details {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.user-name {
+	font-size: 0.85rem;
 	font-weight: 600;
+	color: var(--text-primary);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.user-email {
+	font-size: 0.7rem;
+	color: var(--text-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.logout-btn {
+	background: transparent;
+	border: none;
+	color: var(--text-muted);
+	cursor: pointer;
+	padding: 4px;
+	border-radius: var(--radius-sm);
+	transition: all var(--transition-fast);
+}
+
+.logout-btn:hover {
+	background: var(--bg-base);
+	color: var(--text-primary);
 }
 
 .chat-icon { flex-shrink: 0; }
@@ -1005,5 +1259,15 @@
 	color: var(--text-muted);
 	text-align: center;
 	letter-spacing: 0.02em;
+}
+.user-details-link {
+	text-decoration: none;
+	flex: 1;
+	min-width: 0;
+	display: block;
+}
+
+.user-details-link:hover .user-name {
+	text-decoration: underline;
 }
 </style>

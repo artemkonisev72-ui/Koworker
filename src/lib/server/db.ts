@@ -3,7 +3,7 @@
  * Prisma 7.x uses the driver adapter pattern.
  * PrismaPg requires a pg.Pool instance (not a raw config object).
  */
-import { PrismaClient } from '../../../generated/prisma/client.js';
+import { PrismaClient } from '../../../generated/prisma/index.js';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
 import { DATABASE_URL } from '$env/static/private';

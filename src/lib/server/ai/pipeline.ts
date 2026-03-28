@@ -15,7 +15,6 @@ import {
 	answerGeneralQuestion,
 	analyzeImage
 } from './gemini.js';
-import { assessComplexity } from './complexity.js';
 import { workerPool, SandboxError } from '../sandbox/worker-pool.js';
 
 export type PipelineStatus =
@@ -57,30 +56,25 @@ export async function runPipeline(
 			currentContext = `[ОПИСАНИЕ ИЗОБРАЖЕНИЯ]:\n${visionDescription}\n\n[ЗАПРОС ПОЛЬЗОВАТЕЛЯ]:\n${userMessage}`;
 		}
 
-		// ── Оценка сложности (мгновенно, без LLM) ────────────────────────────
-		const complexity = assessComplexity(currentContext);
-		console.log(`[Complexity] tier=${complexity.tier} score=${complexity.score} reason="${complexity.reason}"`);
-		const tier = complexity.tier;
-
 		// ── Шаг 1: Маршрутизация (Flash) ─────────────────────────────────────
 		console.log('[Pipeline] Step 1: routing...');
 		onStatus({ type: 'status', message: 'Анализ задачи...' });
-		const needsComputation = await routeQuestion(currentContext, tier);
+		const needsComputation = await routeQuestion(currentContext);
 		console.log('[Pipeline] Step 1 done: needsComputation =', needsComputation);
 
 		if (!needsComputation) {
 			console.log('[Pipeline] General question — calling answerGeneralQuestion');
 			onStatus({ type: 'status', message: 'Формирование ответа...' });
-			const answer = await answerGeneralQuestion(currentContext, tier);
+			const answer = await answerGeneralQuestion(currentContext);
 			console.log('[Pipeline] General answer received, length:', answer.length);
 			onStatus({ type: 'result', content: answer });
 			return;
 		}
 
-		// ── Шаг 2: Генерация кода (Pro/Flash по tier) ────────────────────────
+		// ── Шаг 2: Генерация кода (Pro) ──────────────────────────────────────
 		console.log('[Pipeline] Step 2: generating Python code...');
 		onStatus({ type: 'status', message: 'Генерация кода решения...' });
-		let pythonCode = await generatePythonCode(currentContext, tier);
+		let pythonCode = await generatePythonCode(currentContext);
 		console.log('[Pipeline] Step 2 done, code length:', pythonCode.length);
 
 		// ── Шаг 3: Выполнение в Sandbox + Retry ──────────────────────────────
@@ -94,7 +88,6 @@ export async function runPipeline(
 				onStatus({ type: 'status', message: `Исправление ошибки (попытка ${attempt}/${MAX_RETRIES})...` });
 				pythonCode = await generatePythonCode(
 					currentContext,
-					tier,
 					`Предыдущий код:\n\`\`\`python\n${pythonCode}\n\`\`\`\n\nОшибка:\n${lastError}`
 				);
 			}
@@ -150,8 +143,7 @@ export async function runPipeline(
 			: rawStdout;
 
 		const finalAnswer = await assembleFinalAnswer(
-			{ userMessage: currentContext, pythonCode, executionResult: executionSummary },
-			tier
+			{ userMessage: currentContext, pythonCode, executionResult: executionSummary }
 		);
 		console.log('[Pipeline] Step 4 done, answer length:', finalAnswer.length);
 
