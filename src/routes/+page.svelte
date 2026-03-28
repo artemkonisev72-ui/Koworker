@@ -262,87 +262,92 @@
 		messages = [...messages, assistantPlaceholder];
 		await scrollToBottom();
 
-		// Open SSE connection
-		const res = await fetch('/api/chat', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ 
-				chatId: activeChatId, 
-				message: text,
-				imageData: imageData
-			})
-		});
+		try {
+			// Open SSE connection
+			const res = await fetch('/api/chat', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ 
+					chatId: activeChatId, 
+					message: text,
+					imageData: imageData
+				})
+			});
 
-		if (!res.ok || !res.body) {
-			messages = messages.map((m) =>
-				m.id === assistantId
-					? { ...m, content: 'Ошибка соединения с сервером.', isStreaming: false }
-					: m
-			);
-			isLoading = false;
-			return;
-		}
+			if (!res.ok || !res.body) {
+				throw new Error(`HTTP ${res.status}: Ошибка сети или блокировка.`);
+			}
 
-		const reader = res.body.getReader();
-		const decoder = new TextDecoder();
-		let buffer = '';
+			const reader = res.body.getReader();
+			const decoder = new TextDecoder();
+			let buffer = '';
 
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
 
-			buffer += decoder.decode(value, { stream: true });
-			const lines = buffer.split('\n');
-			buffer = lines.pop() ?? '';
+				buffer += decoder.decode(value, { stream: true });
+				const lines = buffer.split('\n');
+				buffer = lines.pop() ?? '';
 
-			for (const line of lines) {
-				if (!line.startsWith('data: ')) continue;
-				const payload = line.slice(6).trim();
-				if (payload === '[DONE]') break;
+				for (const line of lines) {
+					if (!line.startsWith('data: ')) continue;
+					const payload = line.slice(6).trim();
+					if (payload === '[DONE]') break;
 
-				try {
-					const event = JSON.parse(payload) as {
-						type: string;
-						message?: string;
-						content?: string;
-						generatedCode?: string;
-						executionLogs?: string;
-						graphData?: GraphData[];
-						usedModels?: string[];
-					};
+					try {
+						const event = JSON.parse(payload) as {
+							type: string;
+							message?: string;
+							content?: string;
+							generatedCode?: string;
+							executionLogs?: string;
+							graphData?: GraphData[];
+							usedModels?: string[];
+						};
 
-					if (event.type === 'status') {
-						statusMessage = event.message ?? '';
-					} else if (event.type === 'result') {
-						messages = messages.map((m) =>
-							m.id === assistantId
-								? {
-										...m,
-										content: event.content ?? '',
-										graphData: event.graphData ?? null,
-										isStreaming: false
-									}
-								: m
-						);
-						statusMessage = '';
-						await loadChats(); // Refresh sidebar titles
-						await scrollToBottom();
-					} else if (event.type === 'error') {
-						messages = messages.map((m) =>
-							m.id === assistantId
-								? { ...m, content: `⚠️ ${event.message}`, isStreaming: false }
-								: m
-						);
-						statusMessage = '';
-						await scrollToBottom();
+						if (event.type === 'status') {
+							statusMessage = event.message ?? '';
+						} else if (event.type === 'result') {
+							messages = messages.map((m) =>
+								m.id === assistantId
+									? {
+											...m,
+											content: event.content ?? '',
+											graphData: event.graphData ?? null,
+											isStreaming: false
+										}
+									: m
+							);
+							statusMessage = '';
+							await loadChats(); // Refresh sidebar titles
+							await scrollToBottom();
+						} else if (event.type === 'error') {
+							messages = messages.map((m) =>
+								m.id === assistantId
+									? { ...m, content: `⚠️ ${event.message}`, isStreaming: false }
+									: m
+							);
+							statusMessage = '';
+							await scrollToBottom();
+						}
+					} catch {
+						// JSON parse error — skip the line
 					}
-				} catch {
-					// JSON parse error — skip the line
 				}
 			}
+		} catch (error) {
+			console.error('Chat error:', error);
+			messages = messages.map((m) =>
+				m.id === assistantId
+					? { ...m, content: `⚠️ Проблема с сетью: ${error instanceof Error ? error.message : String(error)}`, isStreaming: false }
+					: m
+			);
+		} finally {
+			isLoading = false;
+			statusMessage = '';
+			await scrollToBottom();
 		}
-
-		isLoading = false;
 	}
 
 	function handleKeydown(e: KeyboardEvent) {

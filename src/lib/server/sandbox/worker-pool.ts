@@ -11,13 +11,20 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 
 import fs from 'node:fs';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.NODE_ENV !== 'production';
 
-// Пытаемся найти скомпилированный JS воркер. 
-// Если его нет (например, на локальном компьютере), пробуем запустить .ts.
-const JS_WORKER = path.resolve(__dirname, 'pyodide-worker.js');
-const TS_WORKER = path.resolve(__dirname, 'pyodide-worker.ts');
+// Ищем воркер сначала рядом с этим файлом, а затем жестко от корня проекта (для production)
+let JS_WORKER = path.resolve(__dirname, 'pyodide-worker.js');
+if (!fs.existsSync(JS_WORKER)) {
+	JS_WORKER = path.resolve(process.cwd(), 'src/lib/server/sandbox/pyodide-worker.js');
+}
+
+let TS_WORKER = path.resolve(__dirname, 'pyodide-worker.ts');
+if (!fs.existsSync(TS_WORKER)) {
+	TS_WORKER = path.resolve(process.cwd(), 'src/lib/server/sandbox/pyodide-worker.ts');
+}
 
 const WORKER_SCRIPT = fs.existsSync(JS_WORKER) ? JS_WORKER : TS_WORKER;
 
@@ -118,7 +125,11 @@ class WorkerPool {
 				promise.reject(new SandboxError(`Worker crashed: ${err.message}`));
 			}
 			entry.pending.clear();
-			this.recycleEntry(entry);
+			
+			// Задержка 1000мс: защита от бесконечного синхронного цикла падений при ENOENT
+			setTimeout(() => {
+				this.recycleEntry(entry);
+			}, 1000);
 		});
 
 		return entry;
