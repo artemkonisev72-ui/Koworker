@@ -38,12 +38,19 @@
 			axis: true,
 			grid: true,
 			showCopyright: false,
-			showNavigation: false
+			showNavigation: false,
+			showInfobox: true,
+			showScreenshot: false
 		});
 
 		// Override board colors for theme
 		board.options.grid.strokeColor = 'var(--border-subtle)';
 		board.options.axis.strokeColor = 'var(--border-medium)';
+		
+		// Style infobox (the tooltip)
+		board.options.infobox.strokeColor = 'var(--text-primary)';
+		board.options.infobox.fillColor = 'var(--bg-elevated)';
+		board.options.infobox.fontSize = 12;
 
 		// Plot the curve - Monochrome
 		board.create(
@@ -52,7 +59,9 @@
 			{
 				strokeColor: 'var(--text-primary)',
 				strokeWidth: 2.5,
-				highlight: false
+				highlight: true,
+				highlightStrokeColor: 'var(--accent-primary)',
+				highlightStrokeWidth: 3
 			}
 		);
 	});
@@ -99,5 +108,18 @@
 	.graph-board {
 		width: 100%;
 		height: 300px;
+	}
+
+	:global(.jxgbox_infobox) {
+		background-color: var(--bg-elevated) !important;
+		border: 1px solid var(--border-subtle) !important;
+		padding: 4px 8px !important;
+		border-radius: 4px !important;
+		font-family: var(--font-mono) !important;
+		font-size: 11px !important;
+		color: var(--text-primary) !important;
+		box-shadow: var(--shadow-sm) !important;
+		backdrop-filter: blur(4px);
+		z-index: 100 !important;
 	}
 </style>
