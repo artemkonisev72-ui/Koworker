@@ -62,23 +62,67 @@
 
 		// Если это эпюра (diagram), заштриховываем область между кривой и осью X
 		if (type === 'diagram') {
-			const xCoords = points.map(p => p.x);
-			const yCoords = points.map(p => p.y);
+			const xCoords = points.map((p) => p.x);
 			
 			// Создаем полигон: (x[0], 0) -> (x[0], y[0]) -> ... -> (x[n], y[n]) -> (x[n], 0)
-			board.create('polygon', [
-				[xCoords[0], 0],
-				...points.map(p => [p.x, p.y]),
-				[xCoords[xCoords.length - 1], 0]
-			], {
-				fillColor: 'var(--accent-primary)',
-				fillOpacity: 0.15,
-				withLines: false,
-				borders: { visible: false },
-				vertices: { visible: false },
-				highlight: false,
-				layer: 0 // Под линией графика и сеткой
-			});
+			board.create(
+				'polygon',
+				[
+					[xCoords[0], 0],
+					...points.map((p) => [p.x, p.y]),
+					[xCoords[xCoords.length - 1], 0]
+				],
+				{
+					fillColor: 'var(--accent-primary)',
+					fillOpacity: 0.15,
+					withLines: false,
+					borders: { visible: false },
+					vertices: { visible: false },
+					highlight: false,
+					layer: 0 // Под линией графика и сеткой
+				}
+			);
+
+			// Алгоритм расстановки знаков + и - по центрам регионов эпюры
+			const regions: { sign: number; points: GraphPoint[] }[] = [];
+			let currentRegion = { sign: 0, points: [] as GraphPoint[] };
+
+			for (const p of points) {
+				if (Math.abs(p.y) < 1e-6) continue; // Игнорируем точные нули
+				const sign = p.y > 0 ? 1 : -1;
+
+				if (currentRegion.sign === 0) {
+					currentRegion.sign = sign;
+					currentRegion.points.push(p);
+				} else if (currentRegion.sign === sign) {
+					currentRegion.points.push(p);
+				} else {
+					regions.push(currentRegion);
+					currentRegion = { sign, points: [p] };
+				}
+			}
+			if (currentRegion.points.length > 0) regions.push(currentRegion);
+
+			const heightThreshold = (yMax - yMin) * 0.05; // Порог для отсечения шума
+
+			for (const r of regions) {
+				let peak = r.points[0];
+				for (const p of r.points) {
+					if (Math.abs(p.y) > Math.abs(peak.y)) peak = p;
+				}
+
+				if (Math.abs(peak.y) > heightThreshold) {
+					board.create('text', [peak.x, peak.y / 2, r.sign > 0 ? '+' : '−'], {
+						fontSize: 28,
+						fontWeight: 'bold',
+						anchorX: 'middle',
+						anchorY: 'middle',
+						strokeColor: 'var(--text-primary)',
+						highlight: false,
+						cssClass: 'diagram-sign'
+					});
+				}
+			}
 		}
 
 		// Создаем Glider - точку, которая следует по кривой
@@ -181,5 +225,10 @@
 
 	:global(.jxgbox_infobox) {
 		display: none !important;
+	}
+	:global(.diagram-sign) {
+		user-select: none;
+		pointer-events: none;
+		opacity: 0.8;
 	}
 </style>

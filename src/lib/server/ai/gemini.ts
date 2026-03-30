@@ -123,7 +123,7 @@ async function generateWithFallback(
 }
 
 export async function routeQuestion(history: GeminiHistory[], userMessage: string, forcedModel?: string | null): Promise<{ result: boolean; model: GeminiModel }> {
-	const prompt = `Определи, является ли следующий вопрос математической или инженерной задачей. Ответь ТОЛЬКО: YES или NO.`;
+	const prompt = `Определи, является ли следующий вопрос математической или инженерной задачей (например, "построить эпюру", "нарисовать график", "найти напряжение" — это инженерная задача YES). Ответь ТОЛЬКО: YES или NO.`;
 	const messages = buildContext(history, prompt, `Вопрос: ${userMessage}`);
 	const { text, model } = await generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
 	return { result: text.trim().toUpperCase().startsWith('YES'), model };
@@ -139,11 +139,13 @@ export async function generatePythonCode(
 ПРАВИЛА:
 1. Используй ТОЛЬКО: math, sympy, numpy, json
 2. Результат ВСЕГДА выводи через print(json.dumps({...}))
-3. Для графиков используй "graphs": [{"title": "...", "type": "function" | "diagram", "points": [{"x":..., "y":...}, ...]}, ...]
-   - Используй "type": "diagram" для эпюр (сил, моментов, напряжений) — они будут заштрихованы.
-   - Используй "type": "function" для обычных математических функций.
-4. Для ответа используй "result"
-5. sympy для точности.`;
+3. ЗАПРЕЩЕНО рисовать графики и эпюры текстом (ASCII-art, палочками, минусами). За это строгий штраф.
+4. Для любых графиков и эпюр ОБЯЗАТЕЛЬНО рассчитывай массивы точек (x, y) и выводи их в JSON в ключ "graphs":
+   "graphs": [{"title": "...", "type": "function" | "diagram", "points": [{"x":..., "y":...}, ...]}, ...]
+   - "type": "diagram" — строго для инженерных эпюр (они автоматически заштрихуются в интерфейсе и получат знаки +/-)
+   - "type": "function" — для обычных функций.
+5. Для текстовой результирующей информации используй ключ "result".
+6. Используй sympy для математической точности и numpy для массивов (например np.linspace) при построении точек графиков.`;
 
 	let userContent = `Задача: ${userMessage}`;
 	if (retryContext) userContent += `\n\nИсправь ошибку:\n${retryContext}`;
