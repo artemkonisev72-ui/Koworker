@@ -35,6 +35,10 @@
 </div>
 
 <style>
+	:global(html), :global(body) {
+		overflow: auto !important;
+	}
+
 	.shared-container {
 		max-width: 900px;
 		margin: 0 auto;
