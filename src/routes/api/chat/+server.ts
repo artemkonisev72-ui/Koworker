@@ -54,6 +54,19 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 	const forcedModel = chat.modelPreference === 'auto' ? null : chat.modelPreference;
 
+	// Извлекаем историю сообщений для контекста (последние 20 сообщений)
+	const rawHistory = await prisma.message.findMany({
+		where: { chatId },
+		orderBy: { createdAt: 'asc' },
+		take: 20
+	});
+
+	const history = rawHistory.map((m) => ({
+		role: m.role as 'USER' | 'ASSISTANT',
+		content: m.content || '',
+		imageData: m.imageData ? JSON.parse(m.imageData) : undefined
+	}));
+
 	// Сохраняем сообщение пользователя
 	await prisma.message.create({
 		data: {
@@ -87,6 +100,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			// Запускаем пайплайн асинхронно
 			runPipeline(
 				message,
+				history,
 				async (event) => {
 					send(event);
 

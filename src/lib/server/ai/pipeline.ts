@@ -13,7 +13,8 @@ import {
 	generatePythonCode,
 	assembleFinalAnswer,
 	answerGeneralQuestion,
-	analyzeImage
+	analyzeImage,
+	type GeminiHistory
 } from './gemini.js';
 import { workerPool, SandboxError } from '../sandbox/worker-pool.js';
 
@@ -45,6 +46,7 @@ const MAX_RETRIES = 2;
 
 export async function runPipeline(
 	userMessage: string,
+	history: GeminiHistory[],
 	onStatus: (event: PipelineStatus) => void,
 	imageData?: { base64: string; mimeType: string },
 	forcedModel?: string | null
@@ -58,7 +60,7 @@ export async function runPipeline(
 		if (imageData) {
 			console.log('[Pipeline] Analyzing image...');
 			onStatus({ type: 'status', message: 'Анализ изображения...' });
-			const { text: visionDescription, model: visionModel } = await analyzeImage(imageData.base64, imageData.mimeType, forcedModel);
+			const { text: visionDescription, model: visionModel } = await analyzeImage(history, imageData.base64, imageData.mimeType, forcedModel);
 			usedModelsSet.add(`${visionModel} (Vision)`);
 			console.log('[Pipeline] Vision description received from', visionModel);
 			
@@ -69,14 +71,14 @@ export async function runPipeline(
 		// ── Шаг 1: Маршрутизация (Flash) ─────────────────────────────────────
 		console.log('[Pipeline] Step 1: routing...');
 		onStatus({ type: 'status', message: 'Анализ задачи...' });
-		const { result: needsComputation, model: routerModel } = await routeQuestion(currentContext, forcedModel);
+		const { result: needsComputation, model: routerModel } = await routeQuestion(history, currentContext, forcedModel);
 		usedModelsSet.add(`${routerModel} (Router)`);
 		console.log('[Pipeline] Step 1 done: needsComputation =', needsComputation);
 
 		if (!needsComputation) {
 			console.log('[Pipeline] General question — calling answerGeneralQuestion');
 			onStatus({ type: 'status', message: 'Формирование ответа...' });
-			const { text: answer, model: flashModel } = await answerGeneralQuestion(currentContext, forcedModel);
+			const { text: answer, model: flashModel } = await answerGeneralQuestion(history, currentContext, forcedModel);
 			usedModelsSet.add(`${flashModel} (Text)`);
 			onStatus({ type: 'result', content: answer, usedModels: Array.from(usedModelsSet) });
 			return;
@@ -85,7 +87,7 @@ export async function runPipeline(
 		// ── Шаг 2: Генерация кода (Pro) ──────────────────────────────────────
 		console.log('[Pipeline] Step 2: generating Python code...');
 		onStatus({ type: 'status', message: 'Генерация кода решения...' });
-		let { code: pythonCode, model: codeModel } = await generatePythonCode(currentContext, undefined, forcedModel);
+		let { code: pythonCode, model: codeModel } = await generatePythonCode(history, currentContext, undefined, forcedModel);
 		usedModelsSet.add(`${codeModel} (CodeGen)`);
 		console.log('[Pipeline] Step 2 done, code length:', pythonCode.length);
 
@@ -99,6 +101,7 @@ export async function runPipeline(
 				console.log(`[Pipeline] Retry ${attempt}/${MAX_RETRIES}, lastError:`, lastError?.slice(0, 200));
 				onStatus({ type: 'status', message: `Исправление ошибки (попытка ${attempt}/${MAX_RETRIES})...` });
 				const retryRes = await generatePythonCode(
+					history,
 					currentContext,
 					`Предыдущий код:\n\`\`\`python\n${pythonCode}\n\`\`\`\n\nОшибка:\n${lastError}`,
 					forcedModel
@@ -158,6 +161,7 @@ export async function runPipeline(
 			: rawStdout;
 
 		const { text: finalAnswer, model: assembleModel } = await assembleFinalAnswer(
+			history,
 			{ userMessage: currentContext, pythonCode, executionResult: executionSummary },
 			forcedModel
 		);

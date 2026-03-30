@@ -25,6 +25,33 @@ const FLASH_CHAIN: GeminiModel[] = [
 	'gemini-2.5-flash-lite'
 ];
 
+export interface GeminiHistory {
+	role: 'USER' | 'ASSISTANT';
+	content: string;
+	imageData?: { base64: string; mimeType: string };
+}
+
+function buildContext(history: GeminiHistory[], systemPrompt: string, currentQuestion: string): GeminiMessage[] {
+	const messages: GeminiMessage[] = history.filter(h => h.content).map((h) => {
+		const parts: any[] = [{ text: h.content }];
+		if (h.imageData) {
+			parts.push({ inlineData: { mimeType: h.imageData.mimeType, data: h.imageData.base64 } });
+		}
+		return {
+			role: h.role === 'USER' ? 'user' : 'model',
+			parts
+		};
+	});
+
+	const finalPromptText = currentQuestion ? `${systemPrompt}\n\n${currentQuestion}` : systemPrompt;
+	messages.push({
+		role: 'user',
+		parts: [{ text: finalPromptText }]
+	});
+
+	return messages;
+}
+
 const PRO_CHAIN: GeminiModel[] = [
 	'gemini-3.1-pro-preview',
 	'gemini-3-pro-preview',
@@ -95,13 +122,15 @@ async function generateWithFallback(
 	throw new Error(`[Gemini] All models exhausted for ${forcedModel || 'chain'}`);
 }
 
-export async function routeQuestion(userMessage: string, forcedModel?: string | null): Promise<{ result: boolean; model: GeminiModel }> {
-	const prompt = `Определи, является ли следующий вопрос математической или инженерной задачей. Ответь ТОЛЬКО: YES или NO.\n\nВопрос: ${userMessage}`;
-	const { text, model } = await generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, [{ role: 'user', parts: [{ text: prompt }] }], forcedModel);
+export async function routeQuestion(history: GeminiHistory[], userMessage: string, forcedModel?: string | null): Promise<{ result: boolean; model: GeminiModel }> {
+	const prompt = `Определи, является ли следующий вопрос математической или инженерной задачей. Ответь ТОЛЬКО: YES или NO.`;
+	const messages = buildContext(history, prompt, `Вопрос: ${userMessage}`);
+	const { text, model } = await generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
 	return { result: text.trim().toUpperCase().startsWith('YES'), model };
 }
 
 export async function generatePythonCode(
+	history: GeminiHistory[],
 	userMessage: string,
 	retryContext?: string,
 	forcedModel?: string | null
@@ -119,32 +148,34 @@ export async function generatePythonCode(
 	let userContent = `Задача: ${userMessage}`;
 	if (retryContext) userContent += `\n\nИсправь ошибку:\n${retryContext}`;
 
-	const { text, model } = await generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, [{ role: 'user', parts: [{ text: systemPrompt + '\n\n' + userContent }] }], forcedModel);
+	const messages = buildContext(history, systemPrompt, userContent);
+	const { text, model } = await generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, forcedModel);
 	const codeMatch = text.match(/```python\n([\s\S]*?)```/);
 	return { code: codeMatch ? codeMatch[1].trim() : text.trim(), model };
 }
 
 export async function assembleFinalAnswer(
+	history: GeminiHistory[],
 	params: { userMessage: string; pythonCode: string; executionResult: string },
 	forcedModel?: string | null
 ): Promise<{ text: string; model: GeminiModel }> {
 	const prompt = `Представь решение в академическом виде: Дано / Решение / Ответ.
 Используй только эти данные: ${params.executionResult}
-Формулы в LaTeX. Не показывай Python-код.\n\nЗадача: ${params.userMessage}`;
+Формулы в LaTeX. Не показывай Python-код.`;
+	const messages = buildContext(history, prompt, `Задача: ${params.userMessage}`);
 
-	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, [{ role: 'user', parts: [{ text: prompt }] }], forcedModel);
+	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
 }
 
-export async function answerGeneralQuestion(userMessage: string, forcedModel?: string | null): Promise<{ text: string; model: GeminiModel }> {
-	const prompt = `Ответь максимально понятно и академично. LaTeX для формул.\n\nВопрос: ${userMessage}`;
-	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, [{ role: 'user', parts: [{ text: prompt }] }], forcedModel);
+export async function answerGeneralQuestion(history: GeminiHistory[], userMessage: string, forcedModel?: string | null): Promise<{ text: string; model: GeminiModel }> {
+	const prompt = `Ответь максимально понятно и академично. LaTeX для формул.`;
+	const messages = buildContext(history, prompt, `Вопрос: ${userMessage}`);
+	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
 }
 
-export async function analyzeImage(base64Data: string, mimeType: string, forcedModel?: string | null): Promise<{ text: string; model: GeminiModel }> {
+export async function analyzeImage(history: GeminiHistory[], base64Data: string, mimeType: string, forcedModel?: string | null): Promise<{ text: string; model: GeminiModel }> {
 	const prompt = `Проанализируй изображение. Извлеки условие и опиши схемы для решения.\nОтвет ТОЛЬКО текстом.`;
-	const messages: GeminiMessage[] = [{
-		role: 'user',
-		parts: [{ text: prompt }, { inlineData: { mimeType: mimeType, data: base64Data } }]
-	}];
+	const messages = buildContext(history, prompt, '');
+	messages[messages.length - 1].parts.push({ inlineData: { mimeType: mimeType, data: base64Data } });
 	return generateWithFallback(VISION_CHAIN[0], VISION_CHAIN, messages, forcedModel);
 }
