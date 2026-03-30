@@ -18,7 +18,7 @@
 		createdAt?: string;
 		isStreaming?: boolean;
 	}
-	interface Chat { id: string; title: string; updatedAt: string; isPinned: boolean; modelPreference: string; }
+	interface Chat { id: string; title: string; updatedAt: string; isPinned: boolean; modelPreference: string; isPublic: boolean; }
 
 	// ── Props ─────────────────────────────────────────────────────────────────
 	let { data }: { data: import('./$types').PageData } = $props();
@@ -40,6 +40,9 @@
 	let editingTitle = $state('');
 
 	// Derived
+	let isSharing = $state(false);
+	let copySuccess = $state(false);
+
 	let pinnedChats = $derived(chats.filter(c => c.isPinned));
 	let otherChats = $derived(chats.filter(c => !c.isPinned));
 	let activeChat = $derived(chats.find(c => c.id === activeChatId));
@@ -135,6 +138,32 @@
 		} finally {
 			editingChatId = null;
 		}
+	}
+
+	async function togglePublic() {
+		if (!activeChat) return;
+		const newStatus = !activeChat.isPublic;
+		try {
+			const res = await fetch(`/api/chats/${activeChatId}`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ isPublic: newStatus })
+			});
+			if (res.ok) {
+				const updated = await res.json();
+				chats = chats.map(c => c.id === activeChatId ? updated : c);
+			}
+		} catch (e) {
+			console.error('Failed to toggle public status', e);
+		}
+	}
+
+	function copyShareLink() {
+		const url = `${window.location.origin}/shared/${activeChatId}`;
+		navigator.clipboard.writeText(url).then(() => {
+			copySuccess = true;
+			setTimeout(() => (copySuccess = false), 2000);
+		});
 	}
 
 	async function updateModelPreference(preference: string) {
@@ -505,8 +534,56 @@
 					</span>
 				{/if}
 			</div>
-
 			<div class="model-selector">
+				{#if activeChatId}
+					<div class="share-container">
+						<button 
+							class="icon-btn share-btn" 
+							onclick={() => (isSharing = !isSharing)} 
+							title="Поделиться чатом"
+							aria-label="Поделиться чатом"
+							class:active={isSharing}
+						>
+							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+								<path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13"/>
+							</svg>
+						</button>
+
+						{#if isSharing}
+							<div class="share-menu">
+								<div class="share-menu-header">
+									<span>Публичный доступ</span>
+									<button 
+										class="toggle-switch" 
+										class:on={activeChat?.isPublic} 
+										onclick={togglePublic}
+										aria-label="Переключить публичный доступ"
+										title="Переключить публичный доступ"
+									></button>
+								</div>
+								
+								{#if activeChat?.isPublic}
+									<div class="share-link-box">
+										<input type="text" readonly value={`${window.location.origin}/shared/${activeChatId}`} />
+										<button class="copy-btn" onclick={copyShareLink} title="Копировать ссылку" aria-label="Копировать ссылку">
+											{#if copySuccess}
+												<span>✓</span>
+											{:else}
+												<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+													<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+												</svg>
+											{/if}
+										</button>
+									</div>
+									<p class="share-hint">Любой, у кого есть ссылка, сможет просматривать этот чат.</p>
+								{:else}
+									<p class="share-hint">Включите публичный доступ, чтобы создать ссылку на этот чат.</p>
+								{/if}
+							</div>
+						{/if}
+					</div>
+				{/if}
+
 				<select 
 					value={activeChat?.modelPreference || 'auto'} 
 					onchange={(e) => updateModelPreference(e.currentTarget.value)}
@@ -1384,4 +1461,120 @@
 .user-details-link:hover .user-name {
 	text-decoration: underline;
 }
+	.share-container {
+		position: relative;
+	}
+
+	.share-menu {
+		position: absolute;
+		top: calc(100% + 0.5rem);
+		right: 0;
+		width: 280px;
+		background: var(--bg-card);
+		border: 1px solid var(--border-medium);
+		border-radius: var(--radius-lg);
+		padding: 1rem;
+		box-shadow: var(--shadow-lg);
+		z-index: 100;
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		animation: scaleIn 0.2s ease;
+	}
+
+	.share-menu-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		font-size: 0.85rem;
+		font-weight: 600;
+	}
+
+	.toggle-switch {
+		width: 36px;
+		height: 20px;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-medium);
+		border-radius: 10px;
+		position: relative;
+		cursor: pointer;
+		transition: all 0.2s;
+	}
+
+	.toggle-switch::after {
+		content: '';
+		position: absolute;
+		left: 2px;
+		top: 2px;
+		width: 14px;
+		height: 14px;
+		background: var(--text-muted);
+		border-radius: 50%;
+		transition: all 0.2s;
+	}
+
+	.toggle-switch.on {
+		background: var(--success);
+		border-color: var(--success);
+	}
+
+	.toggle-switch.on::after {
+		left: 18px;
+		background: white;
+	}
+
+	.share-link-box {
+		display: flex;
+		gap: 0.5rem;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-sm);
+		padding: 0.25rem;
+	}
+
+	.share-link-box input {
+		flex: 1;
+		background: transparent;
+		border: none;
+		outline: none;
+		font-size: 0.75rem;
+		color: var(--text-secondary);
+		padding: 0.25rem;
+		min-width: 0;
+	}
+
+	.copy-btn {
+		width: 28px;
+		height: 28px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+		color: var(--text-secondary);
+		cursor: pointer;
+	}
+
+	.copy-btn:hover {
+		background: var(--bg-card);
+		color: var(--accent-primary);
+	}
+
+	.share-hint {
+		font-size: 0.7rem;
+		color: var(--text-muted);
+		line-height: 1.4;
+		margin: 0;
+	}
+
+	@keyframes scaleIn {
+		from { opacity: 0; transform: scale(0.95) translateY(-10px); }
+		to { opacity: 1; transform: scale(1) translateY(0); }
+	}
+
+	.header-title {
+		flex: 1;
+		min-width: 0;
+	}
 </style>

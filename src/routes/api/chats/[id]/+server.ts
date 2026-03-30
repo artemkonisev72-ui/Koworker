@@ -7,7 +7,7 @@ export const PATCH: RequestHandler = async ({ params, locals, request }) => {
 	if (!locals.user) return error(401, 'Unauthorized');
 
 	const { id } = params;
-	const body = await request.json() as { title?: string; isPinned?: boolean; modelPreference?: string };
+	const body = await request.json() as { title?: string; isPinned?: boolean; modelPreference?: string; isPublic?: boolean };
 
 	const chat = await prisma.chat.findUnique({ where: { id: id } });
 
@@ -19,7 +19,8 @@ export const PATCH: RequestHandler = async ({ params, locals, request }) => {
 		data: {
 			title: body.title !== undefined ? body.title : undefined,
 			isPinned: body.isPinned !== undefined ? body.isPinned : undefined,
-			modelPreference: body.modelPreference !== undefined ? body.modelPreference : undefined
+			modelPreference: body.modelPreference !== undefined ? body.modelPreference : undefined,
+			isPublic: body.isPublic !== undefined ? body.isPublic : undefined
 		}
 	});
 

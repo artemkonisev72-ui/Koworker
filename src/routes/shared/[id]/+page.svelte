@@ -1,0 +1,114 @@
+<script lang="ts">
+	import MessageRenderer from '$lib/components/MessageRenderer.svelte';
+	import type { PageData } from './$types';
+
+	let { data }: { data: PageData } = $props();
+</script>
+
+<svelte:head>
+	<title>{data.chat.title} — CoWorker Shared</title>
+</svelte:head>
+
+<div class="shared-container">
+	<header class="shared-header">
+		<div class="header-content">
+			<div class="logo">
+				<span class="logo-text">CoWorker</span>
+				<span class="badge">SHARED</span>
+			</div>
+			<h1>{data.chat.title}</h1>
+			<div class="meta">
+				Создано: {new Date(data.chat.createdAt).toLocaleDateString()}
+			</div>
+		</div>
+	</header>
+
+	<main class="message-list">
+		{#each data.messages as message}
+			<MessageRenderer {message} />
+		{/each}
+	</main>
+
+	<footer class="shared-footer">
+		<p>Это публичная копия чата. Чтобы создать свой проект, <a href="/login">войдите в систему</a>.</p>
+	</footer>
+</div>
+
+<style>
+	.shared-container {
+		max-width: 900px;
+		margin: 0 auto;
+		padding: 2rem 1rem;
+		min-height: 100vh;
+		display: flex;
+		flex-direction: column;
+	}
+
+	.shared-header {
+		margin-bottom: 2rem;
+		padding-bottom: 1.5rem;
+		border-bottom: 1px solid var(--border-subtle);
+	}
+
+	.header-content {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.logo {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		margin-bottom: 0.5rem;
+	}
+
+	.logo-text {
+		font-weight: 800;
+		letter-spacing: -0.02em;
+		font-size: 1.25rem;
+	}
+
+	.badge {
+		font-size: 0.65rem;
+		font-weight: 700;
+		padding: 2px 6px;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-medium);
+		border-radius: 4px;
+		color: var(--text-secondary);
+	}
+
+	h1 {
+		font-size: 1.5rem;
+		font-weight: 700;
+		margin: 0;
+	}
+
+	.meta {
+		font-size: 0.875rem;
+		color: var(--text-tertiary);
+	}
+
+	.message-list {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		gap: 1.5rem;
+	}
+
+	.shared-footer {
+		margin-top: 4rem;
+		padding: 2rem 0;
+		text-align: center;
+		border-top: 1px solid var(--border-subtle);
+		color: var(--text-tertiary);
+		font-size: 0.875rem;
+	}
+
+	.shared-footer a {
+		color: var(--accent-primary);
+		text-decoration: underline;
+		font-weight: 500;
+	}
+</style>
