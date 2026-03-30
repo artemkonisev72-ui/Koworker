@@ -155,9 +155,22 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 };
 
 // ── GET /api/chat?chatId=xxx — история сообщений ──────────────────────────────
-export const GET: RequestHandler = async ({ url }) => {
+export const GET: RequestHandler = async ({ url, locals }) => {
 	const chatId = url.searchParams.get('chatId');
 	if (!chatId) return error(400, 'chatId is required');
+
+	const chat = await prisma.chat.findUnique({
+		where: { id: chatId },
+		select: { userId: true, isPublic: true }
+	});
+
+	if (!chat) return error(404, 'Chat not found');
+
+	// Разрешить доступ если чат публичный или если пользователь авторизован и это его чат
+	if (!chat.isPublic) {
+		if (!locals.user) return error(401, 'Unauthorized');
+		if (chat.userId !== locals.user.id) return error(403, 'Forbidden');
+	}
 
 	const messages = await prisma.message.findMany({
 		where: { chatId },
