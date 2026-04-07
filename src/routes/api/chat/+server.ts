@@ -106,6 +106,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 					// Сохраняем финальный ответ в БД
 					if (event.type === 'result') {
+						if (request.signal.aborted) {
+							console.log('[SSE] Request aborted, skipping DB save for result');
+							return;
+						}
 						try {
 							await prisma.message.create({
 								data: {

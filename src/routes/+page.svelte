@@ -254,6 +254,27 @@
 		return 'temp-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
 	}
 
+ 	async function deleteMessage(msgId: string) {
+		if (!confirm('Удалить это сообщение?')) return;
+		try {
+			const res = await fetch(`/api/messages/${msgId}`, { method: 'DELETE' });
+			if (res.ok) {
+				messages = messages.filter(m => m.id !== msgId);
+			}
+		} catch (e) {
+			console.error('Failed to delete message', e);
+		}
+	}
+
+	let abortController: AbortController | null = null;
+
+	function cancelGeneration() {
+		if (abortController) {
+			abortController.abort();
+			abortController = null;
+		}
+	}
+
  	async function sendMessage() {
 		const text = inputValue.trim();
 		if (!text || isLoading) return;
@@ -292,6 +313,7 @@
 		await scrollToBottom();
 
 		try {
+			abortController = new AbortController();
 			// Open SSE connection
 			const res = await fetch('/api/chat', {
 				method: 'POST',
@@ -300,7 +322,8 @@
 					chatId: activeChatId, 
 					message: text,
 					imageData: imageData
-				})
+				}),
+				signal: abortController.signal
 			});
 
 			if (!res.ok || !res.body) {
@@ -366,15 +389,23 @@
 				}
 			}
 		} catch (error) {
-			console.error('Chat error:', error);
-			messages = messages.map((m) =>
-				m.id === assistantId
-					? { ...m, content: `⚠️ Проблема с сетью: ${error instanceof Error ? error.message : String(error)}`, isStreaming: false }
-					: m
-			);
+			if (error instanceof Error && error.name === 'AbortError') {
+				console.log('Request aborted by user');
+				messages = messages.map((m) =>
+					m.id === assistantId ? { ...m, isStreaming: false } : m
+				);
+			} else {
+				console.error('Chat error:', error);
+				messages = messages.map((m) =>
+					m.id === assistantId
+						? { ...m, content: `⚠️ Проблема с сетью: ${error instanceof Error ? error.message : String(error)}`, isStreaming: false }
+						: m
+				);
+			}
 		} finally {
 			isLoading = false;
 			statusMessage = '';
+			abortController = null;
 			await scrollToBottom();
 		}
 	}
@@ -686,6 +717,14 @@
 							{#if msg.role === 'USER'}
 								<div class="avatar user-avatar">Вы</div>
 							{/if}
+
+							{#if !msg.isStreaming}
+								<button class="delete-msg-btn" onclick={() => deleteMessage(msg.id)} title="Удалить сообщение">
+									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+										<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+									</svg>
+								</button>
+							{/if}
 						</div>
 					{/each}
 					<div bind:this={messagesEnd}></div>
@@ -743,20 +782,26 @@
 					></textarea>
 				</div>
 
-				<button
-					class="send-btn"
-					onclick={sendMessage}
-					disabled={isLoading || !inputValue.trim()}
-					title="Отправить"
-				>
-					{#if isLoading}
-						<span class="spinner"></span>
-					{:else}
+				{#if isLoading}
+					<button
+						class="send-btn stop-btn"
+						onclick={cancelGeneration}
+						title="Остановить генерацию"
+					>
+						<span class="stop-icon"></span>
+					</button>
+				{:else}
+					<button
+						class="send-btn"
+						onclick={sendMessage}
+						disabled={!inputValue.trim()}
+						title="Отправить"
+					>
 						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
 							<path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/>
 						</svg>
-					{/if}
-				</button>
+					</button>
+				{/if}
 			</div>
 
 			<div class="input-hint">
@@ -1216,10 +1261,30 @@
 	gap: 0.75rem;
 	align-items: flex-start;
 	animation: fadeInUp 0.25s ease;
+	position: relative;
 }
 
 .message-wrapper.user {
 	flex-direction: row-reverse;
+}
+
+.delete-msg-btn {
+	opacity: 0;
+	transition: opacity var(--transition-fast);
+	border: none;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	padding: 4px;
+	border-radius: 4px;
+	margin-top: 6px;
+}
+.delete-msg-btn:hover {
+	color: var(--error);
+	background: var(--bg-elevated);
+}
+.message-wrapper:hover .delete-msg-btn {
+	opacity: 1;
 }
 
 .avatar {
@@ -1462,15 +1527,6 @@
 .send-btn:hover:not(:disabled) { opacity: 0.9; transform: scale(1.05); }
 .send-btn:active:not(:disabled) { transform: scale(0.95); }
 .send-btn:disabled { opacity: 0.3; cursor: not-allowed; box-shadow: none; }
-
-.spinner {
-	width: 16px; height: 16px;
-	border: 2px solid rgba(255,255,255,0.3);
-	border-top-color: white;
-	border-radius: 50%;
-	animation: spin 0.7s linear infinite;
-}
-
 .input-hint {
 	margin-top: 0.5rem;
 	font-size: 0.7rem;
