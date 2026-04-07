@@ -7,7 +7,7 @@
 
 <svelte:head>
 	<link rel="icon" href={favicon} />
-	<title>CoWorker AI — Точные науки</title>
+	<title>Koworker AI — Точные науки</title>
 	<meta name="description" content="AI-ассистент для решения инженерных и математических задач" />
 </svelte:head>
 

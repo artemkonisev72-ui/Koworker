@@ -5,8 +5,8 @@
 <div class="auth-container">
 	<div class="auth-card">
 		<header class="auth-header">
-			<span class="auth-logo">⚛</span>
-			<h1>Вход в CoWorker</h1>
+			<img src="/favicon.svg" alt="Auth Logo" class="auth-logo" />
+			<h1>Вход в Koworker</h1>
 			<p>С возвращением! Войдите в свою учетную запись.</p>
 		</header>
 
@@ -58,9 +58,10 @@
 		margin-bottom: 2rem;
 	}
 	.auth-logo {
-		font-size: 2.5rem;
-		line-height: 1;
-		margin-bottom: 0.5rem;
+		width: 48px;
+		height: 48px;
+		object-fit: contain;
+		margin: 0 auto 0.5rem;
 		display: block;
 	}
 	.auth-header h1 {

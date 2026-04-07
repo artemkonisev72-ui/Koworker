@@ -6,14 +6,15 @@
 </script>
 
 <svelte:head>
-	<title>{data.chat.title} — CoWorker Shared</title>
+	<title>{data.chat.title} — Koworker Shared</title>
 </svelte:head>
 
 <div class="shared-container">
 	<header class="shared-header">
 		<div class="header-content">
 			<div class="logo">
-				<span class="logo-text">CoWorker</span>
+				<img src="/favicon.svg" alt="Koworker Logo" width="24" height="24" style="object-fit: contain;" />
+				<span class="logo-text">Koworker</span>
 				<span class="badge">SHARED</span>
 			</div>
 			<h1>{data.chat.title}</h1>

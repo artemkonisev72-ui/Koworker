@@ -5,7 +5,7 @@
 <div class="auth-container">
 	<div class="auth-card">
 		<header class="auth-header">
-			<span class="auth-logo">⚛</span>
+			<img src="/favicon.svg" alt="Auth Logo" class="auth-logo" />
 			<h1>Регистрация</h1>
 			<p>Создайте аккаунт, чтобы сохранять свои чаты и настройки.</p>
 		</header>
@@ -64,9 +64,10 @@
 		margin-bottom: 2rem;
 	}
 	.auth-logo {
-		font-size: 2.5rem;
-		line-height: 1;
-		margin-bottom: 0.5rem;
+		width: 48px;
+		height: 48px;
+		object-fit: contain;
+		margin: 0 auto 0.5rem;
 		display: block;
 	}
 	.auth-header h1 {

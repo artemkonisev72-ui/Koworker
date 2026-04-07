@@ -53,15 +53,15 @@ export async function runPipeline(
 ): Promise<void> {
 	console.log('[Pipeline] START message:', userMessage.slice(0, 80), '| forcedModel:', forcedModel);
 	let currentContext = userMessage;
-	const usedModelsSet = new Set<string>();
+	const usedModelsList: string[] = [];
 
 	try {
 		// ── Шаг 0: Анализ изображения (Vision) ──────────────────────────────
 		if (imageData) {
 			console.log('[Pipeline] Analyzing image...');
 			onStatus({ type: 'status', message: 'Анализ изображения...' });
-			const { text: visionDescription, model: visionModel } = await analyzeImage(history, imageData.base64, imageData.mimeType, forcedModel);
-			usedModelsSet.add(`${visionModel} (Vision)`);
+			const { text: visionDescription, model: visionModel, tokens: visionTokens } = await analyzeImage(history, imageData.base64, imageData.mimeType, forcedModel);
+			usedModelsList.push(`${visionModel} (Vision): ${visionTokens.toLocaleString('ru-RU')} токенов`);
 			console.log('[Pipeline] Vision description received from', visionModel);
 			
 			// Склеиваем описание картинки с текстом пользователя
@@ -71,24 +71,24 @@ export async function runPipeline(
 		// ── Шаг 1: Маршрутизация (Flash) ─────────────────────────────────────
 		console.log('[Pipeline] Step 1: routing...');
 		onStatus({ type: 'status', message: 'Анализ задачи...' });
-		const { result: needsComputation, model: routerModel } = await routeQuestion(history, currentContext, forcedModel);
-		usedModelsSet.add(`${routerModel} (Router)`);
+		const { result: needsComputation, model: routerModel, tokens: routerTokens } = await routeQuestion(history, currentContext, forcedModel);
+		usedModelsList.push(`${routerModel} (Router): ${routerTokens.toLocaleString('ru-RU')} токенов`);
 		console.log('[Pipeline] Step 1 done: needsComputation =', needsComputation);
 
 		if (!needsComputation) {
 			console.log('[Pipeline] General question — calling answerGeneralQuestion');
 			onStatus({ type: 'status', message: 'Формирование ответа...' });
-			const { text: answer, model: flashModel } = await answerGeneralQuestion(history, currentContext, forcedModel);
-			usedModelsSet.add(`${flashModel} (Text)`);
-			onStatus({ type: 'result', content: answer, usedModels: Array.from(usedModelsSet) });
+			const { text: answer, model: flashModel, tokens: textTokens } = await answerGeneralQuestion(history, currentContext, forcedModel);
+			usedModelsList.push(`${flashModel} (Text): ${textTokens.toLocaleString('ru-RU')} токенов`);
+			onStatus({ type: 'result', content: answer, usedModels: usedModelsList });
 			return;
 		}
 
 		// ── Шаг 2: Генерация кода (Pro) ──────────────────────────────────────
 		console.log('[Pipeline] Step 2: generating Python code...');
 		onStatus({ type: 'status', message: 'Генерация кода решения...' });
-		let { code: pythonCode, model: codeModel } = await generatePythonCode(history, currentContext, undefined, forcedModel);
-		usedModelsSet.add(`${codeModel} (CodeGen)`);
+		let { code: pythonCode, model: codeModel, tokens: codeTokens } = await generatePythonCode(history, currentContext, undefined, forcedModel);
+		usedModelsList.push(`${codeModel} (CodeGen): ${codeTokens.toLocaleString('ru-RU')} токенов`);
 		console.log('[Pipeline] Step 2 done, code length:', pythonCode.length);
 
 		// ── Шаг 3: Выполнение в Sandbox + Retry ──────────────────────────────
@@ -107,7 +107,7 @@ export async function runPipeline(
 					forcedModel
 				);
 				pythonCode = retryRes.code;
-				usedModelsSet.add(`${retryRes.model} (Fixer)`);
+				usedModelsList.push(`${retryRes.model} (Fixer): ${retryRes.tokens.toLocaleString('ru-RU')} токенов`);
 			}
 
 			console.log(`[Pipeline] Step 3: sandbox execute, attempt ${attempt}`);
@@ -160,12 +160,12 @@ export async function runPipeline(
 			? JSON.stringify(sandboxOutput, null, 2)
 			: rawStdout;
 
-		const { text: finalAnswer, model: assembleModel } = await assembleFinalAnswer(
+		const { text: finalAnswer, model: assembleModel, tokens: assembleTokens } = await assembleFinalAnswer(
 			history,
 			{ userMessage: currentContext, pythonCode, executionResult: executionSummary },
 			forcedModel
 		);
-		usedModelsSet.add(`${assembleModel} (Finalizer)`);
+		usedModelsList.push(`${assembleModel} (Finalizer): ${assembleTokens.toLocaleString('ru-RU')} токенов`);
 		console.log('[Pipeline] Step 4 done, answer length:', finalAnswer.length);
 
 		let graphData: GraphData[] | undefined = undefined;
@@ -181,7 +181,7 @@ export async function runPipeline(
 			generatedCode: pythonCode,
 			executionLogs: rawStdout,
 			graphData,
-			usedModels: Array.from(usedModelsSet)
+			usedModels: usedModelsList
 		});
 		console.log('[Pipeline] DONE');
 

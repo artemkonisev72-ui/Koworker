@@ -407,8 +407,8 @@
 	<aside class="sidebar" class:collapsed={!sidebarOpen}>
 		<div class="sidebar-header">
 			<div class="logo">
-				<span class="logo-icon">⚛</span>
-				<span class="logo-text">CoWorker AI</span>
+				<img src="/favicon.svg" alt="Koworker Logo" class="logo-icon" />
+				<span class="logo-text">Koworker AI</span>
 			</div>
 			<button class="icon-btn" onclick={() => (sidebarOpen = !sidebarOpen)} title="Свернуть">
 				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -784,11 +784,9 @@
 }
 
 .logo-icon {
-	font-size: 1.3rem;
-	background: var(--accent-gradient);
-	-webkit-background-clip: text;
-	-webkit-text-fill-color: transparent;
-	background-clip: text;
+	width: 24px;
+	height: 24px;
+	object-fit: contain;
 }
 
 .logo-text {

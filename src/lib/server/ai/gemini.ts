@@ -79,7 +79,7 @@ interface GeminiMessage {
 	}>;
 }
 
-async function generate(model: GeminiModel, messages: GeminiMessage[]): Promise<string> {
+async function generate(model: GeminiModel, messages: GeminiMessage[]): Promise<{ text: string; tokens: number }> {
 	// Официальный SDK ожидает contents в camelCase
 	const response = await ai.models.generateContent({
 		model: model,
@@ -90,7 +90,7 @@ async function generate(model: GeminiModel, messages: GeminiMessage[]): Promise<
 		throw new Error(`Gemini API returned empty text (Model: ${model})`);
 	}
 
-	return response.text;
+	return { text: response.text, tokens: response.usageMetadata?.totalTokenCount || 0 };
 }
 
 async function generateWithFallback(
@@ -98,7 +98,7 @@ async function generateWithFallback(
 	chain: GeminiModel[],
 	messages: GeminiMessage[],
 	forcedModel?: string | null
-): Promise<{ text: string; model: GeminiModel }> {
+): Promise<{ text: string; model: GeminiModel; tokens: number }> {
 	const effectiveChain = (forcedModel && forcedModel !== 'auto')
 		? [forcedModel as GeminiModel]
 		: (chain.indexOf(startModel) >= 0 ? chain.slice(chain.indexOf(startModel)) : chain);
@@ -106,9 +106,9 @@ async function generateWithFallback(
 	for (let i = 0; i < effectiveChain.length; i++) {
 		const model = effectiveChain[i];
 		try {
-			const text = await generate(model, messages);
+			const { text, tokens } = await generate(model, messages);
 			console.log(`[Gemini] Using: ${model}${forcedModel && forcedModel !== 'auto' ? ' (FORCED)' : ''}`);
-			return { text, model };
+			return { text, model, tokens };
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			const isRetryable = msg.includes('400') || msg.includes('404') || msg.includes('503') || msg.includes('not found') || msg.includes('NOT_FOUND') || msg.includes('Model not supported');
@@ -122,11 +122,11 @@ async function generateWithFallback(
 	throw new Error(`[Gemini] All models exhausted for ${forcedModel || 'chain'}`);
 }
 
-export async function routeQuestion(history: GeminiHistory[], userMessage: string, forcedModel?: string | null): Promise<{ result: boolean; model: GeminiModel }> {
+export async function routeQuestion(history: GeminiHistory[], userMessage: string, forcedModel?: string | null): Promise<{ result: boolean; model: GeminiModel; tokens: number }> {
 	const prompt = `Определи, является ли следующий вопрос математической или инженерной задачей (например, "построить эпюру", "нарисовать график", "найти напряжение" — это инженерная задача YES). Ответь ТОЛЬКО: YES или NO.`;
 	const messages = buildContext(history, prompt, `Вопрос: ${userMessage}`);
-	const { text, model } = await generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
-	return { result: text.trim().toUpperCase().startsWith('YES'), model };
+	const { text, model, tokens } = await generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
+	return { result: text.trim().toUpperCase().startsWith('YES'), model, tokens };
 }
 
 export async function generatePythonCode(
@@ -134,7 +134,7 @@ export async function generatePythonCode(
 	userMessage: string,
 	retryContext?: string,
 	forcedModel?: string | null
-): Promise<{ code: string; model: GeminiModel }> {
+): Promise<{ code: string; model: GeminiModel; tokens: number }> {
 	const systemPrompt = `Ты — генератор Python-кода для точных научных вычислений.
 ПРАВИЛА:
 1. Используй ТОЛЬКО: math, sympy, numpy, json
@@ -151,16 +151,16 @@ export async function generatePythonCode(
 	if (retryContext) userContent += `\n\nИсправь ошибку:\n${retryContext}`;
 
 	const messages = buildContext(history, systemPrompt, userContent);
-	const { text, model } = await generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, forcedModel);
+	const { text, model, tokens } = await generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, forcedModel);
 	const codeMatch = text.match(/```python\n([\s\S]*?)```/);
-	return { code: codeMatch ? codeMatch[1].trim() : text.trim(), model };
+	return { code: codeMatch ? codeMatch[1].trim() : text.trim(), model, tokens };
 }
 
 export async function assembleFinalAnswer(
 	history: GeminiHistory[],
 	params: { userMessage: string; pythonCode: string; executionResult: string },
 	forcedModel?: string | null
-): Promise<{ text: string; model: GeminiModel }> {
+): Promise<{ text: string; model: GeminiModel; tokens: number }> {
 	const prompt = `Представь решение в академическом виде: Дано / Решение / Ответ.
 Используй только эти данные: ${params.executionResult}
 Формулы в LaTeX. Не показывай Python-код.`;
@@ -169,13 +169,13 @@ export async function assembleFinalAnswer(
 	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
 }
 
-export async function answerGeneralQuestion(history: GeminiHistory[], userMessage: string, forcedModel?: string | null): Promise<{ text: string; model: GeminiModel }> {
+export async function answerGeneralQuestion(history: GeminiHistory[], userMessage: string, forcedModel?: string | null): Promise<{ text: string; model: GeminiModel; tokens: number }> {
 	const prompt = `Ответь максимально понятно и академично. LaTeX для формул.`;
 	const messages = buildContext(history, prompt, `Вопрос: ${userMessage}`);
 	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
 }
 
-export async function analyzeImage(history: GeminiHistory[], base64Data: string, mimeType: string, forcedModel?: string | null): Promise<{ text: string; model: GeminiModel }> {
+export async function analyzeImage(history: GeminiHistory[], base64Data: string, mimeType: string, forcedModel?: string | null): Promise<{ text: string; model: GeminiModel; tokens: number }> {
 	const prompt = `Проанализируй изображение. Извлеки условие и опиши схемы для решения.\nОтвет ТОЛЬКО текстом.`;
 	const messages = buildContext(history, prompt, '');
 	messages[messages.length - 1].parts.push({ inlineData: { mimeType: mimeType, data: base64Data } });
