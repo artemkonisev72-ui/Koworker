@@ -386,10 +386,35 @@
 		}
 	}
 
-	function autoResize(e: Event) {
-		const el = e.target as HTMLTextAreaElement;
-		el.style.height = 'auto';
-		el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+	function autoResize() {
+		if (!inputEl) return;
+		inputEl.style.height = 'auto';
+		inputEl.style.height = Math.min(inputEl.scrollHeight, 200) + 'px';
+	}
+
+	$effect(() => {
+		// Run autoResize whenever inputValue changes
+		inputValue;
+		autoResize();
+	});
+
+	function handlePaste(e: ClipboardEvent) {
+		const items = e.clipboardData?.items;
+		if (!items) return;
+		for (const item of items) {
+			if (item.type.startsWith('image/')) {
+				const file = item.getAsFile();
+				if (!file) continue;
+				const reader = new FileReader();
+				reader.onload = (event) => {
+					const base64 = (event.target?.result as string).split(',')[1];
+					selectedImage = { base64, mimeType: file.type };
+				};
+				reader.readAsDataURL(file);
+				e.preventDefault(); // Prevent pasting filename string into the textarea
+				break;
+			}
+		}
 	}
 
 	// Example prompts
@@ -710,7 +735,7 @@
 						bind:this={inputEl}
 						bind:value={inputValue}
 						onkeydown={handleKeydown}
-						oninput={autoResize}
+						onpaste={handlePaste}
 						placeholder="Опишите задачу или прикрепите фото..."
 						rows="1"
 						disabled={isLoading}
@@ -1235,6 +1260,10 @@
 	border-bottom-right-radius: var(--radius-sm);
 }
 
+.user-bubble ::selection {
+	background: rgba(255, 255, 255, 0.25);
+	color: #ffffff;
+}
 
 .assistant-bubble {
 	background: var(--bg-card);
