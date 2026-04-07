@@ -111,7 +111,7 @@ async function generateWithFallback(
 			return { text, model, tokens };
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			const isRetryable = msg.includes('400') || msg.includes('404') || msg.includes('503') || msg.includes('not found') || msg.includes('NOT_FOUND') || msg.includes('Model not supported');
+			const isRetryable = ['400', '404', '429', '503', 'not found', 'NOT_FOUND', 'Model not supported'].some(t => msg.includes(t));
 			if (isRetryable && i < effectiveChain.length - 1) {
 				console.warn(`[Gemini] Model ${model} unavailable, falling back...`);
 				continue;
