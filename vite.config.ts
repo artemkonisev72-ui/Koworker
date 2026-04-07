@@ -12,6 +12,7 @@ export default defineConfig({
 		host: '0.0.0.0', // Слушать на всех интерфейсах (0.0.0.0)
 		port: 5173,      // Основной порт Vite
 		strictPort: true,
+		allowedHosts: ['dev.koworker.oops.wtf', 'koworker.oops.wtf'],
 		cors: true,      // Разрешить CORS запросы
 		hmr: {
 			// При доступе через SSH-туннель браузер видит localhost, а не IP сервера
