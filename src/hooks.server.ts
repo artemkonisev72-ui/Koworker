@@ -1,3 +1,6 @@
+import dns from 'node:dns';
+dns.setDefaultResultOrder('ipv4first');
+
 import { getSession } from '$lib/server/auth';
 import type { Handle } from '@sveltejs/kit';
 
