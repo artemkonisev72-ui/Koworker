@@ -648,7 +648,7 @@
 				<img src="/favicon.svg" alt="Koworker Logo" class="logo-icon" />
 				<span class="logo-text">Koworker AI</span>
 			</div>
-			<button class="icon-btn" onclick={() => (sidebarOpen = !sidebarOpen)} title="РЎРІРµСЂРЅСѓС‚СЊ">
+			<button class="icon-btn" onclick={() => (sidebarOpen = !sidebarOpen)} title="Свернуть">
 				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 					<path d="M21 3H3M21 12H3M21 21H3"/>
 				</svg>
@@ -659,12 +659,12 @@
 			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
 				<path d="M12 5v14M5 12h14"/>
 			</svg>
-			РќРѕРІС‹Р№ С‡Р°С‚
+			Новый чат
 		</button>
 
 		<div class="sidebar-content">
 			{#if pinnedChats.length > 0}
-				<div class="chat-section-label">Р—Р°РєСЂРµРїР»РµРЅРЅС‹Рµ</div>
+				<div class="chat-section-label">Закрепленные</div>
 				<div class="chat-list pinned">
 					{#each pinnedChats as chat (chat.id)}
 						{@render chatItem(chat)}
@@ -672,10 +672,10 @@
 				</div>
 			{/if}
 
-			<div class="chat-section-label">{pinnedChats.length > 0 ? 'Р’СЃРµ С‡Р°С‚С‹' : 'Р§Р°С‚С‹'}</div>
+			<div class="chat-section-label">{pinnedChats.length > 0 ? 'Все чаты' : 'Чаты'}</div>
 			<div class="chat-list">
 				{#if chats.length === 0}
-					<div class="chat-list-empty">РќРµС‚ С‡Р°С‚РѕРІ. РЎРѕР·РґР°Р№С‚Рµ РїРµСЂРІС‹Р№!</div>
+					<div class="chat-list-empty">Нет чатов. Создайте первый!</div>
 				{/if}
 				{#each otherChats as chat (chat.id)}
 					{@render chatItem(chat)}
@@ -707,17 +707,17 @@
 				</button>
 				
 				<div class="chat-actions">
-					<button class="action-btn" onclick={() => pinChat(chat)} title={chat.isPinned ? "РћС‚РєСЂРµРїРёС‚СЊ" : "Р—Р°РєСЂРµРїРёС‚СЊ"}>
+					<button class="action-btn" onclick={() => pinChat(chat)} title={chat.isPinned ? "Открепить" : "Закрепить"}>
 						<svg width="12" height="12" viewBox="0 0 24 24" fill={chat.isPinned ? "currentColor" : "none"} stroke="currentColor" stroke-width="2">
 							<path d="M21 10V8l-2.09-.41A3 3 0 0 1 17 4.68V3h-1v1.68a3 3 0 0 1-1.91 2.91L12 8v2l2.09.41A3 3 0 0 1 16 13.32V15h1v-1.68a3 3 0 0 1 1.91-2.91L21 10zM12 15h10M16.5 15v6"/>
 						</svg>
 					</button>
-					<button class="action-btn" onclick={() => startEditing(chat)} title="РџРµСЂРµРёРјРµРЅРѕРІР°С‚СЊ">
+					<button class="action-btn" onclick={() => startEditing(chat)} title="Переименовать">
 						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 							<path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
 						</svg>
 					</button>
-					<button class="action-btn delete" onclick={() => deleteChat(chat.id)} title="РЈРґР°Р»РёС‚СЊ">
+					<button class="action-btn delete" onclick={() => deleteChat(chat.id)} title="Удалить">
 						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 							<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
 						</svg>
@@ -731,11 +731,11 @@
 				<div class="user-info">
 					<a href="/account" class="user-details-link">
 						<div class="user-details">
-							<span class="user-name">{data.user.name || 'РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ'}</span>
+							<span class="user-name">{data.user.name || 'Пользователь'}</span>
 							<span class="user-email">{data.user.email}</span>
 						</div>
 					</a>
-					<button class="logout-btn" onclick={logout} title="Р’С‹Р№С‚Рё">
+					<button class="logout-btn" onclick={logout} title="Выйти">
 						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 							<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>
 						</svg>
@@ -755,15 +755,15 @@
 		<!-- Header -->
 		<header class="chat-header">
 			{#if !sidebarOpen}
-				<button class="icon-btn" onclick={() => (sidebarOpen = true)} title="РћС‚РєСЂС‹С‚СЊ РјРµРЅСЋ">
+				<button class="icon-btn" onclick={() => (sidebarOpen = true)} title="Открыть меню">
 					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 						<path d="M21 3H3M21 12H3M21 21H3"/>
 					</svg>
 				</button>
 			{/if}
 			<div class="header-title">
-				<h1>РўРѕС‡РЅС‹Рµ РЅР°СѓРєРё</h1>
-				<span class="header-subtitle">РўРµСЂРјРµС… В· РЎРѕРїСЂРѕРјР°С‚ В· РњР°С‚Р°РЅР°Р»РёР·</span>
+				<h1>Точные науки</h1>
+				<span class="header-subtitle">Термех · Сопромат · Матанализ</span>
 			</div>
 			<div class="header-status" class:active={isLoading || isSchemaActionLoading}>
 				{#if isLoading || isSchemaActionLoading}
@@ -778,8 +778,8 @@
 						<button 
 							class="icon-btn share-btn" 
 							onclick={() => (isSharing = !isSharing)} 
-							title="РџРѕРґРµР»РёС‚СЊСЃСЏ С‡Р°С‚РѕРј"
-							aria-label="РџРѕРґРµР»РёС‚СЊСЃСЏ С‡Р°С‚РѕРј"
+							title="Поделиться чатом"
+							aria-label="Поделиться чатом"
 							class:active={isSharing}
 						>
 							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -790,22 +790,22 @@
 						{#if isSharing}
 							<div class="share-menu">
 								<div class="share-menu-header">
-									<span>РџСѓР±Р»РёС‡РЅС‹Р№ РґРѕСЃС‚СѓРї</span>
+									<span>Публичный доступ</span>
 									<button 
 										class="toggle-switch" 
 										class:on={activeChat?.isPublic} 
 										onclick={togglePublic}
-										aria-label="РџРµСЂРµРєР»СЋС‡РёС‚СЊ РїСѓР±Р»РёС‡РЅС‹Р№ РґРѕСЃС‚СѓРї"
-										title="РџРµСЂРµРєР»СЋС‡РёС‚СЊ РїСѓР±Р»РёС‡РЅС‹Р№ РґРѕСЃС‚СѓРї"
+										aria-label="Переключить публичный доступ"
+										title="Переключить публичный доступ"
 									></button>
 								</div>
 								
 								{#if activeChat?.isPublic}
 									<div class="share-link-box">
 										<input type="text" readonly value={`${window.location.origin}/shared/${activeChatId}`} />
-										<button class="copy-btn" onclick={copyShareLink} title="РљРѕРїРёСЂРѕРІР°С‚СЊ СЃСЃС‹Р»РєСѓ" aria-label="РљРѕРїРёСЂРѕРІР°С‚СЊ СЃСЃС‹Р»РєСѓ">
+										<button class="copy-btn" onclick={copyShareLink} title="Копировать ссылку" aria-label="Копировать ссылку">
 											{#if copySuccess}
-												<span>вњ“</span>
+												<span>✓</span>
 											{:else}
 												<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 													<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -813,9 +813,9 @@
 											{/if}
 										</button>
 									</div>
-									<p class="share-hint">Р›СЋР±РѕР№, Сѓ РєРѕРіРѕ РµСЃС‚СЊ СЃСЃС‹Р»РєР°, СЃРјРѕР¶РµС‚ РїСЂРѕСЃРјР°С‚СЂРёРІР°С‚СЊ СЌС‚РѕС‚ С‡Р°С‚.</p>
+									<p class="share-hint">Любой, у кого есть ссылка, сможет просматривать этот чат.</p>
 								{:else}
-									<p class="share-hint">Р’РєР»СЋС‡РёС‚Рµ РїСѓР±Р»РёС‡РЅС‹Р№ РґРѕСЃС‚СѓРї, С‡С‚РѕР±С‹ СЃРѕР·РґР°С‚СЊ СЃСЃС‹Р»РєСѓ РЅР° СЌС‚РѕС‚ С‡Р°С‚.</p>
+									<p class="share-hint">Включите публичный доступ, чтобы создать ссылку на этот чат.</p>
 								{/if}
 							</div>
 						{/if}
@@ -828,20 +828,20 @@
 					class="model-select"
 					disabled={isLoading || isSchemaActionLoading}
 				>
-					<option value="auto">вњЁ РђРІС‚Рѕ-СЂРµР¶РёРј</option>
+					<option value="auto">✨ Авто-режим</option>
 					<optgroup label="Gemini 3.1">
-						<option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (РЈРјРЅР°СЏ)</option>
-						<option value="gemini-3.1-flash-preview">Gemini 3.1 Flash (Р‘С‹СЃС‚СЂР°СЏ)</option>
-						<option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash-Lite (РЎР°РјР°СЏ Р±С‹СЃС‚СЂР°СЏ)</option>
+						<option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Умная)</option>
+						<option value="gemini-3.1-flash-preview">Gemini 3.1 Flash (Быстрая)</option>
+						<option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash-Lite (Самая быстрая)</option>
 					</optgroup>
 					<optgroup label="Gemini 3.0">
 						<option value="gemini-3-pro-preview">Gemini 3.0 Pro</option>
 						<option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
 					</optgroup>
 					<optgroup label="Gemini 2.5">
-						<option value="gemini-2.5-pro">Gemini 2.5 Pro (РЈРјРЅР°СЏ)</option>
-						<option value="gemini-2.5-flash">Gemini 2.5 Flash (Р‘С‹СЃС‚СЂР°СЏ)</option>
-						<option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite (РЎР°РјР°СЏ Р±С‹СЃС‚СЂР°СЏ)</option>
+						<option value="gemini-2.5-pro">Gemini 2.5 Pro (Умная)</option>
+						<option value="gemini-2.5-flash">Gemini 2.5 Flash (Быстрая)</option>
+						<option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite (Самая быстрая)</option>
 					</optgroup>
 				</select>
 			</div>
@@ -852,9 +852,9 @@
 			{#if messages.length === 0}
 				<div class="welcome-screen">
 					<div class="welcome-hero">
-						<div class="hero-icon">в€‘</div>
-						<h2>Р—Р°РґР°Р№С‚Рµ РёРЅР¶РµРЅРµСЂРЅСѓСЋ Р·Р°РґР°С‡Сѓ</h2>
-						<p>AI Р°РЅР°Р»РёР·РёСЂСѓРµС‚ СѓСЃР»РѕРІРёРµ, РіРµРЅРµСЂРёСЂСѓРµС‚ Python-РєРѕРґ Рё РІС‹РїРѕР»РЅСЏРµС‚ С‚РѕС‡РЅС‹Рµ РІС‹С‡РёСЃР»РµРЅРёСЏ РІ Wasm-РїРµСЃРѕС‡РЅРёС†Рµ</p>
+						<div class="hero-icon">∑</div>
+						<h2>Задайте инженерную задачу</h2>
+						<p>AI анализирует условие, генерирует Python-код и выполняет точные вычисления в Wasm-песочнице</p>
 					</div>
 
 					<div class="examples-grid">
@@ -897,11 +897,11 @@
 							</div>
 
 							{#if msg.role === 'USER'}
-								<div class="avatar user-avatar">Р’С‹</div>
+								<div class="avatar user-avatar">Вы</div>
 							{/if}
 
 							{#if !msg.isStreaming}
-								<button class="delete-msg-btn" onclick={() => deleteMessage(msg.id)} title="РЈРґР°Р»РёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ">
+								<button class="delete-msg-btn" onclick={() => deleteMessage(msg.id)} title="Удалить сообщение">
 									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 										<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
 									</svg>
@@ -1019,7 +1019,7 @@
 					class="attach-btn" 
 					onclick={() => fileInputEl?.click()} 
 					disabled={isLoading || isSchemaActionLoading}
-					title="РџСЂРёРєСЂРµРїРёС‚СЊ С„РѕС‚Рѕ Р·Р°РґР°С‡Рё"
+					title="Прикрепить фото задачи"
 				>
 					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 						<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
@@ -1038,7 +1038,7 @@
 					{#if selectedImage}
 						<div class="image-preview">
 							<img src={`data:${selectedImage.mimeType};base64,${selectedImage.base64}`} alt="Preview" />
-							<button class="remove-img-btn" onclick={removeImage}>Г—</button>
+							<button class="remove-img-btn" onclick={removeImage}>×</button>
 						</div>
 					{/if}
 					<textarea
@@ -1047,7 +1047,7 @@
 						bind:value={inputValue}
 						onkeydown={handleKeydown}
 						onpaste={handlePaste}
-						placeholder="РћРїРёС€РёС‚Рµ Р·Р°РґР°С‡Сѓ РёР»Рё РїСЂРёРєСЂРµРїРёС‚Рµ С„РѕС‚Рѕ..."
+						placeholder="Опишите задачу или прикрепите фото..."
 						rows="1"
 						disabled={isLoading || isSchemaActionLoading}
 						class="message-input"
@@ -1058,7 +1058,7 @@
 					<button
 						class="send-btn stop-btn"
 						onclick={cancelGeneration}
-						title="РћСЃС‚Р°РЅРѕРІРёС‚СЊ РіРµРЅРµСЂР°С†РёСЋ"
+						title="Остановить генерацию"
 					>
 						<span class="stop-icon"></span>
 					</button>
@@ -1067,7 +1067,7 @@
 						class="send-btn"
 						onclick={sendMessage}
 						disabled={!inputValue.trim() || isSchemaActionLoading || (!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
-						title="РћС‚РїСЂР°РІРёС‚СЊ"
+						title="Отправить"
 					>
 						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
 							<path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/>
@@ -1077,7 +1077,7 @@
 			</div>
 
 			<div class="input-hint">
-				Р§РёСЃР»Р° Р±РµСЂСѓС‚СЃСЏ РёР· Python В· sympy В· numpy. Gemini РЅРµ РІС‹С‡РёСЃР»СЏРµС‚ вЂ” С‚РѕР»СЊРєРѕ Р°РЅР°Р»РёР·РёСЂСѓРµС‚ Рё РѕР±СЉСЏСЃРЅСЏРµС‚.
+				Числа берутся из Python · sympy · numpy. Gemini не вычисляет — только анализирует и объясняет.
 			</div>
 		</div>
 
