@@ -223,9 +223,27 @@ function normalizeSchemaDataShape(parsed: Record<string, unknown>): Record<strin
 	}
 
 	if (Array.isArray(normalized.elements)) {
-		normalized.elements = normalized.elements.map((entry) =>
-			isRecord(entry) ? normalizeElementShape(entry) : entry
-		);
+		const usedIds = new Set<string>();
+		normalized.elements = normalized.elements.map((entry, index) => {
+			if (!isRecord(entry)) return entry;
+
+			const normalizedElement = normalizeElementShape(entry);
+			const rawId =
+				typeof normalizedElement.id === 'string' ? normalizedElement.id.trim() : '';
+
+			let safeId = rawId;
+			if (!safeId || usedIds.has(safeId)) {
+				let counter = 1;
+				safeId = `el_${index + 1}`;
+				while (usedIds.has(safeId)) {
+					safeId = `el_${index + 1}_${counter++}`;
+				}
+			}
+
+			normalizedElement.id = safeId;
+			usedIds.add(safeId);
+			return normalizedElement;
+		});
 	}
 
 	return normalized;
