@@ -180,6 +180,38 @@ function normalizeStringArray(value: unknown): string[] {
 	return value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean);
 }
 
+function isLikelySchemaDataObject(value: unknown): value is SchemaData {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+	const maybe = value as Record<string, unknown>;
+	return Array.isArray(maybe.elements);
+}
+
+function tryParseJsonString(value: unknown): unknown {
+	if (typeof value !== 'string') return value;
+	try {
+		return JSON.parse(value);
+	} catch {
+		return value;
+	}
+}
+
+function extractSchemaCandidate(payload: Record<string, unknown>): unknown {
+	const direct =
+		payload.schemaData ??
+		payload.schema ??
+		payload.scheme ??
+		payload.diagram ??
+		payload.jsxgraphSchema ??
+		payload.jsxGraphSchema;
+	if (direct !== undefined) return tryParseJsonString(direct);
+
+	const data = payload.data;
+	if (data && typeof data === 'object' && !Array.isArray(data)) {
+		return extractSchemaCandidate(data as Record<string, unknown>);
+	}
+	return undefined;
+}
+
 function parseSchemaResult(rawText: string): { schemaData: SchemaData; assumptions: string[]; ambiguities: string[] } {
 	const fencedMatch = rawText.match(/```json\s*([\s\S]*?)```/i);
 	const candidate = fencedMatch?.[1] ?? extractFirstJsonObject(rawText);
@@ -198,13 +230,27 @@ function parseSchemaResult(rawText: string): { schemaData: SchemaData; assumptio
 		throw new Error('Schema response JSON must be an object');
 	}
 
-	const payload = parsed as { schemaData?: SchemaData; assumptions?: unknown; ambiguities?: unknown };
-	if (!payload.schemaData || typeof payload.schemaData !== 'object') {
-		throw new Error('Schema response is missing schemaData object');
+	// Fallback #1: model returned schema object directly as root.
+	if (isLikelySchemaDataObject(parsed)) {
+		const direct = parsed as unknown as Record<string, unknown>;
+		return {
+			schemaData: parsed,
+			assumptions: normalizeStringArray(direct.assumptions),
+			ambiguities: normalizeStringArray(direct.ambiguities)
+		};
+	}
+
+	const payload = parsed as Record<string, unknown>;
+	const schemaCandidate = extractSchemaCandidate(payload);
+	if (!isLikelySchemaDataObject(schemaCandidate)) {
+		const knownKeys = Object.keys(payload).slice(0, 12).join(', ');
+		throw new Error(
+			`Schema response is missing schemaData object (keys: ${knownKeys || 'none'})`
+		);
 	}
 
 	return {
-		schemaData: payload.schemaData,
+		schemaData: schemaCandidate,
 		assumptions: normalizeStringArray(payload.assumptions),
 		ambiguities: normalizeStringArray(payload.ambiguities)
 	};
@@ -354,6 +400,15 @@ Return strict JSON object with keys:
 }
 Allowed element types: beam_segment, support_pin, support_roller, support_fixed, point_load, distributed_load, moment, hinge, joint, axis, dimension, label.
 Use finite numeric values only and include all supports/loads/moments from the condition.
+Use canonical geometry keys:
+- beam_segment / distributed_load / axis / dimension: geometry.start + geometry.end
+- support_pin / support_roller / support_fixed / hinge / joint / label: geometry.point
+- point_load: geometry.point (optional geometry.from/geometry.to for arrow direction)
+- moment: geometry.center (optionally duplicate into geometry.point)
+Never encode a point as bare geometry {"x":...,"y":...}; always use the canonical keys above.
+Build an internal coordinate map from the task and place elements accordingly.
+Do NOT place all supports or all point loads at (0,0) by default.
+If exact coordinates are missing, use a consistent non-degenerate axis with distinct anchor positions and record assumptions.
 Every element MUST include the key "geometry" and it MUST be an object.
 Every element MUST include a non-empty unique string field "id".
 ${languagePolicy(userMessage)}`;
@@ -385,6 +440,14 @@ export async function reviseSchema(
 Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 Preserve correct existing elements and update only what is needed per revision notes.
 Keep schemaData.version = "1.0" and finite numbers.
+Use canonical geometry keys:
+- beam_segment / distributed_load / axis / dimension: geometry.start + geometry.end
+- support_pin / support_roller / support_fixed / hinge / joint / label: geometry.point
+- point_load: geometry.point (optional geometry.from/geometry.to for arrow direction)
+- moment: geometry.center (optionally duplicate into geometry.point)
+Never encode a point as bare geometry {"x":...,"y":...}; always use the canonical keys above.
+Preserve existing coordinates unless revision notes explicitly request moving elements.
+Do NOT collapse supports/loads/moments to (0,0) unless the user explicitly requests coincidence at the origin.
 Every element MUST include the key "geometry" and it MUST be an object.
 Every element MUST include a non-empty unique string field "id".
 ${languagePolicy(languageSeed)}`;
