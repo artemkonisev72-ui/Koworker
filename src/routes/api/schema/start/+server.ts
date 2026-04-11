@@ -1,12 +1,13 @@
 import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
-import { generateInitialSchema } from '$lib/server/ai/gemini.js';
+import { generateInitialSchema, repairSchemaByIssues } from '$lib/server/ai/gemini.js';
 import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import {
 	detectPromptLanguage,
 	formatSchemaAssistantContent,
 	getSchemaLayoutLogDetails,
+	getSchemaRepairIssues,
 	loadGeminiHistory,
 	logSchemaCheck,
 	validateImageData,
@@ -120,9 +121,65 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			});
 			return error(422, `Generated schema validation failed: ${validation.errors.join('; ')}`);
 		}
-		const layoutDetails = getSchemaLayoutLogDetails(validation.value);
+
+		let finalGenerated = generated;
+		let finalValidation = validation;
+
+		const repairIssues = getSchemaRepairIssues(validation.value);
+		if (repairIssues.length > 0) {
+			logSchemaCheck('start.repair_requested', {
+				draftId: draft.id,
+				issueCount: repairIssues.length,
+				issues: repairIssues
+			});
+			try {
+				const repaired = await repairSchemaByIssues(history, {
+					originalPrompt: message,
+					currentSchema: validation.value,
+					issues: repairIssues,
+					forcedModel
+				});
+				const repairedValidation = validateSchemaAny(repaired.schemaData);
+				if (repairedValidation.ok && repairedValidation.value) {
+					const repairedIssues = getSchemaRepairIssues(repairedValidation.value);
+					if (repairedIssues.length < repairIssues.length) {
+						finalValidation = repairedValidation;
+						finalGenerated = {
+							...repaired,
+							tokens: generated.tokens + repaired.tokens,
+							usedModels: [...generated.usedModels, ...repaired.usedModels],
+							assumptions: repaired.assumptions.length > 0 ? repaired.assumptions : generated.assumptions,
+							ambiguities: repaired.ambiguities.length > 0 ? repaired.ambiguities : generated.ambiguities
+						};
+						logSchemaCheck('start.repair_applied', {
+							draftId: draft.id,
+							beforeIssues: repairIssues.length,
+							afterIssues: repairedIssues.length
+						});
+					} else {
+						logSchemaCheck('start.repair_skipped', {
+							draftId: draft.id,
+							beforeIssues: repairIssues.length,
+							afterIssues: repairedIssues.length
+						});
+					}
+				} else {
+					logSchemaCheck('start.repair_invalid', {
+						draftId: draft.id,
+						errors: repairedValidation.errors
+					});
+				}
+			} catch (repairErr) {
+				logSchemaCheck('start.repair_failed', {
+					draftId: draft.id,
+					error: repairErr instanceof Error ? repairErr.message : String(repairErr)
+				});
+			}
+		}
+
+		const layoutDetails = getSchemaLayoutLogDetails(finalValidation.value);
 		if (layoutDetails) {
-			const schemaMeta = (validation.value as any)?.meta;
+			const schemaMeta = (finalValidation.value as any)?.meta;
 			logSchemaCheck('start.layout_metrics', {
 				draftId: draft.id,
 				...layoutDetails,
@@ -135,8 +192,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 		const assistantContent = formatSchemaAssistantContent({
 			revisionIndex: 0,
-			assumptions: generated.assumptions,
-			ambiguities: generated.ambiguities,
+			assumptions: finalGenerated.assumptions,
+			ambiguities: finalGenerated.ambiguities,
 			language: detectPromptLanguage(message)
 		});
 
@@ -146,8 +203,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				where: { id: draft.id },
 				data: {
 					status: 'AWAITING_REVIEW',
-					currentSchema: validation.value,
-					schemaVersion: validation.version ?? '2.0',
+					currentSchema: finalValidation.value,
+					schemaVersion: finalValidation.version ?? '2.0',
 					revisionCount: 0
 				}
 			});
@@ -156,9 +213,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				data: {
 					draftId: draft.id,
 					revisionIndex: 0,
-					schemaVersion: validation.version ?? '2.0',
-					schema: validation.value,
-					assumptions: generated.assumptions
+					schemaVersion: finalValidation.version ?? '2.0',
+					schema: finalValidation.value,
+					assumptions: finalGenerated.assumptions
 				}
 			});
 
@@ -168,9 +225,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 					draftId: draft.id,
 					role: 'ASSISTANT',
 					content: assistantContent,
-					schemaData: JSON.stringify(validation.value),
-					schemaVersion: validation.version ?? '2.0',
-					usedModels: JSON.stringify(generated.usedModels)
+					schemaData: JSON.stringify(finalValidation.value),
+					schemaVersion: finalValidation.version ?? '2.0',
+					usedModels: JSON.stringify(finalGenerated.usedModels)
 				}
 			});
 
@@ -186,17 +243,17 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		return json({
 			draftId: draft.id,
 			status: result.updatedDraft.status,
-			schemaVersion: validation.version ?? '2.0',
+			schemaVersion: finalValidation.version ?? '2.0',
 			revisionIndex: result.updatedDraft.revisionCount,
-			schema: validation.value,
-			assumptions: generated.assumptions,
-			ambiguities: generated.ambiguities,
+			schema: finalValidation.value,
+			assumptions: finalGenerated.assumptions,
+			ambiguities: finalGenerated.ambiguities,
 			assistantMessage: {
 				id: result.assistantMessage.id,
 				role: result.assistantMessage.role,
 				content: result.assistantMessage.content,
-				schemaData: validation.value,
-				usedModels: generated.usedModels,
+				schemaData: finalValidation.value,
+				usedModels: finalGenerated.usedModels,
 				draftId: result.assistantMessage.draftId,
 				createdAt: result.assistantMessage.createdAt
 			}

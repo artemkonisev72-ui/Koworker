@@ -45,6 +45,21 @@ export interface CoordinateSystemV2 {
 	yUnit?: string;
 	origin?: SchemaPoint;
 	axisOrientation?: 'right-handed' | 'left-handed';
+	originPolicy?: 'auto' | 'left_support' | 'fixed_support' | 'centroid';
+}
+
+export interface AttachSpecV2 {
+	memberId: string;
+	s: number;
+	side?: '+n' | '-n' | '+t' | '-t' | 'center';
+	offset?: number;
+}
+
+export interface ConstraintSpecV2 {
+	collinearWith?: string[];
+	parallelTo?: string[];
+	perpendicularTo?: string[];
+	mirrorOf?: string | null;
 }
 
 export interface NodeV2 {

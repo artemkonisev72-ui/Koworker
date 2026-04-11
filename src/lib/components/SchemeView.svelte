@@ -302,10 +302,49 @@
 		});
 	}
 
+	function resolveMemberTangentAtNode(
+		anchorNodeId: string | undefined,
+		nodeMap: Map<string, NodeV2>
+	): SchemaPoint | null {
+		if (!anchorNodeId) return null;
+		const schema = normalizedSchema;
+		if (!schema) return null;
+		const member = schema.objects.find(
+			(object) =>
+				(object.type === 'bar' || object.type === 'cable' || object.type === 'spring' || object.type === 'damper') &&
+				Array.isArray(object.nodeRefs) &&
+				object.nodeRefs.length >= 2 &&
+				(object.nodeRefs[0] === anchorNodeId || object.nodeRefs[1] === anchorNodeId)
+		);
+		if (!member || !member.nodeRefs) return null;
+		const from = getNode(nodeMap, member.nodeRefs[0]);
+		const to = getNode(nodeMap, member.nodeRefs[1]);
+		if (!from || !to) return null;
+		const anchorIsStart = member.nodeRefs[0] === anchorNodeId;
+		const dx = anchorIsStart ? to.x - from.x : from.x - to.x;
+		const dy = anchorIsStart ? to.y - from.y : from.y - to.y;
+		const length = Math.hypot(dx, dy);
+		if (!length) return null;
+		return { x: dx / length, y: dy / length };
+	}
+
 	function drawFixedWall(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
 		const node = getNode(nodeMap, object.nodeRefs?.[0]);
 		if (!node) return;
-		const angleDeg = isFiniteNumber(object.geometry.angle) ? object.geometry.angle : 90;
+		let angleDeg = isFiniteNumber(object.geometry.angle) ? object.geometry.angle : 90;
+		const wallSide =
+			typeof object.geometry.wallSide === 'string' ? object.geometry.wallSide.trim().toLowerCase() : '';
+		if (!isFiniteNumber(object.geometry.angle) && wallSide) {
+			const tangent = resolveMemberTangentAtNode(object.nodeRefs?.[0], nodeMap) ?? { x: 1, y: 0 };
+			const normal = { x: -tangent.y, y: tangent.x };
+			let hatchDirection = { ...normal };
+			if (wallSide === 'left') hatchDirection = { x: -tangent.x, y: -tangent.y };
+			if (wallSide === 'right') hatchDirection = { x: tangent.x, y: tangent.y };
+			if (wallSide === 'top') hatchDirection = { x: normal.x, y: normal.y };
+			if (wallSide === 'bottom') hatchDirection = { x: -normal.x, y: -normal.y };
+			const wallDirection = { x: hatchDirection.y, y: -hatchDirection.x };
+			angleDeg = (Math.atan2(wallDirection.y, wallDirection.x) * 180) / Math.PI;
+		}
 		const t = vectorFromAngleDegrees(angleDeg);
 		const n = { x: -t.y, y: t.x };
 		const a = { x: node.x - t.x * 0.45, y: node.y - t.y * 0.45 };

@@ -31,6 +31,8 @@ interface NodeRefBounds {
 	max: number | null;
 }
 
+type OriginPolicy = 'auto' | 'left_support' | 'fixed_support' | 'centroid';
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -128,6 +130,111 @@ function normalizeMomentDirection(value: unknown): 'cw' | 'ccw' | null {
 	return null;
 }
 
+function normalizeOriginPolicy(value: unknown): OriginPolicy {
+	if (typeof value !== 'string') return 'auto';
+	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+	if (normalized === 'left_support' || normalized === 'fixed_support' || normalized === 'centroid') {
+		return normalized;
+	}
+	return 'auto';
+}
+
+function normalizeWallSide(value: unknown): 'left' | 'right' | 'top' | 'bottom' | null {
+	if (typeof value !== 'string') return null;
+	const normalized = value.trim().toLowerCase().replace(/\s+/g, '');
+	if (normalized === 'left' || normalized === 'l' || normalized === '-t') return 'left';
+	if (normalized === 'right' || normalized === 'r' || normalized === '+t') return 'right';
+	if (normalized === 'top' || normalized === 'up' || normalized === 'u' || normalized === '+n') return 'top';
+	if (normalized === 'bottom' || normalized === 'down' || normalized === 'd' || normalized === '-n') return 'bottom';
+	return null;
+}
+
+function normalizeAttachSide(value: unknown): '+n' | '-n' | '+t' | '-t' | 'center' | null {
+	if (typeof value !== 'string') return null;
+	const normalized = value.trim().toLowerCase().replace(/\s+/g, '');
+	if (normalized === '+n' || normalized === 'n+' || normalized === 'top' || normalized === 'up') return '+n';
+	if (normalized === '-n' || normalized === 'n-' || normalized === 'bottom' || normalized === 'down') return '-n';
+	if (normalized === '+t' || normalized === 't+' || normalized === 'right') return '+t';
+	if (normalized === '-t' || normalized === 't-' || normalized === 'left') return '-t';
+	if (normalized === 'center' || normalized === 'mid' || normalized === 'middle') return 'center';
+	return null;
+}
+
+function normalizeStringRefArray(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.filter((entry): entry is string => typeof entry === 'string')
+		.map((entry) => entry.trim())
+		.filter(Boolean);
+}
+
+function normalizeConstraintGeometry(geometry: Record<string, unknown>): void {
+	const rawConstraints = isRecord(geometry.constraints) ? { ...geometry.constraints } : {};
+	const collinearWith = uniqueStrings([
+		...normalizeStringRefArray(rawConstraints.collinearWith),
+		...normalizeStringRefArray(geometry.collinearWith),
+		...(typeof rawConstraints.collinearWith === 'string' ? [rawConstraints.collinearWith] : []),
+		...(typeof geometry.collinearWith === 'string' ? [geometry.collinearWith] : [])
+	]);
+	const parallelTo = uniqueStrings([
+		...normalizeStringRefArray(rawConstraints.parallelTo),
+		...normalizeStringRefArray(geometry.parallelTo),
+		...(typeof rawConstraints.parallelTo === 'string' ? [rawConstraints.parallelTo] : []),
+		...(typeof geometry.parallelTo === 'string' ? [geometry.parallelTo] : [])
+	]);
+	const perpendicularTo = uniqueStrings([
+		...normalizeStringRefArray(rawConstraints.perpendicularTo),
+		...normalizeStringRefArray(geometry.perpendicularTo),
+		...(typeof rawConstraints.perpendicularTo === 'string' ? [rawConstraints.perpendicularTo] : []),
+		...(typeof geometry.perpendicularTo === 'string' ? [geometry.perpendicularTo] : [])
+	]);
+	const mirrorCandidate = rawConstraints.mirrorOf ?? geometry.mirrorOf;
+	const mirrorOf = typeof mirrorCandidate === 'string' && mirrorCandidate.trim() ? mirrorCandidate.trim() : null;
+
+	const hasAny = collinearWith.length > 0 || parallelTo.length > 0 || perpendicularTo.length > 0 || Boolean(mirrorOf);
+	if (!hasAny) return;
+
+	geometry.constraints = {
+		...(collinearWith.length > 0 ? { collinearWith } : {}),
+		...(parallelTo.length > 0 ? { parallelTo } : {}),
+		...(perpendicularTo.length > 0 ? { perpendicularTo } : {}),
+		...(mirrorOf ? { mirrorOf } : {})
+	};
+}
+
+function normalizeAttachGeometry(geometry: Record<string, unknown>): void {
+	const rawAttach = isRecord(geometry.attach) ? { ...geometry.attach } : {};
+	const memberIdCandidate =
+		rawAttach.memberId ??
+		rawAttach.member ??
+		rawAttach.memberRef ??
+		rawAttach.baseObjectId ??
+		geometry.memberId ??
+		geometry.memberRef ??
+		geometry.baseObjectId;
+	const memberId =
+		typeof memberIdCandidate === 'string' && memberIdCandidate.trim()
+			? memberIdCandidate.trim()
+			: null;
+	if (!memberId) return;
+
+	const sCandidate = rawAttach.s ?? rawAttach.t ?? rawAttach.lambda ?? rawAttach.ratio ?? geometry.s ?? geometry.t;
+	const sRaw = toFiniteNumber(sCandidate);
+	const s = sRaw === null ? 0.5 : Math.max(0, Math.min(1, sRaw));
+	const sideCandidate = rawAttach.side ?? rawAttach.normalSide ?? geometry.side ?? geometry.normalSide;
+	const side = normalizeAttachSide(sideCandidate) ?? 'center';
+	const offsetCandidate = rawAttach.offset ?? rawAttach.distance ?? geometry.offset;
+	const offsetRaw = toFiniteNumber(offsetCandidate);
+	const offset = offsetRaw !== null ? offsetRaw : undefined;
+
+	geometry.attach = {
+		memberId,
+		s,
+		side,
+		...(offset !== undefined ? { offset } : {})
+	};
+}
+
 function normalizeType(value: unknown): SchemaObjectTypeV2 {
 	const raw = typeof value === 'string' ? value.trim() : 'label';
 	const mapped = TYPE_ALIASES_V1_TO_V2[raw] ?? raw;
@@ -222,6 +329,39 @@ function normalizeObjectGeometry(
 	context: string,
 	warnings: string[]
 ): void {
+	if (
+		type === 'bar' ||
+		type === 'cable' ||
+		type === 'spring' ||
+		type === 'damper' ||
+		type === 'axis' ||
+		type === 'dimension' ||
+		type === 'ground'
+	) {
+		const start = pickPoint(geometry, ['start', 'from', 'p1', 'a']);
+		const end = pickPoint(geometry, ['end', 'to', 'p2', 'b']);
+		const lengthRaw =
+			toFiniteNumber(geometry.length) ??
+			toFiniteNumber(geometry.L) ??
+			toFiniteNumber(geometry.span) ??
+			toFiniteNumber(geometry.distance);
+		if (lengthRaw !== null) {
+			geometry.length = Math.abs(lengthRaw);
+		} else if (start && end) {
+			geometry.length = Math.hypot(end.x - start.x, end.y - start.y);
+		}
+
+		const angleRaw =
+			toFiniteNumber(geometry.angleDeg) ??
+			toFiniteNumber(geometry.angle) ??
+			toFiniteNumber(geometry.thetaDeg);
+		if (angleRaw !== null) {
+			geometry.angleDeg = angleRaw;
+		} else if (start && end) {
+			geometry.angleDeg = (Math.atan2(end.y - start.y, end.x - start.x) * 180) / Math.PI;
+		}
+	}
+
 	if (type === 'rigid_disk') {
 		const radius = toFiniteNumber(geometry.radius) ?? toFiniteNumber(geometry.r);
 		if (radius !== null) geometry.radius = Math.abs(radius);
@@ -309,6 +449,13 @@ function normalizeObjectGeometry(
 		}
 	}
 
+	if (type === 'fixed_wall') {
+		const wallSide = normalizeWallSide(geometry.wallSide ?? geometry.side ?? geometry.wall);
+		if (wallSide) {
+			geometry.wallSide = wallSide;
+		}
+	}
+
 	if (type === 'trajectory') {
 		if (Array.isArray(geometry.points)) {
 			const points = geometry.points
@@ -361,6 +508,9 @@ function normalizeObjectGeometry(
 			geometry.values = values;
 		}
 	}
+
+	normalizeConstraintGeometry(geometry);
+	normalizeAttachGeometry(geometry);
 }
 
 function fallbackGeometryFromRaw(raw: Record<string, unknown>): Record<string, unknown> {
@@ -374,6 +524,24 @@ function fallbackGeometryFromRaw(raw: Record<string, unknown>): Record<string, u
 		'to',
 		'guideStart',
 		'guideEnd',
+		'attach',
+		'memberId',
+		'memberRef',
+		's',
+		't',
+		'side',
+		'offset',
+		'length',
+		'L',
+		'angleDeg',
+		'angle',
+		'thetaDeg',
+		'constraints',
+		'collinearWith',
+		'parallelTo',
+		'perpendicularTo',
+		'mirrorOf',
+		'wallSide',
 		'radius',
 		'r',
 		'kind',
@@ -794,6 +962,11 @@ export function normalizeSchemaDataV2(input: unknown): SchemaNormalizeResultV2 {
 
 	const version = typeof root.version === 'string' ? root.version : SCHEMA_DATA_V2_VERSION;
 	const meta = isRecord(root.meta) ? root.meta : {};
+	const originPolicy = normalizeOriginPolicy(
+		(isRecord(root.coordinateSystem) ? root.coordinateSystem.originPolicy : undefined) ??
+		root.originPolicy ??
+		(isRecord(root.meta) ? root.meta.originPolicy : undefined)
+	);
 	const coordinateSystem: CoordinateSystemV2 = isRecord(root.coordinateSystem)
 		? {
 				xUnit: typeof root.coordinateSystem.xUnit === 'string' ? root.coordinateSystem.xUnit : 'm',
@@ -805,13 +978,15 @@ export function normalizeSchemaDataV2(input: unknown): SchemaNormalizeResultV2 {
 						? { x: root.coordinateSystem.origin.x, y: root.coordinateSystem.origin.y }
 						: { x: 0, y: 0 },
 				axisOrientation:
-					root.coordinateSystem.axisOrientation === 'left-handed' ? 'left-handed' : 'right-handed'
+					root.coordinateSystem.axisOrientation === 'left-handed' ? 'left-handed' : 'right-handed',
+				originPolicy
 			}
 		: {
 				xUnit: 'm',
 				yUnit: 'm',
 				origin: { x: 0, y: 0 },
-				axisOrientation: 'right-handed'
+				axisOrientation: 'right-handed',
+				originPolicy
 			};
 
 	const nodesRaw = toObjectArray(root.nodes);
@@ -866,6 +1041,8 @@ export function normalizeSchemaDataV2(input: unknown): SchemaNormalizeResultV2 {
 
 	const mergedMeta = {
 		...(isRecord(stabilized.schema.meta) ? stabilized.schema.meta : {}),
+		layoutPipeline: 'topology-first',
+		originPolicy: stabilized.schema.coordinateSystem?.originPolicy ?? 'auto',
 		layoutMetrics: {
 			before: stabilized.metricsBefore,
 			after: stabilized.metricsAfter

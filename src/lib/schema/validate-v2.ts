@@ -9,6 +9,7 @@ export const MAX_SCHEMA_V2_RESULTS = 300;
 export const MAX_SCHEMA_V2_TEXT_ITEMS = 128;
 export const MAX_SCHEMA_V2_TEXT_LENGTH = 1_500;
 export const MAX_SCHEMA_V2_COORD_ABS = 100_000;
+const CONSTRAINT_REQUIRED_TYPES = new Set(['bar', 'cable', 'spring', 'damper']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -95,10 +96,38 @@ function validateObjectSpecific(object: ObjectV2 | ResultV2, index: number, erro
 		pushError(errors, `${section}[${index}] bar must reference two distinct nodes`);
 	}
 
+	if (CONSTRAINT_REQUIRED_TYPES.has(object.type)) {
+		const length = geometry.length;
+		if (!isFiniteNumber(length) || length <= 0) {
+			pushError(errors, `${section}[${index}] ${object.type} requires geometry.length > 0`);
+		}
+		const constraints = isRecord(geometry.constraints) ? geometry.constraints : null;
+		const hasConstraint = Boolean(
+			(constraints && Array.isArray(constraints.collinearWith) && constraints.collinearWith.length > 0) ||
+			(constraints && Array.isArray(constraints.parallelTo) && constraints.parallelTo.length > 0) ||
+			(constraints && Array.isArray(constraints.perpendicularTo) && constraints.perpendicularTo.length > 0) ||
+			(constraints && typeof constraints.mirrorOf === 'string' && constraints.mirrorOf.trim().length > 0)
+		);
+		const hasAngle = isFiniteNumber(geometry.angleDeg);
+		if (!hasAngle && !hasConstraint) {
+			pushError(
+				errors,
+				`${section}[${index}] ${object.type} requires geometry.angleDeg or constraints (collinearWith/parallelTo/perpendicularTo/mirrorOf)`
+			);
+		}
+	}
+
 	if (object.type === 'rigid_disk') {
 		const radius = geometry.radius;
 		if (!isFiniteNumber(radius) || radius <= 0) {
 			pushError(errors, `${section}[${index}] rigid_disk requires geometry.radius > 0`);
+		}
+	}
+
+	if (object.type === 'fixed_wall' && geometry.wallSide !== undefined) {
+		const wallSide = typeof geometry.wallSide === 'string' ? geometry.wallSide.trim().toLowerCase() : '';
+		if (wallSide !== 'left' && wallSide !== 'right' && wallSide !== 'top' && wallSide !== 'bottom') {
+			pushError(errors, `${section}[${index}] fixed_wall.wallSide must be left|right|top|bottom`);
 		}
 	}
 
@@ -118,6 +147,25 @@ function validateObjectSpecific(object: ObjectV2 | ResultV2, index: number, erro
 	if (object.type === 'force' || object.type === 'velocity' || object.type === 'acceleration') {
 		if (!hasDirection(geometry)) {
 			pushError(errors, `${section}[${index}] ${object.type} requires direction (vector/angle/cardinal)`);
+		}
+	}
+
+	if (isRecord(geometry.attach)) {
+		if (typeof geometry.attach.memberId !== 'string' || !geometry.attach.memberId.trim()) {
+			pushError(errors, `${section}[${index}] attach requires memberId`);
+		}
+		if (!isFiniteNumber(geometry.attach.s) || geometry.attach.s < 0 || geometry.attach.s > 1) {
+			pushError(errors, `${section}[${index}] attach.s must be in [0,1]`);
+		}
+		if (
+			geometry.attach.side !== undefined &&
+			geometry.attach.side !== '+n' &&
+			geometry.attach.side !== '-n' &&
+			geometry.attach.side !== '+t' &&
+			geometry.attach.side !== '-t' &&
+			geometry.attach.side !== 'center'
+		) {
+			pushError(errors, `${section}[${index}] attach.side must be +n|-n|+t|-t|center`);
 		}
 	}
 

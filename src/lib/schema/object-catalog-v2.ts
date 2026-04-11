@@ -42,7 +42,7 @@ export const SCHEMA_OBJECT_CATALOG_V2: Record<SchemaObjectTypeV2, ObjectCatalogR
 	},
 	fixed_wall: {
 		requiredNodeRefs: 1,
-		description: 'Fixed support with wall hatch.'
+		description: 'Fixed support with wall hatch. Supports geometry.wallSide for local orientation semantics.'
 	},
 	hinge_fixed: {
 		requiredNodeRefs: 1,
@@ -62,7 +62,7 @@ export const SCHEMA_OBJECT_CATALOG_V2: Record<SchemaObjectTypeV2, ObjectCatalogR
 	},
 	force: {
 		requiredNodeRefs: 1,
-		description: 'Concentrated force.'
+		description: 'Concentrated force. Supports geometry.attach={memberId,s,side,offset}.'
 	},
 	moment: {
 		requiredNodeRefs: 1,

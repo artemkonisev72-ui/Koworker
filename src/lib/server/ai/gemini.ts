@@ -406,8 +406,8 @@ Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 schemaData MUST be version "2.0" with root keys:
 {
   "version":"2.0",
-  "meta":{"taskDomain":"mechanics","catalogVersion":"2026-04-11"},
-  "coordinateSystem":{"xUnit":"m","yUnit":"m","origin":{"x":0,"y":0},"axisOrientation":"right-handed"},
+  "meta":{"taskDomain":"mechanics","catalogVersion":"2026-04-11","layoutPipeline":"topology-first"},
+  "coordinateSystem":{"xUnit":"m","yUnit":"m","origin":{"x":0,"y":0},"axisOrientation":"right-handed","originPolicy":"auto|left_support|fixed_support|centroid"},
   "nodes": [],
   "objects": [],
   "results": [],
@@ -418,10 +418,13 @@ schemaData MUST be version "2.0" with root keys:
 Allowed object types: bar, cable, spring, damper, rigid_disk, fixed_wall, hinge_fixed, hinge_roller, internal_hinge, slider, force, moment, distributed, velocity, acceleration, angular_velocity, angular_acceleration, trajectory, epure, label, dimension, axis, ground.
 Every object MUST contain non-empty id, type, geometry object.
 Use nodeRefs to reference node ids from nodes array.
-Coordinates are not decorative: keep a physically meaningful relative scale and proportions.
-Prefer coordinates in range [-10, 10] and avoid extremely tiny spans.
-For linear members (bar/cable/spring/damper), include geometry.length when known from the task.
+Topology-first policy: your primary responsibility is structure and constraints, not final absolute coordinates.
+Coordinates are only a coarse scaffold and may be overridden by deterministic backend layout.
+For linear members (bar/cable/spring/damper/axis/ground), include geometry.length and geometry.angleDeg or geometry.constraints.
+geometry.constraints object may include: collinearWith[], parallelTo[], perpendicularTo[], mirrorOf.
 For supports and loads, always bind to existing member nodes via nodeRefs (never default to origin).
+For support/load/moment placement on members, prefer geometry.attach: {memberId, s, side, offset}.
+For fixed_wall use geometry.wallSide = left|right|top|bottom when side semantics matter.
 If exact dimensions are unknown, keep consistent relative lengths and positions.
 For distributed, include geometry.kind and geometry.intensity.
 For moment/angular types, geometry.direction MUST be exactly "cw" or "ccw".
@@ -430,8 +433,9 @@ Preserve language of assumptions/ambiguities according to user request.
 ${languagePolicy(userMessage)}`;
 
 	const stageAPrompt = `${baseInstruction}
-Stage A objective: create a stable node skeleton and coarse object list.
-At this stage, prioritize correct node positions and object-node linkage.`;
+Stage A objective: create topology and constraints first.
+At this stage, prioritize node connectivity, object-node linkage, and member constraints.
+Avoid spending effort on decorative absolute coordinates.`;
 	const stageAQuestion = `Task for scheme generation (Stage A):\n${contextMessage}`;
 	const stageA = await generateSchemaStage(history, stageAPrompt, stageAQuestion, params?.forcedModel);
 	usedModels.push(formatTokenAttribution(stageA.model, 'SchemaGen-A', stageA.tokens));
@@ -442,12 +446,13 @@ Stage B objective: refine geometry/style/details using prepared skeleton.
 Keep existing node ids and object ids stable where possible.
 Do not remove valid supports/loads/moments detected in task.
 Treat node coordinates as a coarse scaffold, not as decorative absolute values.
-Prefer structural constraints in geometry/meta (length, angleDeg, relative placement) over arbitrary coordinates.
+Prefer structural constraints in geometry/meta (length, angleDeg, constraints, attach) over arbitrary coordinates.
 Fill canonical geometry per type:
 - bar/cable/spring/damper/axis/dimension/ground: use nodeRefs [start,end]
 - fixed_wall/hinge_fixed/hinge_roller/internal_hinge/label: use nodeRefs [node]
+- fixed_wall may include wallSide left|right|top|bottom
 - slider: nodeRefs [node, guideStart, guideEnd]
-- force/velocity/acceleration: nodeRefs [node] + direction
+- force/velocity/acceleration: nodeRefs [node] + direction (+ attach for member-relative placement)
 - moment: nodeRefs [node] + direction cw|ccw (+ optional magnitude or label)
 - distributed: nodeRefs [start,end] + kind + intensity
 - rigid_disk: nodeRefs [center] + radius
@@ -492,7 +497,7 @@ export async function reviseSchema(
 	}
 ): Promise<SchemaGenerationResult> {
 	const languageSeed = `${params.originalPrompt}\n${params.revisionNotes}`;
-	const prompt = `You revise ONLY the engineering scheme and must not solve the task.
+const prompt = `You revise ONLY the engineering scheme and must not solve the task.
 Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 Preserve correct existing elements and update only what is needed per revision notes.
 Keep schemaData.version = "2.0" and finite numbers.
@@ -501,7 +506,10 @@ bar, cable, spring, damper, rigid_disk, fixed_wall, hinge_fixed, hinge_roller, i
 Use nodeRefs to bind all objects to nodes.
 Keep physically meaningful scale/proportions; avoid coordinate collapse and avoid decorative coordinates.
 Prefer coordinates in range [-10, 10] and preserve consistent relative lengths.
-For linear members include geometry.length when available from text.
+For linear members include geometry.length and geometry.angleDeg or geometry.constraints.
+Use geometry.constraints (collinearWith, parallelTo, perpendicularTo, mirrorOf) when relation is known.
+Use geometry.attach for member-relative placement when loads/supports should be attached by parameter s.
+For fixed_wall side semantics use geometry.wallSide=left|right|top|bottom.
 For supports/loads always attach to member nodes (nodeRefs) instead of origin defaults.
 For distributed include kind + intensity.
 For moment/angular include direction "cw" | "ccw".
@@ -531,6 +539,52 @@ ${languagePolicy(languageSeed)}`;
 		usedModels: [
 			formatTokenAttribution(generation.model, 'SchemaRevision', generation.tokens),
 			formatTokenAttribution(stage2.model, 'SchemaRevision-SelfCheck', stage2.tokens)
+		]
+	};
+}
+
+export async function repairSchemaByIssues(
+	history: GeminiHistory[],
+	params: {
+		originalPrompt: string;
+		currentSchema: SchemaData | SchemaDataV2;
+		issues: string[];
+		forcedModel?: string | null;
+	}
+): Promise<SchemaGenerationResult> {
+	const languageSeed = `${params.originalPrompt}\n${params.issues.join('\n')}`;
+	const issuesText = params.issues.map((issue, index) => `${index + 1}. ${issue}`).join('\n');
+
+	const prompt = `You are a schema repair worker for contract v2.
+Return strict JSON object with keys: schemaData, assumptions, ambiguities.
+Repair ONLY the listed issues while preserving valid ids, nodeRefs, and unaffected structure.
+Do not solve the task. Do not rewrite the schema from scratch.
+Focus on topology and constraints:
+- linear members should have geometry.length and geometry.angleDeg or geometry.constraints
+- supports/loads should be attached via nodeRefs and, when needed, geometry.attach
+- fixed_wall may use geometry.wallSide
+Keep schemaData.version = "2.0" and finite numbers.
+${languagePolicy(languageSeed)}`;
+
+	const question = `Original task:\n${params.originalPrompt}\n\nIssues to fix:\n${issuesText}\n\nCurrent schema JSON:\n${JSON.stringify(params.currentSchema, null, 2)}`;
+	const messages = buildContext(history, prompt, question);
+	const stage1 = await generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, params.forcedModel);
+	const stage1Parsed = parseSchemaResult(stage1.text);
+
+	const stage2Prompt = `You perform final targeted self-check for schema contract v2.
+Return strict JSON object with keys: schemaData, assumptions, ambiguities.
+Keep only issue-driven changes and preserve previously valid structure.
+${languagePolicy(languageSeed)}`;
+	const stage2Question = `Issues:\n${issuesText}\n\nCandidate schema:\n${JSON.stringify(stage1Parsed.schemaData, null, 2)}`;
+	const stage2 = await generateSchemaStage(history, stage2Prompt, stage2Question, params.forcedModel);
+
+	return {
+		...stage2.parsed,
+		model: stage2.model,
+		tokens: stage1.tokens + stage2.tokens,
+		usedModels: [
+			formatTokenAttribution(stage1.model, 'SchemaRepair', stage1.tokens),
+			formatTokenAttribution(stage2.model, 'SchemaRepair-SelfCheck', stage2.tokens)
 		]
 	};
 }

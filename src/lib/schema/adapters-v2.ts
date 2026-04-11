@@ -146,7 +146,8 @@ export function adaptSchemaV1ToV2(schema: SchemaData): SchemaDataV2 {
 			xUnit: 'm',
 			yUnit: 'm',
 			origin: { x: 0, y: 0 },
-			axisOrientation: 'right-handed'
+			axisOrientation: 'right-handed',
+			originPolicy: 'auto'
 		},
 		nodes,
 		objects,

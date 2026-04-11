@@ -169,3 +169,79 @@ export function getSchemaLayoutLogDetails(schema: unknown): Record<string, unkno
 		bboxHeight: Number(metrics.bbox.height.toFixed(4))
 	};
 }
+
+export function getSchemaRepairIssues(schema: unknown): string[] {
+	if (!isSchemaDataV2(schema)) return [];
+	const typed = schema as SchemaDataV2;
+	const metrics = analyzeSchemaLayoutV2(typed);
+	const issues: string[] = [];
+
+	if (metrics.coordCollapseRate > 0.45) {
+		issues.push(
+			`Coordinates are collapsed (coordCollapseRate=${metrics.coordCollapseRate.toFixed(3)}). Rebuild node placement from topology and member constraints.`
+		);
+	}
+	if (metrics.minElementSeparation < 0.06) {
+		issues.push(
+			`Elements are too close (minElementSeparation=${metrics.minElementSeparation.toFixed(3)}). Increase separation while preserving connectivity.`
+		);
+	}
+	if (metrics.supportOnMemberRate < 0.95) {
+		issues.push(
+			`Some supports are not attached to member nodes (supportOnMemberRate=${metrics.supportOnMemberRate.toFixed(3)}). Reattach supports using nodeRefs/attach.`
+		);
+	}
+	if (metrics.loadOnMemberRate < 0.95) {
+		issues.push(
+			`Some loads are not attached to member nodes (loadOnMemberRate=${metrics.loadOnMemberRate.toFixed(3)}). Reattach loads using nodeRefs/attach.`
+		);
+	}
+	if (metrics.aspectDistortion > 35) {
+		issues.push(
+			`Aspect distortion is too high (aspectDistortion=${metrics.aspectDistortion.toFixed(3)}). Normalize proportions using constraints/lengths.`
+		);
+	}
+
+	const constraintTypes = new Set(['bar', 'cable', 'spring', 'damper']);
+	let missingConstraintCount = 0;
+	for (const object of typed.objects) {
+		if (!constraintTypes.has(object.type)) continue;
+		const geometry = object.geometry as Record<string, unknown>;
+		const hasLength = typeof geometry.length === 'number' && Number.isFinite(geometry.length) && geometry.length > 0;
+		const hasAngle = typeof geometry.angleDeg === 'number' && Number.isFinite(geometry.angleDeg);
+		const constraints =
+			typeof geometry.constraints === 'object' && geometry.constraints !== null
+				? (geometry.constraints as Record<string, unknown>)
+				: null;
+		const hasRelations = Boolean(
+			(constraints && Array.isArray(constraints.collinearWith) && constraints.collinearWith.length > 0) ||
+			(constraints && Array.isArray(constraints.parallelTo) && constraints.parallelTo.length > 0) ||
+			(constraints && Array.isArray(constraints.perpendicularTo) && constraints.perpendicularTo.length > 0) ||
+			(constraints && typeof constraints.mirrorOf === 'string' && constraints.mirrorOf.trim())
+		);
+		if (!hasLength || (!hasAngle && !hasRelations)) {
+			missingConstraintCount += 1;
+		}
+	}
+	if (missingConstraintCount > 0) {
+		issues.push(
+			`${missingConstraintCount} linear members are missing mandatory geometry.length and angle/constraints. Fill these fields.`
+		);
+	}
+
+	let missingWallSideCount = 0;
+	for (const object of typed.objects) {
+		if (object.type !== 'fixed_wall') continue;
+		const wallSide = (object.geometry as Record<string, unknown>).wallSide;
+		if (typeof wallSide !== 'string' || !wallSide.trim()) {
+			missingWallSideCount += 1;
+		}
+	}
+	if (missingWallSideCount > 0) {
+		issues.push(
+			`${missingWallSideCount} fixed_wall objects are missing geometry.wallSide. Add left|right|top|bottom.`
+		);
+	}
+
+	return issues.slice(0, 6);
+}

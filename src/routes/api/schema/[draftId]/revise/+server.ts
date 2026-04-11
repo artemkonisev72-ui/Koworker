@@ -1,13 +1,14 @@
 import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
-import { reviseSchema } from '$lib/server/ai/gemini.js';
+import { repairSchemaByIssues, reviseSchema } from '$lib/server/ai/gemini.js';
 import type { SchemaAny } from '$lib/schema/schema-any.js';
 import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import {
 	detectPromptLanguage,
 	formatSchemaAssistantContent,
 	getSchemaLayoutLogDetails,
+	getSchemaRepairIssues,
 	isReviewableStatus,
 	loadGeminiHistory,
 	logSchemaCheck,
@@ -96,14 +97,70 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 			logSchemaCheck('revise.schema_invalid', { draftId: draft.id, errors: validation.errors });
 			return error(422, `Revised schema validation failed: ${validation.errors.join('; ')}`);
 		}
-		const layoutDetails = getSchemaLayoutLogDetails(validation.value);
+
+		let finalRevision = revised;
+		let finalValidation = validation;
+
+		const repairIssues = getSchemaRepairIssues(validation.value);
+		if (repairIssues.length > 0) {
+			logSchemaCheck('revise.repair_requested', {
+				draftId: draft.id,
+				issueCount: repairIssues.length,
+				issues: repairIssues
+			});
+			try {
+				const repaired = await repairSchemaByIssues(history, {
+					originalPrompt: draft.originalPrompt,
+					currentSchema: validation.value,
+					issues: repairIssues,
+					forcedModel
+				});
+				const repairedValidation = validateSchemaAny(repaired.schemaData);
+				if (repairedValidation.ok && repairedValidation.value) {
+					const repairedIssues = getSchemaRepairIssues(repairedValidation.value);
+					if (repairedIssues.length < repairIssues.length) {
+						finalValidation = repairedValidation;
+						finalRevision = {
+							...repaired,
+							tokens: revised.tokens + repaired.tokens,
+							usedModels: [...revised.usedModels, ...repaired.usedModels],
+							assumptions: repaired.assumptions.length > 0 ? repaired.assumptions : revised.assumptions,
+							ambiguities: repaired.ambiguities.length > 0 ? repaired.ambiguities : revised.ambiguities
+						};
+						logSchemaCheck('revise.repair_applied', {
+							draftId: draft.id,
+							beforeIssues: repairIssues.length,
+							afterIssues: repairedIssues.length
+						});
+					} else {
+						logSchemaCheck('revise.repair_skipped', {
+							draftId: draft.id,
+							beforeIssues: repairIssues.length,
+							afterIssues: repairedIssues.length
+						});
+					}
+				} else {
+					logSchemaCheck('revise.repair_invalid', {
+						draftId: draft.id,
+						errors: repairedValidation.errors
+					});
+				}
+			} catch (repairErr) {
+				logSchemaCheck('revise.repair_failed', {
+					draftId: draft.id,
+					error: repairErr instanceof Error ? repairErr.message : String(repairErr)
+				});
+			}
+		}
+
+		const layoutDetails = getSchemaLayoutLogDetails(finalValidation.value);
 		if (layoutDetails) {
 			logSchemaCheck('revise.layout_metrics', {
 				draftId: draft.id,
 				...layoutDetails,
-				layoutAutoCorrected: (validation.value as any)?.meta?.layoutAutoCorrected === true,
-				layoutCorrections: Array.isArray((validation.value as any)?.meta?.layoutCorrections)
-					? (validation.value as any).meta.layoutCorrections
+				layoutAutoCorrected: (finalValidation.value as any)?.meta?.layoutAutoCorrected === true,
+				layoutCorrections: Array.isArray((finalValidation.value as any)?.meta?.layoutCorrections)
+					? (finalValidation.value as any).meta.layoutCorrections
 					: []
 			});
 		}
@@ -111,8 +168,8 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 		const revisionIndex = draft.revisionCount + 1;
 		const assistantContent = formatSchemaAssistantContent({
 			revisionIndex,
-			assumptions: revised.assumptions,
-			ambiguities: revised.ambiguities,
+			assumptions: finalRevision.assumptions,
+			ambiguities: finalRevision.ambiguities,
 			language: detectPromptLanguage(`${draft.originalPrompt}\n${notes}`)
 		});
 
@@ -122,8 +179,8 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 				where: { id: draft.id },
 				data: {
 					status: 'AWAITING_REVIEW',
-					currentSchema: validation.value,
-					schemaVersion: validation.version ?? '2.0',
+					currentSchema: finalValidation.value,
+					schemaVersion: finalValidation.version ?? '2.0',
 					revisionCount: revisionIndex
 				}
 			});
@@ -132,10 +189,10 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 				data: {
 					draftId: draft.id,
 					revisionIndex,
-					schemaVersion: validation.version ?? '2.0',
+					schemaVersion: finalValidation.version ?? '2.0',
 					userNotes: notes,
-					schema: validation.value,
-					assumptions: revised.assumptions
+					schema: finalValidation.value,
+					assumptions: finalRevision.assumptions
 				}
 			});
 
@@ -145,9 +202,9 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 					draftId: draft.id,
 					role: 'ASSISTANT',
 					content: assistantContent,
-					schemaData: JSON.stringify(validation.value),
-					schemaVersion: validation.version ?? '2.0',
-					usedModels: JSON.stringify(revised.usedModels)
+					schemaData: JSON.stringify(finalValidation.value),
+					schemaVersion: finalValidation.version ?? '2.0',
+					usedModels: JSON.stringify(finalRevision.usedModels)
 				}
 			});
 
@@ -157,17 +214,17 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 		return json({
 			draftId: draft.id,
 			status: result.updatedDraft.status,
-			schemaVersion: validation.version ?? '2.0',
+			schemaVersion: finalValidation.version ?? '2.0',
 			revisionIndex,
-			schema: validation.value,
-			assumptions: revised.assumptions,
-			ambiguities: revised.ambiguities,
+			schema: finalValidation.value,
+			assumptions: finalRevision.assumptions,
+			ambiguities: finalRevision.ambiguities,
 			assistantMessage: {
 				id: result.assistantMessage.id,
 				role: result.assistantMessage.role,
 				content: result.assistantMessage.content,
-				schemaData: validation.value,
-				usedModels: revised.usedModels,
+				schemaData: finalValidation.value,
+				usedModels: finalRevision.usedModels,
 				draftId: result.assistantMessage.draftId,
 				createdAt: result.assistantMessage.createdAt
 			}
