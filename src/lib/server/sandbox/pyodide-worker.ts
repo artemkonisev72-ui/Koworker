@@ -16,9 +16,12 @@ if (!parentPort) {
 let pyodide: PyodideInterface | null = null;
 let currentStdout = '';
 
-const EXEC_WRAPPER = `
+const SANDBOX_BOOTSTRAP = `
 import builtins as __builtins_mod
-import math, sympy, numpy, json
+import math as __sandbox_math
+import sympy as __sandbox_sympy
+import numpy as __sandbox_numpy
+import json as __sandbox_json
 
 _ALLOWED_IMPORTS = {"math", "sympy", "numpy", "json"}
 _REAL_IMPORT = __builtins_mod.__import__
@@ -58,16 +61,16 @@ _SAFE_BUILTINS = {
     "TypeError": TypeError
 }
 
-_globals = {
-    "__builtins__": _SAFE_BUILTINS,
-    "math": math,
-    "sympy": sympy,
-    "numpy": numpy,
-    "np": numpy,
-    "json": json
-}
-
-exec(compile(__sandbox_code, "<sandbox>", "exec"), _globals, None)
+def _run_sandbox(__sandbox_code):
+    _globals = {
+        "__builtins__": _SAFE_BUILTINS,
+        "math": __sandbox_math,
+        "sympy": __sandbox_sympy,
+        "numpy": __sandbox_numpy,
+        "np": __sandbox_numpy,
+        "json": __sandbox_json
+    }
+    exec(compile(__sandbox_code, "<sandbox>", "exec"), _globals, None)
 `;
 
 async function init(): Promise<void> {
@@ -81,6 +84,7 @@ async function init(): Promise<void> {
 	});
 
 	await pyodide.loadPackage(['sympy', 'numpy']);
+	await pyodide.runPythonAsync(SANDBOX_BOOTSTRAP);
 	parentPort!.postMessage({ type: 'ready' });
 }
 
@@ -94,7 +98,7 @@ async function runTask(id: string, code: string): Promise<void> {
 
 	try {
 		pyodide.globals.set('__sandbox_code', code);
-		await pyodide.runPythonAsync(EXEC_WRAPPER);
+		await pyodide.runPythonAsync('_run_sandbox(__sandbox_code)');
 		parentPort!.postMessage({ id, ok: true, stdout: currentStdout.trim() });
 	} catch (err: unknown) {
 		const message = err instanceof Error ? err.message : String(err);

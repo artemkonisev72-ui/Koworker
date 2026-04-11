@@ -27,9 +27,9 @@ const WORKER_SCRIPT = fs.existsSync(jsWorkerPath) ? jsWorkerPath : tsWorkerPath;
 const WORKER_OPTIONS = WORKER_SCRIPT.endsWith('.ts') ? { execArgv: ['--import', 'tsx/esm'] } : {};
 
 const TASK_TIMEOUT_MS = 30_000;
-const MAX_TASKS_PER_WORKER = 1; // strict isolation between tasks/users
-const POOL_SIZE = 2;
-const MAX_QUEUE_SIZE = 100;
+const MAX_TASKS_PER_WORKER = 8; // amortize heavy pyodide startup on weak servers
+const POOL_SIZE = 1; // lower memory/CPU pressure for weak servers
+const MAX_QUEUE_SIZE = 30;
 const MAX_CODE_LENGTH = 30_000;
 
 const ALLOWED_IMPORT_ROOTS = new Set(['math', 'sympy', 'numpy', 'json']);

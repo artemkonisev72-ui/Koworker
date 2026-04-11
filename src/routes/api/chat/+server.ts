@@ -22,7 +22,7 @@ const MAX_IMAGE_BASE64_LENGTH = 2_800_000; // ~2 MB binary payload in base64
 const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const RATE_WINDOW_MS = 60_000;
 const MAX_REQUESTS_PER_WINDOW = 20;
-const MAX_CONCURRENT_PIPELINES_PER_USER = 2;
+const MAX_CONCURRENT_PIPELINES_PER_USER = 1;
 
 type RateEntry = {
 	windowStart: number;
