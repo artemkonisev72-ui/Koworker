@@ -100,7 +100,7 @@ function buildContext(history: GeminiHistory[], systemPrompt: string, currentQue
 	return messages;
 }
 
-const DEFAULT_GEMINI_TIMEOUT_MS = 18_000;
+const DEFAULT_GEMINI_TIMEOUT_MS = 60_000;
 const MIN_GEMINI_TIMEOUT_MS = 5_000;
 const MAX_GEMINI_TIMEOUT_MS = 60_000;
 
