@@ -466,7 +466,9 @@ schemaData MUST be version "2.0" with root keys:
   "assumptions": [],
   "ambiguities": []
 }
-Allowed object types: bar, cable, spring, damper, rigid_disk, fixed_wall, hinge_fixed, hinge_roller, internal_hinge, slider, force, moment, distributed, velocity, acceleration, angular_velocity, angular_acceleration, trajectory, epure, label, dimension, axis, ground.
+Allowed object types for schemaData.objects: bar, cable, spring, damper, rigid_disk, fixed_wall, hinge_fixed, hinge_roller, internal_hinge, slider, force, moment, distributed, velocity, acceleration, angular_velocity, angular_acceleration, trajectory, label, dimension, axis, ground.
+Result types for schemaData.results: epure, trajectory, label, dimension, axis.
+Do NOT place epure into schemaData.objects; epure must be in schemaData.results only.
 Every object MUST contain non-empty id, type, geometry object.
 Use nodeRefs to reference node ids from nodes array.
 Topology-first policy: your primary responsibility is structure and constraints, not final absolute coordinates.
@@ -580,6 +582,7 @@ Keep schemaData.version = "2.0" and finite numbers.
 Use ONLY object types from catalog v2:
 bar, cable, spring, damper, rigid_disk, fixed_wall, hinge_fixed, hinge_roller, internal_hinge, slider, force, moment, distributed, velocity, acceleration, angular_velocity, angular_acceleration, trajectory, epure, label, dimension, axis, ground.
 Use nodeRefs to bind all objects to nodes.
+If epure is needed, place it in schemaData.results, not in schemaData.objects.
 Keep physically meaningful scale/proportions; avoid coordinate collapse and avoid decorative coordinates.
 Prefer coordinates in range [-10, 10] and preserve consistent relative lengths.
 For linear members include geometry.length and geometry.angleDeg or geometry.constraints.
@@ -654,6 +657,7 @@ Focus on topology and constraints:
 - supports/loads should be attached via nodeRefs and, when needed, geometry.attach
 - fixed_wall may use geometry.wallSide
 Keep schemaData.version = "2.0" and finite numbers.
+Keep epure entries only in schemaData.results (never in schemaData.objects).
 ${languagePolicy(languageSeed)}`;
 
 	const question = `Original task:\n${params.originalPrompt}\n\nIssues to fix:\n${issuesText}\n\nCurrent schema JSON:\n${JSON.stringify(params.currentSchema, null, 2)}`;

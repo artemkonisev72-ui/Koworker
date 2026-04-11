@@ -946,6 +946,52 @@ function ensureEpureCompleteness(
 	return result;
 }
 
+function moveEpureObjectsToResults(
+	objects: ObjectV2[],
+	warnings: string[]
+): { objects: ObjectV2[]; movedResults: ResultV2[] } {
+	const keptObjects: ObjectV2[] = [];
+	const movedResults: ResultV2[] = [];
+
+	for (const [index, object] of objects.entries()) {
+		if (object.type !== 'epure') {
+			keptObjects.push(object);
+			continue;
+		}
+
+		movedResults.push({
+			...object,
+			type: 'epure'
+		});
+		warnings.push(`objects[${index}] type "epure" moved to results`);
+	}
+
+	return { objects: keptObjects, movedResults };
+}
+
+function ensureUniqueResultIds(results: ResultV2[], objects: ObjectV2[], warnings: string[]): ResultV2[] {
+	const usedIds = new Set<string>(objects.map((object) => object.id));
+	const uniqueResults: ResultV2[] = [];
+
+	for (const [index, result] of results.entries()) {
+		const baseId = typeof result.id === 'string' && result.id.trim() ? result.id.trim() : `res_${index + 1}`;
+		let nextId = baseId;
+		let suffix = 2;
+		while (usedIds.has(nextId)) {
+			nextId = `${baseId}_${suffix}`;
+			suffix += 1;
+		}
+
+		if (nextId !== result.id) {
+			warnings.push(`results[${index}] id "${result.id}" renamed to "${nextId}" to keep uniqueness`);
+		}
+		usedIds.add(nextId);
+		uniqueResults.push({ ...result, id: nextId });
+	}
+
+	return uniqueResults;
+}
+
 export function normalizeSchemaDataV2(input: unknown): SchemaNormalizeResultV2 {
 	const warnings: string[] = [];
 	const root = normalizeRootShape(input);
@@ -1007,11 +1053,19 @@ export function normalizeSchemaDataV2(input: unknown): SchemaNormalizeResultV2 {
 		fillNodeRefs(result, index, 'results', nodes, maps.nodeIds, maps.nodeByPoint, warnings);
 	}
 
+	const epureMigrated = moveEpureObjectsToResults(objects, warnings);
+	const canonicalObjects = epureMigrated.objects;
+	const canonicalResultsInitial = ensureUniqueResultIds(
+		[...resultsInitial, ...epureMigrated.movedResults],
+		canonicalObjects,
+		warnings
+	);
+
 	nodes = ensureUniqueNodeIds(nodes, warnings);
 	const nodeById = new Map(nodes.map((node) => [node.id, node]));
 
-	const results = resultsInitial
-		.map((result, index) => ensureEpureCompleteness(result, index, objects, nodeById, warnings))
+	const results = canonicalResultsInitial
+		.map((result, index) => ensureEpureCompleteness(result, index, canonicalObjects, nodeById, warnings))
 		.filter((entry): entry is ResultV2 => Boolean(entry));
 
 	const assumptions = toStringArray(root.assumptions);
@@ -1025,7 +1079,7 @@ export function normalizeSchemaDataV2(input: unknown): SchemaNormalizeResultV2 {
 		meta,
 		coordinateSystem,
 		nodes,
-		objects,
+		objects: canonicalObjects,
 		results,
 		annotations,
 		assumptions,
