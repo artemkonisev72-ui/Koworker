@@ -26,7 +26,7 @@ if (!fs.existsSync(tsWorkerPath)) {
 const WORKER_SCRIPT = fs.existsSync(jsWorkerPath) ? jsWorkerPath : tsWorkerPath;
 const WORKER_OPTIONS = WORKER_SCRIPT.endsWith('.ts') ? { execArgv: ['--import', 'tsx/esm'] } : {};
 
-const TASK_TIMEOUT_MS = 10_000;
+const TASK_TIMEOUT_MS = 30_000;
 const MAX_TASKS_PER_WORKER = 1; // strict isolation between tasks/users
 const POOL_SIZE = 2;
 const MAX_QUEUE_SIZE = 100;
@@ -213,7 +213,7 @@ class WorkerPool {
 					entry.busy = false;
 					console.warn(`[WorkerPool] Task ${id} timed out, terminating worker`);
 					this.recycleEntry(entry);
-					reject(new SandboxError('Execution timeout exceeded (10 seconds)'));
+					reject(new SandboxError('Execution timeout exceeded (30 seconds)'));
 				}, TASK_TIMEOUT_MS);
 
 				const originalResolve = entry.pending.get(id)!.resolve;

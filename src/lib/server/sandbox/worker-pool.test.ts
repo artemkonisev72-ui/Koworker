@@ -66,13 +66,13 @@ describe('WorkerPool — Sandbox Safety', () => {
 		await expect(workerPool.execute(SYNTAX_ERROR_CODE)).rejects.toThrow(SandboxError);
 	}, 30_000);
 
-	it('убивает бесконечный цикл через External Heartbeat (<= 12 сек)', async () => {
+	it('убивает бесконечный цикл через External Heartbeat (<= 32 сек)', async () => {
 		const start = Date.now();
 		await expect(workerPool.execute(INFINITE_LOOP)).rejects.toThrow(/timeout|лимит времени/i);
 		const elapsed = Date.now() - start;
-		// Должно завершиться не позже чем через 12 секунд
-		expect(elapsed).toBeLessThan(12_000);
-	}, 15_000);
+		// Должно завершиться не позже чем через ~32 секунды (30с таймаут + небольшой overhead)
+		expect(elapsed).toBeLessThan(32_000);
+	}, 35_000);
 
 	it('Lifecycle Policy: успешно выполняет серию задач при строгой ротации воркеров', async () => {
 		const tasks = Array.from({ length: 4 }, (_, i) =>
