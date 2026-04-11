@@ -265,10 +265,12 @@ async function generateSchemaStage(
 	history: GeminiHistory[],
 	systemPrompt: string,
 	question: string,
-	forcedModel?: string | null
+	forcedModel?: string | null,
+	options?: { useFlashChain?: boolean }
 ): Promise<{ parsed: { schemaData: SchemaData | SchemaDataV2; assumptions: string[]; ambiguities: string[] }; model: GeminiModel; tokens: number }> {
 	const messages = buildContext(history, systemPrompt, question);
-	const generation = await generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, forcedModel);
+	const chain = options?.useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
+	const generation = await generateWithFallback(chain[0], chain, messages, forcedModel);
 	return { parsed: parseSchemaResult(generation.text), model: generation.model, tokens: generation.tokens };
 }
 
@@ -494,9 +496,11 @@ export async function reviseSchema(
 		currentSchema: SchemaData | SchemaDataV2;
 		revisionNotes: string;
 		forcedModel?: string | null;
+		fastMode?: boolean;
 	}
 ): Promise<SchemaGenerationResult> {
 	const languageSeed = `${params.originalPrompt}\n${params.revisionNotes}`;
+	const useFlashChain = params.fastMode === true;
 const prompt = `You revise ONLY the engineering scheme and must not solve the task.
 Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 Preserve correct existing elements and update only what is needed per revision notes.
@@ -522,15 +526,26 @@ ${languagePolicy(languageSeed)}`;
 	const question = `Original task:\n${params.originalPrompt}\n\nCurrent schema JSON:\n${currentSchemaJson}\n\nUser revision notes:\n${params.revisionNotes}`;
 	const messages = buildContext(history, prompt, question);
 
-	const generation = await generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, params.forcedModel);
+	const generationChain = useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
+	const generation = await generateWithFallback(generationChain[0], generationChain, messages, params.forcedModel);
 	const parsedRevision = parseSchemaResult(generation.text);
+	if (params.fastMode) {
+		return {
+			...parsedRevision,
+			model: generation.model,
+			tokens: generation.tokens,
+			usedModels: [formatTokenAttribution(generation.model, 'SchemaRevision-Fast', generation.tokens)]
+		};
+	}
 	const stage2Prompt = `You perform final schema self-check for contract v2.
 Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 Keep same physical meaning and ids where valid.
 Fix only structural issues: invalid/missing nodeRefs, wrong type names, empty ids, malformed geometry.
 ${languagePolicy(languageSeed)}`;
 	const stage2Question = `Original task:\n${params.originalPrompt}\n\nRevision notes:\n${params.revisionNotes}\n\nCandidate revised schema:\n${JSON.stringify(parsedRevision.schemaData, null, 2)}`;
-	const stage2 = await generateSchemaStage(history, stage2Prompt, stage2Question, params.forcedModel);
+	const stage2 = await generateSchemaStage(history, stage2Prompt, stage2Question, params.forcedModel, {
+		useFlashChain
+	});
 
 	return {
 		...stage2.parsed,
@@ -550,10 +565,13 @@ export async function repairSchemaByIssues(
 		currentSchema: SchemaData | SchemaDataV2;
 		issues: string[];
 		forcedModel?: string | null;
+		fastMode?: boolean;
+		skipSelfCheck?: boolean;
 	}
 ): Promise<SchemaGenerationResult> {
 	const languageSeed = `${params.originalPrompt}\n${params.issues.join('\n')}`;
 	const issuesText = params.issues.map((issue, index) => `${index + 1}. ${issue}`).join('\n');
+	const useFlashChain = params.fastMode === true;
 
 	const prompt = `You are a schema repair worker for contract v2.
 Return strict JSON object with keys: schemaData, assumptions, ambiguities.
@@ -568,15 +586,26 @@ ${languagePolicy(languageSeed)}`;
 
 	const question = `Original task:\n${params.originalPrompt}\n\nIssues to fix:\n${issuesText}\n\nCurrent schema JSON:\n${JSON.stringify(params.currentSchema, null, 2)}`;
 	const messages = buildContext(history, prompt, question);
-	const stage1 = await generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, params.forcedModel);
+	const chain = useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
+	const stage1 = await generateWithFallback(chain[0], chain, messages, params.forcedModel);
 	const stage1Parsed = parseSchemaResult(stage1.text);
+	if (params.skipSelfCheck) {
+		return {
+			...stage1Parsed,
+			model: stage1.model,
+			tokens: stage1.tokens,
+			usedModels: [formatTokenAttribution(stage1.model, 'SchemaRepair-Fast', stage1.tokens)]
+		};
+	}
 
 	const stage2Prompt = `You perform final targeted self-check for schema contract v2.
 Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 Keep only issue-driven changes and preserve previously valid structure.
 ${languagePolicy(languageSeed)}`;
 	const stage2Question = `Issues:\n${issuesText}\n\nCandidate schema:\n${JSON.stringify(stage1Parsed.schemaData, null, 2)}`;
-	const stage2 = await generateSchemaStage(history, stage2Prompt, stage2Question, params.forcedModel);
+	const stage2 = await generateSchemaStage(history, stage2Prompt, stage2Question, params.forcedModel, {
+		useFlashChain
+	});
 
 	return {
 		...stage2.parsed,

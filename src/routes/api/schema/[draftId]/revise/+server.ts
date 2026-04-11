@@ -8,7 +8,6 @@ import {
 	detectPromptLanguage,
 	formatSchemaAssistantContent,
 	getSchemaLayoutLogDetails,
-	getSchemaRepairIssues,
 	isReviewableStatus,
 	loadGeminiHistory,
 	logSchemaCheck,
@@ -82,7 +81,8 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 			originalPrompt: draft.originalPrompt,
 			currentSchema: draft.currentSchema as SchemaAny,
 			revisionNotes: notes,
-			forcedModel
+			forcedModel,
+			fastMode: true
 		});
 		logSchemaCheck('revise.llm_generated', {
 			draftId: draft.id,
@@ -92,53 +92,40 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 			ambiguities: revised.ambiguities.length
 		});
 
-		const validation = validateSchemaAny(revised.schemaData);
-		if (!validation.ok || !validation.value) {
-			logSchemaCheck('revise.schema_invalid', { draftId: draft.id, errors: validation.errors });
-			return error(422, `Revised schema validation failed: ${validation.errors.join('; ')}`);
-		}
-
 		let finalRevision = revised;
-		let finalValidation = validation;
+		let finalValidation = validateSchemaAny(revised.schemaData);
 
-		const repairIssues = getSchemaRepairIssues(validation.value);
-		if (repairIssues.length > 0) {
+		if (!finalValidation.ok || !finalValidation.value) {
+			const repairIssues = finalValidation.errors.slice(0, 6);
 			logSchemaCheck('revise.repair_requested', {
 				draftId: draft.id,
-				issueCount: repairIssues.length,
+				reason: 'initial_validation_failed',
+				errorCount: finalValidation.errors.length,
 				issues: repairIssues
 			});
 			try {
 				const repaired = await repairSchemaByIssues(history, {
 					originalPrompt: draft.originalPrompt,
-					currentSchema: validation.value,
+					currentSchema: revised.schemaData as SchemaAny,
 					issues: repairIssues,
-					forcedModel
+					forcedModel,
+					fastMode: true,
+					skipSelfCheck: true
 				});
 				const repairedValidation = validateSchemaAny(repaired.schemaData);
 				if (repairedValidation.ok && repairedValidation.value) {
-					const repairedIssues = getSchemaRepairIssues(repairedValidation.value);
-					if (repairedIssues.length < repairIssues.length) {
-						finalValidation = repairedValidation;
-						finalRevision = {
-							...repaired,
-							tokens: revised.tokens + repaired.tokens,
-							usedModels: [...revised.usedModels, ...repaired.usedModels],
-							assumptions: repaired.assumptions.length > 0 ? repaired.assumptions : revised.assumptions,
-							ambiguities: repaired.ambiguities.length > 0 ? repaired.ambiguities : revised.ambiguities
-						};
-						logSchemaCheck('revise.repair_applied', {
-							draftId: draft.id,
-							beforeIssues: repairIssues.length,
-							afterIssues: repairedIssues.length
-						});
-					} else {
-						logSchemaCheck('revise.repair_skipped', {
-							draftId: draft.id,
-							beforeIssues: repairIssues.length,
-							afterIssues: repairedIssues.length
-						});
-					}
+					finalValidation = repairedValidation;
+					finalRevision = {
+						...repaired,
+						tokens: revised.tokens + repaired.tokens,
+						usedModels: [...revised.usedModels, ...repaired.usedModels],
+						assumptions: repaired.assumptions.length > 0 ? repaired.assumptions : revised.assumptions,
+						ambiguities: repaired.ambiguities.length > 0 ? repaired.ambiguities : revised.ambiguities
+					};
+					logSchemaCheck('revise.repair_applied', {
+						draftId: draft.id,
+						fixed: true
+					});
 				} else {
 					logSchemaCheck('revise.repair_invalid', {
 						draftId: draft.id,
@@ -151,6 +138,11 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 					error: repairErr instanceof Error ? repairErr.message : String(repairErr)
 				});
 			}
+		}
+
+		if (!finalValidation.ok || !finalValidation.value) {
+			logSchemaCheck('revise.schema_invalid', { draftId: draft.id, errors: finalValidation.errors });
+			return error(422, `Revised schema validation failed: ${finalValidation.errors.join('; ')}`);
 		}
 
 		const layoutDetails = getSchemaLayoutLogDetails(finalValidation.value);
