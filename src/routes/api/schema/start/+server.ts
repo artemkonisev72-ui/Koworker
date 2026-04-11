@@ -7,7 +7,6 @@ import {
 	detectPromptLanguage,
 	formatSchemaAssistantContent,
 	getSchemaLayoutLogDetails,
-	getSchemaRepairIssues,
 	loadGeminiHistory,
 	logSchemaCheck,
 	validateImageData,
@@ -74,7 +73,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	});
 
 	const forcedModel = chat.modelPreference === 'auto' ? null : chat.modelPreference;
-	const history = await loadGeminiHistory(chatId);
+	const history = await loadGeminiHistory(chatId, 4);
 
 	await db.message.create({
 		data: {
@@ -104,7 +103,11 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	});
 
 	try {
-		const generated = await generateInitialSchema(history, message, { imageData, forcedModel });
+		const generated = await generateInitialSchema(history, message, {
+			imageData,
+			forcedModel,
+			fastMode: true
+		});
 		logSchemaCheck('start.llm_generated', {
 			draftId: draft.id,
 			model: generated.model,
@@ -112,57 +115,40 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			assumptions: generated.assumptions.length,
 			ambiguities: generated.ambiguities.length
 		});
-		const validation = validateSchemaAny(generated.schemaData);
-		if (!validation.ok || !validation.value) {
-			await db.taskDraft.update({ where: { id: draft.id }, data: { status: 'FAILED' } });
-			logSchemaCheck('start.schema_invalid', {
-				draftId: draft.id,
-				errors: validation.errors
-			});
-			return error(422, `Generated schema validation failed: ${validation.errors.join('; ')}`);
-		}
-
 		let finalGenerated = generated;
-		let finalValidation = validation;
+		let finalValidation = validateSchemaAny(generated.schemaData);
 
-		const repairIssues = getSchemaRepairIssues(validation.value);
-		if (repairIssues.length > 0) {
+		if (!finalValidation.ok || !finalValidation.value) {
+			const repairIssues = finalValidation.errors.slice(0, 6);
 			logSchemaCheck('start.repair_requested', {
 				draftId: draft.id,
-				issueCount: repairIssues.length,
+				reason: 'initial_validation_failed',
+				errorCount: finalValidation.errors.length,
 				issues: repairIssues
 			});
 			try {
 				const repaired = await repairSchemaByIssues(history, {
 					originalPrompt: message,
-					currentSchema: validation.value,
+					currentSchema: generated.schemaData,
 					issues: repairIssues,
-					forcedModel
+					forcedModel,
+					fastMode: true,
+					skipSelfCheck: true
 				});
 				const repairedValidation = validateSchemaAny(repaired.schemaData);
 				if (repairedValidation.ok && repairedValidation.value) {
-					const repairedIssues = getSchemaRepairIssues(repairedValidation.value);
-					if (repairedIssues.length < repairIssues.length) {
-						finalValidation = repairedValidation;
-						finalGenerated = {
-							...repaired,
-							tokens: generated.tokens + repaired.tokens,
-							usedModels: [...generated.usedModels, ...repaired.usedModels],
-							assumptions: repaired.assumptions.length > 0 ? repaired.assumptions : generated.assumptions,
-							ambiguities: repaired.ambiguities.length > 0 ? repaired.ambiguities : generated.ambiguities
-						};
-						logSchemaCheck('start.repair_applied', {
-							draftId: draft.id,
-							beforeIssues: repairIssues.length,
-							afterIssues: repairedIssues.length
-						});
-					} else {
-						logSchemaCheck('start.repair_skipped', {
-							draftId: draft.id,
-							beforeIssues: repairIssues.length,
-							afterIssues: repairedIssues.length
-						});
-					}
+					finalValidation = repairedValidation;
+					finalGenerated = {
+						...repaired,
+						tokens: generated.tokens + repaired.tokens,
+						usedModels: [...generated.usedModels, ...repaired.usedModels],
+						assumptions: repaired.assumptions.length > 0 ? repaired.assumptions : generated.assumptions,
+						ambiguities: repaired.ambiguities.length > 0 ? repaired.ambiguities : generated.ambiguities
+					};
+					logSchemaCheck('start.repair_applied', {
+						draftId: draft.id,
+						fixed: true
+					});
 				} else {
 					logSchemaCheck('start.repair_invalid', {
 						draftId: draft.id,
@@ -175,6 +161,15 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 					error: repairErr instanceof Error ? repairErr.message : String(repairErr)
 				});
 			}
+		}
+
+		if (!finalValidation.ok || !finalValidation.value) {
+			await db.taskDraft.update({ where: { id: draft.id }, data: { status: 'FAILED' } });
+			logSchemaCheck('start.schema_invalid', {
+				draftId: draft.id,
+				errors: finalValidation.errors
+			});
+			return error(422, `Generated schema validation failed: ${finalValidation.errors.join('; ')}`);
 		}
 
 		const layoutDetails = getSchemaLayoutLogDetails(finalValidation.value);

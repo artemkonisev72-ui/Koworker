@@ -43,6 +43,18 @@ const VISION_CHAIN: GeminiModel[] = [
 	'gemini-2.5-flash'
 ];
 
+const FAST_SCHEMA_CHAIN: GeminiModel[] = [
+	'gemini-2.5-flash-lite',
+	'gemini-2.5-flash',
+	'gemini-3.1-flash-lite-preview'
+];
+
+const FAST_VISION_CHAIN: GeminiModel[] = [
+	'gemini-2.5-flash',
+	'gemini-2.5-flash-lite',
+	'gemini-3.1-flash-preview'
+];
+
 export interface GeminiHistory {
 	role: 'USER' | 'ASSISTANT';
 	content: string;
@@ -88,8 +100,39 @@ function buildContext(history: GeminiHistory[], systemPrompt: string, currentQue
 	return messages;
 }
 
+const DEFAULT_GEMINI_TIMEOUT_MS = 18_000;
+const MIN_GEMINI_TIMEOUT_MS = 5_000;
+const MAX_GEMINI_TIMEOUT_MS = 60_000;
+
+function getGeminiTimeoutMs(): number {
+	const raw = Number(process.env.GEMINI_REQUEST_TIMEOUT_MS);
+	if (!Number.isFinite(raw)) return DEFAULT_GEMINI_TIMEOUT_MS;
+	return Math.min(MAX_GEMINI_TIMEOUT_MS, Math.max(MIN_GEMINI_TIMEOUT_MS, Math.floor(raw)));
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+		promise.then(
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(err) => {
+				clearTimeout(timer);
+				reject(err);
+			}
+		);
+	});
+}
+
 async function generate(model: GeminiModel, messages: GeminiMessage[]): Promise<{ text: string; tokens: number }> {
-	const response = await ai.models.generateContent({ model, contents: messages });
+	const timeoutMs = getGeminiTimeoutMs();
+	const response = await withTimeout(
+		ai.models.generateContent({ model, contents: messages }),
+		timeoutMs,
+		`Gemini request timeout (${timeoutMs}ms) for model ${model}`
+	);
 	if (!response.text) {
 		throw new Error(`Gemini API returned empty text (model: ${model})`);
 	}
@@ -377,13 +420,15 @@ export async function analyzeImage(
 	history: GeminiHistory[],
 	base64Data: string,
 	mimeType: string,
-	forcedModel?: string | null
+	forcedModel?: string | null,
+	options?: { fastMode?: boolean }
 ): Promise<{ text: string; model: GeminiModel; tokens: number }> {
 	const prompt =
 		'Analyze the attached image. Extract the engineering/math task condition and describe the scheme relevant for solving. Return plain text only.';
 	const messages = buildContext(history, prompt, '');
 	messages[messages.length - 1].parts.push({ inlineData: { mimeType, data: base64Data } });
-	return generateWithFallback(VISION_CHAIN[0], VISION_CHAIN, messages, forcedModel);
+	const chain = options?.fastMode ? FAST_VISION_CHAIN : VISION_CHAIN;
+	return generateWithFallback(chain[0], chain, messages, forcedModel);
 }
 
 export async function generateInitialSchema(
@@ -392,13 +437,17 @@ export async function generateInitialSchema(
 	params?: {
 		imageData?: { base64: string; mimeType: string };
 		forcedModel?: string | null;
+		fastMode?: boolean;
 	}
 ): Promise<SchemaGenerationResult> {
 	let contextMessage = userMessage;
 	const usedModels: string[] = [];
+	const useFastMode = params?.fastMode === true;
 
 	if (params?.imageData) {
-		const vision = await analyzeImage(history, params.imageData.base64, params.imageData.mimeType, params.forcedModel);
+		const vision = await analyzeImage(history, params.imageData.base64, params.imageData.mimeType, params.forcedModel, {
+			fastMode: useFastMode
+		});
 		usedModels.push(formatTokenAttribution(vision.model, 'Vision', vision.tokens));
 		contextMessage = `[IMAGE_DESCRIPTION]\n${vision.text}\n\n[USER_TASK]\n${userMessage}`;
 	}
@@ -433,6 +482,29 @@ For moment/angular types, geometry.direction MUST be exactly "cw" or "ccw".
 Do NOT place all supports/loads at (0,0) by default.
 Preserve language of assumptions/ambiguities according to user request.
 ${languagePolicy(userMessage)}`;
+
+	if (useFastMode) {
+		const fastPrompt = `${baseInstruction}
+Fast mode objective: produce a valid schema in a single pass.
+Prioritize contract validity (ids, nodeRefs, geometry object, required fields) and structural correctness.
+Do not run multi-stage refinement; output the best valid result immediately.`;
+		const fastQuestion = `Task for scheme generation:\n${contextMessage}`;
+		const fastMessages = buildContext(history, fastPrompt, fastQuestion);
+		const fastStage = await generateWithFallback(
+			FAST_SCHEMA_CHAIN[0],
+			FAST_SCHEMA_CHAIN,
+			fastMessages,
+			params?.forcedModel
+		);
+		const fastParsed = parseSchemaResult(fastStage.text);
+		usedModels.push(formatTokenAttribution(fastStage.model, 'SchemaGen-Fast', fastStage.tokens));
+		return {
+			...fastParsed,
+			model: fastStage.model,
+			tokens: fastStage.tokens,
+			usedModels
+		};
+	}
 
 	const stageAPrompt = `${baseInstruction}
 Stage A objective: create topology and constraints first.
