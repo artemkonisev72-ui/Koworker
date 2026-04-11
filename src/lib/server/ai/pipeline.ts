@@ -59,6 +59,10 @@ export async function runPipelineWithApprovedSchema(
 	if (!params.approvedSchema) {
 		throw new Error('Approved schema is required for schema-check solving');
 	}
+	console.log('[SchemaCheck] pipeline.start', {
+		messageLength: params.userMessage.length,
+		revisionNotes: params.revisionNotes?.length ?? 0
+	});
 
 	const schemaJson = JSON.stringify(params.approvedSchema, null, 2);
 	const notesBlock =
@@ -67,7 +71,10 @@ export async function runPipelineWithApprovedSchema(
 			: '';
 	const messageWithSchemaContext = `${params.userMessage}\n\n[APPROVED_SCHEMA_JSON]\n${schemaJson}${notesBlock}\n\nUse approved schema as source of truth.`;
 
-	return runPipeline(messageWithSchemaContext, history, onStatus, imageData, forcedModel);
+	return runPipeline(messageWithSchemaContext, history, onStatus, imageData, forcedModel)
+		.finally(() => {
+			console.log('[SchemaCheck] pipeline.finished');
+		});
 }
 
 export async function runPipeline(

@@ -3,7 +3,7 @@ import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
 import { runPipelineWithApprovedSchema, type PipelineStatus } from '$lib/server/ai/pipeline.js';
 import type { SchemaData } from '$lib/schema/schema-data.js';
-import { canConfirmStatus, loadGeminiHistory, parseImageData } from '$lib/server/schema/flow.js';
+import { canConfirmStatus, loadGeminiHistory, logSchemaCheck, parseImageData } from '$lib/server/schema/flow.js';
 
 function isResultEvent(event: PipelineStatus): event is Extract<PipelineStatus, { type: 'result' }> {
 	return event.type === 'result';
@@ -45,6 +45,8 @@ async function runSolveWithGate(params: {
 export const POST: RequestHandler = async ({ locals, params }) => {
 	if (!locals.user) return error(401, 'Unauthorized');
 	const db = prisma as any;
+	const startedAt = Date.now();
+	logSchemaCheck('confirm.request', { userId: locals.user.id, draftId: params.draftId });
 
 	const draft = await db.taskDraft.findUnique({
 		where: { id: params.draftId },
@@ -61,17 +63,28 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 
 	if (!draft) return error(404, 'Draft not found');
 	if (draft.userId !== locals.user.id || draft.chat.userId !== locals.user.id) return error(403, 'Forbidden');
+	logSchemaCheck('confirm.draft_loaded', {
+		draftId: draft.id,
+		chatId: draft.chatId,
+		status: draft.status,
+		revisionCount: draft.revisionCount,
+		modelPreference: draft.chat.modelPreference
+	});
 
 	if (draft.status === 'SOLVED') {
+		logSchemaCheck('confirm.already_solved', { draftId: draft.id });
 		return json({ status: 'SOLVED', draftId: draft.id, alreadySolved: true });
 	}
 	if (draft.status === 'SOLVING' || draft.status === 'SCHEMA_APPROVED') {
+		logSchemaCheck('confirm.already_solving', { draftId: draft.id, status: draft.status });
 		return error(409, 'Draft is already being solved');
 	}
 	if (!canConfirmStatus(draft.status)) {
+		logSchemaCheck('confirm.invalid_status', { draftId: draft.id, status: draft.status });
 		return error(409, `Draft status does not allow confirmation: ${draft.status}`);
 	}
 	if (!draft.currentSchema) {
+		logSchemaCheck('confirm.no_schema', { draftId: draft.id });
 		return error(409, 'No current schema to approve');
 	}
 
@@ -87,6 +100,10 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 			status: 'SOLVING'
 		}
 	});
+	logSchemaCheck('confirm.approved_and_solving', {
+		draftId: draft.id,
+		revisionNotes: revisionNotes.length
+	});
 
 	const history = await loadGeminiHistory(draft.chatId);
 	const imageData = parseImageData(draft.originalImageData);
@@ -99,6 +116,12 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 			history,
 			imageData,
 			forcedModel
+		});
+		logSchemaCheck('confirm.pipeline_result', {
+			draftId: draft.id,
+			contentLength: resultEvent.content.length,
+			graphs: resultEvent.graphData?.length ?? 0,
+			modelEntries: resultEvent.usedModels?.length ?? 0
 		});
 
 		const assistantMessage = await db.$transaction(async (txRaw: any) => {
@@ -135,6 +158,11 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 		});
 	} catch (err) {
 		const messageText = err instanceof Error ? err.message : String(err);
+		logSchemaCheck('confirm.failed', {
+			draftId: draft.id,
+			error: messageText,
+			durationMs: Date.now() - startedAt
+		});
 		await db.taskDraft.update({ where: { id: draft.id }, data: { status: 'FAILED' } }).catch(() => undefined);
 		await db.message
 			.create({
@@ -147,5 +175,11 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 			})
 			.catch(() => undefined);
 		return error(500, `Failed to solve with approved schema: ${messageText}`);
+	}
+	finally {
+		logSchemaCheck('confirm.finished', {
+			draftId: params.draftId,
+			durationMs: Date.now() - startedAt
+		});
 	}
 };

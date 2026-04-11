@@ -1,10 +1,12 @@
 ﻿import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
+import { logSchemaCheck } from '$lib/server/schema/flow.js';
 
 export const GET: RequestHandler = async ({ locals, params }) => {
 	if (!locals.user) return error(401, 'Unauthorized');
 	const db = prisma as any;
+	logSchemaCheck('get.request', { userId: locals.user.id, draftId: params.draftId });
 
 	const draft = await db.taskDraft.findUnique({
 		where: { id: params.draftId },
@@ -18,6 +20,12 @@ export const GET: RequestHandler = async ({ locals, params }) => {
 
 	if (!draft) return error(404, 'Draft not found');
 	if (draft.userId !== locals.user.id) return error(403, 'Forbidden');
+	logSchemaCheck('get.loaded', {
+		draftId: draft.id,
+		chatId: draft.chatId,
+		status: draft.status,
+		revisionCount: draft.revisionCount
+	});
 
 	const latestRevision = draft.revisions?.[0] ?? null;
 

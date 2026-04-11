@@ -214,6 +214,39 @@ function formatTokenAttribution(model: GeminiModel, stage: string, tokens: numbe
 	return `${model} (${stage}): ${tokens.toLocaleString('ru-RU')} tokens`;
 }
 
+function extractLanguageSignalText(userText: string): string {
+	const approvedSchemaMarker = '[APPROVED_SCHEMA_JSON]';
+	const approvedSchemaIndex = userText.indexOf(approvedSchemaMarker);
+	if (approvedSchemaIndex >= 0) {
+		return userText.slice(0, approvedSchemaIndex).trim();
+	}
+
+	const userTaskMarker = '[USER_TASK]';
+	const userTaskIndex = userText.indexOf(userTaskMarker);
+	if (userTaskIndex >= 0) {
+		return userText.slice(userTaskIndex + userTaskMarker.length).trim();
+	}
+
+	return userText;
+}
+
+function detectPromptLanguage(userText: string): 'ru' | 'en' {
+	const signalText = extractLanguageSignalText(userText);
+	const cyrillicCount = (signalText.match(/[А-Яа-яЁё]/g) ?? []).length;
+	const latinCount = (signalText.match(/[A-Za-z]/g) ?? []).length;
+
+	if (cyrillicCount === 0 && latinCount === 0) return 'en';
+	return cyrillicCount >= latinCount * 0.6 ? 'ru' : 'en';
+}
+
+function languagePolicy(userText: string): string {
+	const detected = detectPromptLanguage(userText);
+	if (detected === 'ru') {
+		return 'Language policy: respond ONLY in Russian. Keep all explanations, assumptions, ambiguities, labels and any natural-language text in Russian.';
+	}
+	return 'Language policy: respond ONLY in English. Keep all explanations, assumptions, ambiguities, labels and any natural-language text in English.';
+}
+
 export async function routeQuestion(
 	history: GeminiHistory[],
 	userMessage: string,
@@ -240,7 +273,8 @@ Rules:
 4. For plots/diagrams output graph points in key "graphs":
    "graphs": [{"title":"...","type":"function"|"diagram","points":[{"x":...,"y":...}, ...]}]
 5. Put primary numeric/text result in key "result".
-6. Prefer sympy for exact math and numpy arrays for sampling points.`;
+6. Prefer sympy for exact math and numpy arrays for sampling points.
+7. ${languagePolicy(userMessage)}`;
 
 	let userContent = `Task: ${userMessage}`;
 	if (retryContext) userContent += `\n\nFix this error context:\n${retryContext}`;
@@ -258,7 +292,8 @@ export async function assembleFinalAnswer(
 ): Promise<{ text: string; model: GeminiModel; tokens: number }> {
 	const prompt = `Provide the final solution in this structure: Given / Solution / Answer.
 Use only these computed data: ${params.executionResult}
-Use LaTeX for formulas. Do not include Python code.`;
+Use LaTeX for formulas. Do not include Python code.
+${languagePolicy(params.userMessage)}`;
 	const messages = buildContext(history, prompt, `Task: ${params.userMessage}`);
 	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
 }
@@ -268,7 +303,8 @@ export async function answerGeneralQuestion(
 	userMessage: string,
 	forcedModel?: string | null
 ): Promise<{ text: string; model: GeminiModel; tokens: number }> {
-	const prompt = 'Answer clearly and academically. Use LaTeX where formulas are needed.';
+	const prompt = `Answer clearly and academically. Use LaTeX where formulas are needed.
+${languagePolicy(userMessage)}`;
 	const messages = buildContext(history, prompt, `Question: ${userMessage}`);
 	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
 }
@@ -317,7 +353,8 @@ Return strict JSON object with keys:
   "ambiguities": []
 }
 Allowed element types: beam_segment, support_pin, support_roller, support_fixed, point_load, distributed_load, moment, hinge, joint, axis, dimension, label.
-Use finite numeric values only and include all supports/loads/moments from the condition.`;
+Use finite numeric values only and include all supports/loads/moments from the condition.
+${languagePolicy(userMessage)}`;
 
 	const messages = buildContext(history, prompt, `Task for scheme generation:\n${contextMessage}`);
 	const generation = await generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, params?.forcedModel);
@@ -341,10 +378,12 @@ export async function reviseSchema(
 		forcedModel?: string | null;
 	}
 ): Promise<SchemaGenerationResult> {
+	const languageSeed = `${params.originalPrompt}\n${params.revisionNotes}`;
 	const prompt = `You revise ONLY the engineering scheme and must not solve the task.
 Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 Preserve correct existing elements and update only what is needed per revision notes.
-Keep schemaData.version = "1.0" and finite numbers.`;
+Keep schemaData.version = "1.0" and finite numbers.
+${languagePolicy(languageSeed)}`;
 
 	const currentSchemaJson = JSON.stringify(params.currentSchema, null, 2);
 	const question = `Original task:\n${params.originalPrompt}\n\nCurrent schema JSON:\n${currentSchemaJson}\n\nUser revision notes:\n${params.revisionNotes}`;

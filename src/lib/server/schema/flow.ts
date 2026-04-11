@@ -18,6 +18,7 @@ export const MAX_REVISION_NOTES_LENGTH = 2_000;
 export const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
 export type InputImageData = { base64: string; mimeType: string };
+export type PromptLanguage = 'ru' | 'en';
 
 export function validateUserPrompt(prompt: string): string | null {
 	if (!prompt.trim()) return 'message is required';
@@ -55,6 +56,14 @@ export function parseImageData(value: string | null | undefined): InputImageData
 	}
 }
 
+export function detectPromptLanguage(text: string): PromptLanguage {
+	const cyrillicCount = (text.match(/[А-Яа-яЁё]/g) ?? []).length;
+	const latinCount = (text.match(/[A-Za-z]/g) ?? []).length;
+
+	if (cyrillicCount === 0 && latinCount === 0) return 'en';
+	return cyrillicCount >= latinCount * 0.6 ? 'ru' : 'en';
+}
+
 export async function loadGeminiHistory(chatId: string, take = 20): Promise<GeminiHistory[]> {
 	const rawHistory = await prisma.message.findMany({
 		where: { chatId },
@@ -81,12 +90,17 @@ export function formatSchemaAssistantContent(params: {
 	revisionIndex: number;
 	assumptions: string[];
 	ambiguities: string[];
+	language?: PromptLanguage;
 }): string {
-	const lines: string[] = [`Schema draft revision #${params.revisionIndex} is ready for review.`];
+	const language = params.language ?? 'en';
+	const lines: string[] =
+		language === 'ru'
+			? [`Черновик схемы (ревизия #${params.revisionIndex}) готов к проверке.`]
+			: [`Schema draft revision #${params.revisionIndex} is ready for review.`];
 
 	if (params.assumptions.length > 0) {
 		lines.push('');
-		lines.push('Assumptions:');
+		lines.push(language === 'ru' ? 'Принятые допущения:' : 'Assumptions:');
 		for (const assumption of params.assumptions) {
 			lines.push(`- ${assumption}`);
 		}
@@ -94,13 +108,43 @@ export function formatSchemaAssistantContent(params: {
 
 	if (params.ambiguities.length > 0) {
 		lines.push('');
-		lines.push('Ambiguities to verify:');
+		lines.push(language === 'ru' ? 'Неоднозначности для проверки:' : 'Ambiguities to verify:');
 		for (const ambiguity of params.ambiguities) {
 			lines.push(`- ${ambiguity}`);
 		}
 	}
 
 	lines.push('');
-	lines.push('Please confirm the scheme or request revisions.');
+	lines.push(
+		language === 'ru'
+			? 'Подтвердите схему или отправьте замечания на доработку.'
+			: 'Please confirm the scheme or request revisions.'
+	);
 	return lines.join('\n');
+}
+
+function toLogValue(value: unknown): string {
+	if (value === null || value === undefined) return '-';
+	if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+	if (typeof value === 'string') {
+		const compact = value.replace(/\s+/g, ' ').trim();
+		return compact.length > 180 ? `${compact.slice(0, 177)}...` : compact;
+	}
+	try {
+		return JSON.stringify(value);
+	} catch {
+		return '[unserializable]';
+	}
+}
+
+export function logSchemaCheck(event: string, details?: Record<string, unknown>): void {
+	if (!details || Object.keys(details).length === 0) {
+		console.log(`[SchemaCheck] ${event}`);
+		return;
+	}
+
+	const line = Object.entries(details)
+		.map(([key, value]) => `${key}=${toLogValue(value)}`)
+		.join(' | ');
+	console.log(`[SchemaCheck] ${event} | ${line}`);
 }
