@@ -7,6 +7,7 @@ import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import {
 	detectPromptLanguage,
 	formatSchemaAssistantContent,
+	getSchemaLayoutLogDetails,
 	isReviewableStatus,
 	loadGeminiHistory,
 	logSchemaCheck,
@@ -94,6 +95,17 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 		if (!validation.ok || !validation.value) {
 			logSchemaCheck('revise.schema_invalid', { draftId: draft.id, errors: validation.errors });
 			return error(422, `Revised schema validation failed: ${validation.errors.join('; ')}`);
+		}
+		const layoutDetails = getSchemaLayoutLogDetails(validation.value);
+		if (layoutDetails) {
+			logSchemaCheck('revise.layout_metrics', {
+				draftId: draft.id,
+				...layoutDetails,
+				layoutAutoCorrected: (validation.value as any)?.meta?.layoutAutoCorrected === true,
+				layoutCorrections: Array.isArray((validation.value as any)?.meta?.layoutCorrections)
+					? (validation.value as any).meta.layoutCorrections
+					: []
+			});
 		}
 
 		const revisionIndex = draft.revisionCount + 1;

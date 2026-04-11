@@ -1,5 +1,8 @@
 import type { GeminiHistory } from '$lib/server/ai/gemini.js';
 import { prisma } from '$lib/server/db.js';
+import type { SchemaDataV2 } from '$lib/schema/schema-v2.js';
+import { isSchemaDataV2 } from '$lib/schema/schema-v2.js';
+import { analyzeSchemaLayoutV2 } from '$lib/schema/layout-v2.js';
 
 type DraftStatus =
 	| 'DRAFT'
@@ -147,4 +150,22 @@ export function logSchemaCheck(event: string, details?: Record<string, unknown>)
 		.map(([key, value]) => `${key}=${toLogValue(value)}`)
 		.join(' | ');
 	console.log(`[SchemaCheck] ${event} | ${line}`);
+}
+
+export function getSchemaLayoutLogDetails(schema: unknown): Record<string, unknown> | null {
+	if (!isSchemaDataV2(schema)) return null;
+	const metrics = analyzeSchemaLayoutV2(schema as SchemaDataV2);
+	return {
+		nodeCount: metrics.nodeCount,
+		objectCount: metrics.objectCount,
+		edgeCount: metrics.edgeCount,
+		outsideViewportRate: Number(metrics.outsideViewportRate.toFixed(4)),
+		aspectDistortion: Number(metrics.aspectDistortion.toFixed(4)),
+		minElementSeparation: Number(metrics.minElementSeparation.toFixed(4)),
+		supportOnMemberRate: Number(metrics.supportOnMemberRate.toFixed(4)),
+		loadOnMemberRate: Number(metrics.loadOnMemberRate.toFixed(4)),
+		coordCollapseRate: Number(metrics.coordCollapseRate.toFixed(4)),
+		bboxWidth: Number(metrics.bbox.width.toFixed(4)),
+		bboxHeight: Number(metrics.bbox.height.toFixed(4))
+	};
 }

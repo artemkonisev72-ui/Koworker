@@ -28,7 +28,7 @@
 		createdAt?: string;
 	}
 
-	let { message }: { message: Message } = $props();
+	let { message, schemeDebug = false }: { message: Message; schemeDebug?: boolean } = $props();
 
 	let renderedHtml = $state('');
 
@@ -195,7 +195,7 @@
 	{#if schemes.length > 0}
 		<div class="schemes-container">
 			{#each schemes as schema, index}
-				<SchemeView schemaData={schema} title={`Scheme revision #${index + 1}`} />
+				<SchemeView schemaData={schema} title={`Scheme revision #${index + 1}`} debug={schemeDebug} />
 			{/each}
 		</div>
 	{/if}

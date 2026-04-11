@@ -70,6 +70,7 @@
 
 	let selectedImage = $state<{ base64: string; mimeType: string } | null>(null);
 	let schemaCheckEnabled = $state(false);
+	let schemeDebugEnabled = $state(false);
 	let activeDraft = $state<ActiveDraftState | null>(null);
 	let revisionNotes = $state('');
 	let showRevisionBox = $state(false);
@@ -890,7 +891,7 @@
 									{/if}
 									<p class="user-text">{msg.content}</p>
 								{:else}
-									<MessageRenderer message={msg} />
+									<MessageRenderer message={msg} schemeDebug={schemeDebugEnabled} />
 									{#if msg.isStreaming && statusMessage}
 										<div class="status-text streaming">{statusMessage}</div>
 									{/if}
@@ -1011,6 +1012,10 @@
 						disabled={isLoading || isSchemaActionLoading || (!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
 					/>
 					<span>Schema check mode</span>
+				</label>
+				<label class="schema-toggle">
+					<input type="checkbox" bind:checked={schemeDebugEnabled} disabled={isLoading || isSchemaActionLoading} />
+					<span>Scheme debug</span>
 				</label>
 			</div>
 

@@ -34,6 +34,10 @@ export interface SchemaMetaV2 {
 	taskDomain?: string;
 	catalogVersion?: string;
 	language?: string;
+	layoutMetrics?: Record<string, unknown>;
+	layoutCorrections?: string[];
+	layoutAutoCorrected?: boolean;
+	[key: string]: unknown;
 }
 
 export interface CoordinateSystemV2 {

@@ -14,6 +14,7 @@ import {
 	TYPE_ALIASES_V1_TO_V2
 } from './object-catalog-v2.js';
 import { adaptSchemaV1ToV2 } from './adapters-v2.js';
+import { stabilizeSchemaLayoutV2 } from './layout-v2.js';
 
 export interface SchemaNormalizeResultV2 {
 	value: SchemaDataV2;
@@ -856,5 +857,28 @@ export function normalizeSchemaDataV2(input: unknown): SchemaNormalizeResultV2 {
 		ambiguities
 	};
 
-	return { value, warnings };
+	const stabilized = stabilizeSchemaLayoutV2(value);
+	if (stabilized.corrected) {
+		for (const correction of stabilized.corrections) {
+			warnings.push(`layout:${correction}`);
+		}
+	}
+
+	const mergedMeta = {
+		...(isRecord(stabilized.schema.meta) ? stabilized.schema.meta : {}),
+		layoutMetrics: {
+			before: stabilized.metricsBefore,
+			after: stabilized.metricsAfter
+		},
+		layoutCorrections: stabilized.corrections,
+		layoutAutoCorrected: stabilized.corrected
+	};
+
+	return {
+		value: {
+			...stabilized.schema,
+			meta: mergedMeta
+		},
+		warnings
+	};
 }

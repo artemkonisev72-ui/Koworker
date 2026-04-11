@@ -5,7 +5,11 @@
 	import { normalizeSchemaDataV2 } from '$lib/schema/normalize-v2.js';
 	import { adaptSchemaV1ToV2 } from '$lib/schema/adapters-v2.js';
 
-	let { schemaData, title = 'Verified scheme' }: { schemaData: unknown; title?: string } = $props();
+	let {
+		schemaData,
+		title = 'Verified scheme',
+		debug = false
+	}: { schemaData: unknown; title?: string; debug?: boolean } = $props();
 
 	let board: any = null;
 	const boardId = `scheme-${Math.random().toString(36).slice(2, 10)}`;
@@ -67,6 +71,31 @@
 	}
 
 	const normalizedSchema = $derived.by(() => parseSchema(schemaData));
+
+	function metricSnapshot(metrics: Record<string, unknown> | null): string | null {
+		if (!metrics) return null;
+		const collapse = isFiniteNumber(metrics.coordCollapseRate) ? metrics.coordCollapseRate.toFixed(3) : '-';
+		const minSep = isFiniteNumber(metrics.minElementSeparation) ? metrics.minElementSeparation.toFixed(3) : '-';
+		const aspect = isFiniteNumber(metrics.aspectDistortion) ? metrics.aspectDistortion.toFixed(3) : '-';
+		return `collapse=${collapse} | minSep=${minSep} | aspect=${aspect}`;
+	}
+
+	const layoutDiagnostics = $derived.by(() => {
+		const schema = normalizedSchema;
+		if (!schema || !isRecord(schema.meta)) return null;
+		const metrics = isRecord(schema.meta.layoutMetrics) ? schema.meta.layoutMetrics : null;
+		const before = metrics && isRecord(metrics.before) ? metrics.before : null;
+		const after = metrics && isRecord(metrics.after) ? metrics.after : null;
+		const corrections = Array.isArray(schema.meta.layoutCorrections)
+			? schema.meta.layoutCorrections.filter((item): item is string => typeof item === 'string')
+			: [];
+		return {
+			beforeSnapshot: metricSnapshot(before),
+			afterSnapshot: metricSnapshot(after),
+			corrections,
+			autoCorrected: schema.meta.layoutAutoCorrected === true
+		};
+	});
 
 	function vectorFromAngleDegrees(angle: number): SchemaPoint {
 		const rad = (angle * Math.PI) / 180;
@@ -479,12 +508,49 @@
 		if (p) drawText(p, labelText(object, 'label'));
 	}
 
+	function drawDebugLayer(schema: SchemaDataV2, nodeMap: Map<string, NodeV2>): void {
+		for (const node of schema.nodes) {
+			board.create('point', [node.x, node.y], {
+				name: node.id,
+				withLabel: true,
+				size: 2,
+				face: 'o',
+				strokeColor: '#16a34a',
+				fillColor: '#16a34a',
+				fixed: true,
+				highlight: false,
+				label: {
+					offset: [5, 5],
+					strokeColor: '#16a34a',
+					fontSize: 10
+				}
+			});
+		}
+
+		for (const object of schema.objects) {
+			const pair = getPair(nodeMap, object.nodeRefs);
+			if (!pair) continue;
+			if (!isFiniteNumber(object.geometry.length) && !isFiniteNumber(object.geometry.L)) continue;
+			const hintedLength = isFiniteNumber(object.geometry.length) ? object.geometry.length : object.geometry.L;
+			drawText(
+				{ x: (pair[0].x + pair[1].x) / 2, y: (pair[0].y + pair[1].y) / 2 + 0.12 },
+				`L=${hintedLength}`,
+				{ strokeColor: '#16a34a', fontSize: 10, anchorX: 'middle' }
+			);
+		}
+	}
+
 	function drawEpure(result: ResultV2, nodeMap: Map<string, NodeV2>): void {
 		if (!isRecord(result.geometry.baseLine)) return;
-		const startNodeId = typeof result.geometry.baseLine.startNodeId === 'string' ? result.geometry.baseLine.startNodeId : undefined;
-		const endNodeId = typeof result.geometry.baseLine.endNodeId === 'string' ? result.geometry.baseLine.endNodeId : undefined;
-		const start = getNode(nodeMap, startNodeId);
-		const end = getNode(nodeMap, endNodeId);
+		const baseLine = result.geometry.baseLine;
+		const startNodeId = typeof baseLine.startNodeId === 'string' ? baseLine.startNodeId : undefined;
+		const endNodeId = typeof baseLine.endNodeId === 'string' ? baseLine.endNodeId : undefined;
+		const startFromRef = getNode(nodeMap, result.nodeRefs?.[0]);
+		const endFromRef = getNode(nodeMap, result.nodeRefs?.[1]);
+		const startFromPoint = toPoint(baseLine.start) ?? toPoint(baseLine.from);
+		const endFromPoint = toPoint(baseLine.end) ?? toPoint(baseLine.to);
+		const start = getNode(nodeMap, startNodeId) ?? startFromRef ?? startFromPoint;
+		const end = getNode(nodeMap, endNodeId) ?? endFromRef ?? endFromPoint;
 		if (!start || !end || !Array.isArray(result.geometry.values)) return;
 
 		const values = result.geometry.values
@@ -611,7 +677,7 @@
 			showCopyright: false,
 			showNavigation: false,
 			showScreenshot: false,
-			keepAspectRatio: false
+			keepAspectRatio: true
 		});
 
 		board.options.grid.strokeColor = 'var(--border-subtle)';
@@ -633,6 +699,10 @@
 				console.warn('[SchemeView] Failed to render result:', result.id, err);
 			}
 		}
+
+		if (debug) {
+			drawDebugLayer(schema, nodeMap);
+		}
 	});
 
 	onDestroy(() => {
@@ -649,6 +719,26 @@
 	<div class="scheme-wrapper">
 		<div class="scheme-title">{title}</div>
 		<div class="scheme-board" id={boardId}></div>
+		{#if debug && layoutDiagnostics}
+			<div class="scheme-debug">
+				<div class="scheme-debug-line">
+					Auto corrected: {layoutDiagnostics.autoCorrected ? 'yes' : 'no'} | Corrections: {layoutDiagnostics.corrections.length}
+				</div>
+				{#if layoutDiagnostics.afterSnapshot}
+					<div class="scheme-debug-line">
+						After: {layoutDiagnostics.afterSnapshot}
+					</div>
+				{/if}
+				{#if layoutDiagnostics.beforeSnapshot}
+					<div class="scheme-debug-line">
+						Before: {layoutDiagnostics.beforeSnapshot}
+					</div>
+				{/if}
+				{#if layoutDiagnostics.corrections.length > 0}
+					<div class="scheme-debug-line">Ops: {layoutDiagnostics.corrections.join(', ')}</div>
+				{/if}
+			</div>
+		{/if}
 	</div>
 {/if}
 
@@ -675,6 +765,19 @@
 	.scheme-board {
 		width: 100%;
 		height: 340px;
+	}
+
+	.scheme-debug {
+		padding: 0.5rem 0.75rem 0.65rem;
+		border-top: 1px dashed var(--border-subtle);
+		background: color-mix(in srgb, var(--bg-surface) 72%, transparent);
+		font-family: var(--font-mono);
+		font-size: 0.74rem;
+		color: var(--text-muted);
+	}
+
+	.scheme-debug-line + .scheme-debug-line {
+		margin-top: 0.22rem;
 	}
 
 	:global(.jxgtext) {

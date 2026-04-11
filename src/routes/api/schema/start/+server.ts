@@ -6,6 +6,7 @@ import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import {
 	detectPromptLanguage,
 	formatSchemaAssistantContent,
+	getSchemaLayoutLogDetails,
 	loadGeminiHistory,
 	logSchemaCheck,
 	validateImageData,
@@ -118,6 +119,18 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				errors: validation.errors
 			});
 			return error(422, `Generated schema validation failed: ${validation.errors.join('; ')}`);
+		}
+		const layoutDetails = getSchemaLayoutLogDetails(validation.value);
+		if (layoutDetails) {
+			const schemaMeta = (validation.value as any)?.meta;
+			logSchemaCheck('start.layout_metrics', {
+				draftId: draft.id,
+				...layoutDetails,
+				layoutAutoCorrected: schemaMeta?.layoutAutoCorrected === true,
+				layoutCorrections: Array.isArray(schemaMeta?.layoutCorrections)
+					? schemaMeta.layoutCorrections
+					: []
+			});
 		}
 
 		const assistantContent = formatSchemaAssistantContent({

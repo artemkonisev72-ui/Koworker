@@ -401,7 +401,7 @@ export async function generateInitialSchema(
 		contextMessage = `[IMAGE_DESCRIPTION]\n${vision.text}\n\n[USER_TASK]\n${userMessage}`;
 	}
 
-	const baseInstruction = `You build ONLY engineering schema data and must not solve the task.
+const baseInstruction = `You build ONLY engineering schema data and must not solve the task.
 Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 schemaData MUST be version "2.0" with root keys:
 {
@@ -418,6 +418,11 @@ schemaData MUST be version "2.0" with root keys:
 Allowed object types: bar, cable, spring, damper, rigid_disk, fixed_wall, hinge_fixed, hinge_roller, internal_hinge, slider, force, moment, distributed, velocity, acceleration, angular_velocity, angular_acceleration, trajectory, epure, label, dimension, axis, ground.
 Every object MUST contain non-empty id, type, geometry object.
 Use nodeRefs to reference node ids from nodes array.
+Coordinates are not decorative: keep a physically meaningful relative scale and proportions.
+Prefer coordinates in range [-10, 10] and avoid extremely tiny spans.
+For linear members (bar/cable/spring/damper), include geometry.length when known from the task.
+For supports and loads, always bind to existing member nodes via nodeRefs (never default to origin).
+If exact dimensions are unknown, keep consistent relative lengths and positions.
 For distributed, include geometry.kind and geometry.intensity.
 For moment/angular types, geometry.direction MUST be exactly "cw" or "ccw".
 Do NOT place all supports/loads at (0,0) by default.
@@ -436,6 +441,8 @@ At this stage, prioritize correct node positions and object-node linkage.`;
 Stage B objective: refine geometry/style/details using prepared skeleton.
 Keep existing node ids and object ids stable where possible.
 Do not remove valid supports/loads/moments detected in task.
+Treat node coordinates as a coarse scaffold, not as decorative absolute values.
+Prefer structural constraints in geometry/meta (length, angleDeg, relative placement) over arbitrary coordinates.
 Fill canonical geometry per type:
 - bar/cable/spring/damper/axis/dimension/ground: use nodeRefs [start,end]
 - fixed_wall/hinge_fixed/hinge_roller/internal_hinge/label: use nodeRefs [node]
@@ -492,6 +499,10 @@ Keep schemaData.version = "2.0" and finite numbers.
 Use ONLY object types from catalog v2:
 bar, cable, spring, damper, rigid_disk, fixed_wall, hinge_fixed, hinge_roller, internal_hinge, slider, force, moment, distributed, velocity, acceleration, angular_velocity, angular_acceleration, trajectory, epure, label, dimension, axis, ground.
 Use nodeRefs to bind all objects to nodes.
+Keep physically meaningful scale/proportions; avoid coordinate collapse and avoid decorative coordinates.
+Prefer coordinates in range [-10, 10] and preserve consistent relative lengths.
+For linear members include geometry.length when available from text.
+For supports/loads always attach to member nodes (nodeRefs) instead of origin defaults.
 For distributed include kind + intensity.
 For moment/angular include direction "cw" | "ccw".
 Preserve existing coordinates unless revision notes explicitly request moving elements.
