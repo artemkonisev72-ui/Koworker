@@ -354,6 +354,7 @@ Return strict JSON object with keys:
 }
 Allowed element types: beam_segment, support_pin, support_roller, support_fixed, point_load, distributed_load, moment, hinge, joint, axis, dimension, label.
 Use finite numeric values only and include all supports/loads/moments from the condition.
+Every element MUST include the key "geometry" and it MUST be an object.
 ${languagePolicy(userMessage)}`;
 
 	const messages = buildContext(history, prompt, `Task for scheme generation:\n${contextMessage}`);
@@ -383,6 +384,7 @@ export async function reviseSchema(
 Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 Preserve correct existing elements and update only what is needed per revision notes.
 Keep schemaData.version = "1.0" and finite numbers.
+Every element MUST include the key "geometry" and it MUST be an object.
 ${languagePolicy(languageSeed)}`;
 
 	const currentSchemaJson = JSON.stringify(params.currentSchema, null, 2);

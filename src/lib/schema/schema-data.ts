@@ -55,6 +55,7 @@ export interface SchemaValidationResult {
 }
 
 const SCHEMA_TYPES = new Set<string>(SCHEMA_ELEMENT_TYPES);
+const ELEMENT_NON_GEOMETRY_KEYS = new Set(['id', 'type', 'style', 'meta', 'geometry']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -188,13 +189,56 @@ export function parseSchemaData(input: unknown): unknown {
 	return input;
 }
 
+function normalizeElementShape(element: Record<string, unknown>): Record<string, unknown> {
+	if (isRecord(element.geometry)) return element;
+
+	const normalized: Record<string, unknown> = { ...element };
+
+	if (
+		Array.isArray(element.geometry) &&
+		element.geometry.length === 2 &&
+		isValidPoint(element.geometry[0]) &&
+		isValidPoint(element.geometry[1])
+	) {
+		normalized.geometry = { start: element.geometry[0], end: element.geometry[1] };
+		return normalized;
+	}
+
+	const geometryEntries = Object.entries(element).filter(([key]) => !ELEMENT_NON_GEOMETRY_KEYS.has(key));
+	const geometry: Record<string, unknown> = {};
+	for (const [key, value] of geometryEntries) {
+		geometry[key] = value;
+		delete normalized[key];
+	}
+
+	normalized.geometry = geometry;
+	return normalized;
+}
+
+function normalizeSchemaDataShape(parsed: Record<string, unknown>): Record<string, unknown> {
+	const normalized: Record<string, unknown> = { ...parsed };
+
+	if (typeof normalized.version !== 'string') {
+		normalized.version = SCHEMA_DATA_VERSION;
+	}
+
+	if (Array.isArray(normalized.elements)) {
+		normalized.elements = normalized.elements.map((entry) =>
+			isRecord(entry) ? normalizeElementShape(entry) : entry
+		);
+	}
+
+	return normalized;
+}
+
 export function validateSchemaData(input: unknown): SchemaValidationResult {
 	const errors: string[] = [];
-	const parsed = parseSchemaData(input);
+	const parsedRaw = parseSchemaData(input);
 
-	if (!isRecord(parsed)) {
+	if (!isRecord(parsedRaw)) {
 		return { ok: false, errors: ['schemaData must be an object'] };
 	}
+	const parsed = normalizeSchemaDataShape(parsedRaw);
 
 	const version = parsed.version;
 	if (typeof version !== 'string') {
