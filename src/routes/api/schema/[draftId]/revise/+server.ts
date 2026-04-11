@@ -1,9 +1,9 @@
-﻿import type { RequestHandler } from './$types';
+import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
 import { reviseSchema } from '$lib/server/ai/gemini.js';
-import type { SchemaData } from '$lib/schema/schema-data.js';
-import { validateSchemaData } from '$lib/schema/schema-data.js';
+import type { SchemaAny } from '$lib/schema/schema-any.js';
+import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import {
 	detectPromptLanguage,
 	formatSchemaAssistantContent,
@@ -78,7 +78,7 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 	try {
 		const revised = await reviseSchema(history, {
 			originalPrompt: draft.originalPrompt,
-			currentSchema: draft.currentSchema as SchemaData,
+			currentSchema: draft.currentSchema as SchemaAny,
 			revisionNotes: notes,
 			forcedModel
 		});
@@ -90,7 +90,7 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 			ambiguities: revised.ambiguities.length
 		});
 
-		const validation = validateSchemaData(revised.schemaData);
+		const validation = validateSchemaAny(revised.schemaData);
 		if (!validation.ok || !validation.value) {
 			logSchemaCheck('revise.schema_invalid', { draftId: draft.id, errors: validation.errors });
 			return error(422, `Revised schema validation failed: ${validation.errors.join('; ')}`);
@@ -111,6 +111,7 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 				data: {
 					status: 'AWAITING_REVIEW',
 					currentSchema: validation.value,
+					schemaVersion: validation.version ?? '2.0',
 					revisionCount: revisionIndex
 				}
 			});
@@ -119,6 +120,7 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 				data: {
 					draftId: draft.id,
 					revisionIndex,
+					schemaVersion: validation.version ?? '2.0',
 					userNotes: notes,
 					schema: validation.value,
 					assumptions: revised.assumptions
@@ -132,6 +134,7 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 					role: 'ASSISTANT',
 					content: assistantContent,
 					schemaData: JSON.stringify(validation.value),
+					schemaVersion: validation.version ?? '2.0',
 					usedModels: JSON.stringify(revised.usedModels)
 				}
 			});
@@ -142,6 +145,7 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 		return json({
 			draftId: draft.id,
 			status: result.updatedDraft.status,
+			schemaVersion: validation.version ?? '2.0',
 			revisionIndex,
 			schema: validation.value,
 			assumptions: revised.assumptions,
@@ -172,3 +176,4 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 		});
 	}
 };
+

@@ -34,12 +34,14 @@ export const GET: RequestHandler = async ({ locals, params }) => {
 		chatId: draft.chatId,
 		mode: draft.mode,
 		status: draft.status,
+		schemaVersion: draft.schemaVersion ?? '1.0',
 		revisionCount: draft.revisionCount,
 		currentSchema: draft.currentSchema,
 		approvedSchema: draft.approvedSchema,
 		latestRevision: latestRevision
 			? {
 				revisionIndex: latestRevision.revisionIndex,
+				schemaVersion: latestRevision.schemaVersion ?? draft.schemaVersion ?? '1.0',
 				userNotes: latestRevision.userNotes,
 				schema: latestRevision.schema,
 				assumptions: latestRevision.assumptions,

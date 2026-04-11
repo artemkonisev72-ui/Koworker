@@ -1,8 +1,9 @@
-﻿import type { RequestHandler } from './$types';
+import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
 import { runPipelineWithApprovedSchema, type PipelineStatus } from '$lib/server/ai/pipeline.js';
-import type { SchemaData } from '$lib/schema/schema-data.js';
+import type { SchemaAny } from '$lib/schema/schema-any.js';
+import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import { canConfirmStatus, loadGeminiHistory, logSchemaCheck, parseImageData } from '$lib/server/schema/flow.js';
 
 function isResultEvent(event: PipelineStatus): event is Extract<PipelineStatus, { type: 'result' }> {
@@ -11,7 +12,7 @@ function isResultEvent(event: PipelineStatus): event is Extract<PipelineStatus, 
 
 async function runSolveWithGate(params: {
 	userMessage: string;
-	approvedSchema: SchemaData;
+	approvedSchema: SchemaAny;
 	revisionNotes: string[];
 	history: Awaited<ReturnType<typeof loadGeminiHistory>>;
 	imageData?: { base64: string; mimeType: string };
@@ -88,6 +89,12 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 		return error(409, 'No current schema to approve');
 	}
 
+	const schemaValidation = validateSchemaAny(draft.currentSchema);
+	if (!schemaValidation.ok || !schemaValidation.value) {
+		logSchemaCheck('confirm.schema_invalid', { draftId: draft.id, errors: schemaValidation.errors });
+		return error(422, `Approved schema validation failed: ${schemaValidation.errors.join('; ')}`);
+	}
+
 	const forcedModel = draft.chat.modelPreference === 'auto' ? null : draft.chat.modelPreference;
 	const revisionNotes = draft.revisions
 		.map((revision: { userNotes?: string | null }) => revision.userNotes?.trim())
@@ -96,13 +103,15 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 	await db.taskDraft.update({
 		where: { id: draft.id },
 		data: {
-			approvedSchema: draft.currentSchema,
-			status: 'SOLVING'
+			approvedSchema: schemaValidation.value,
+			status: 'SOLVING',
+			schemaVersion: schemaValidation.version ?? '2.0'
 		}
 	});
 	logSchemaCheck('confirm.approved_and_solving', {
 		draftId: draft.id,
-		revisionNotes: revisionNotes.length
+		revisionNotes: revisionNotes.length,
+		schemaVersion: schemaValidation.version ?? '2.0'
 	});
 
 	const history = await loadGeminiHistory(draft.chatId);
@@ -111,7 +120,7 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 	try {
 		const resultEvent = await runSolveWithGate({
 			userMessage: draft.originalPrompt,
-			approvedSchema: draft.currentSchema as SchemaData,
+			approvedSchema: schemaValidation.value,
 			revisionNotes,
 			history,
 			imageData,
@@ -140,6 +149,7 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 					generatedCode: resultEvent.generatedCode ?? null,
 					executionLogs: resultEvent.executionLogs ?? null,
 					graphData: resultEvent.graphData ? JSON.stringify(resultEvent.graphData) : undefined,
+					schemaVersion: schemaValidation.version ?? '2.0',
 					usedModels: resultEvent.usedModels ? JSON.stringify(resultEvent.usedModels) : undefined
 				}
 			});
@@ -170,13 +180,13 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 					chatId: draft.chatId,
 					draftId: draft.id,
 					role: 'ASSISTANT',
-					content: `Schema-confirmed solve failed: ${messageText}`
+					content: `Schema-confirmed solve failed: ${messageText}`,
+					schemaVersion: schemaValidation.version ?? '2.0'
 				}
 			})
 			.catch(() => undefined);
 		return error(500, `Failed to solve with approved schema: ${messageText}`);
-	}
-	finally {
+	} finally {
 		logSchemaCheck('confirm.finished', {
 			draftId: params.draftId,
 			durationMs: Date.now() - startedAt

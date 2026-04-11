@@ -5,6 +5,7 @@
 import { GEMINI_API_KEY } from '$env/static/private';
 import { GoogleGenAI } from '@google/genai';
 import type { SchemaData } from '$lib/schema/schema-data.js';
+import type { SchemaDataV2 } from '$lib/schema/schema-v2.js';
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -60,7 +61,7 @@ interface GeminiMessage {
 }
 
 export interface SchemaGenerationResult {
-	schemaData: SchemaData;
+	schemaData: SchemaData | SchemaDataV2;
 	assumptions: string[];
 	ambiguities: string[];
 	model: GeminiModel;
@@ -180,10 +181,10 @@ function normalizeStringArray(value: unknown): string[] {
 	return value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean);
 }
 
-function isLikelySchemaDataObject(value: unknown): value is SchemaData {
+function isLikelySchemaDataObject(value: unknown): value is SchemaData | SchemaDataV2 {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
 	const maybe = value as Record<string, unknown>;
-	return Array.isArray(maybe.elements);
+	return Array.isArray(maybe.elements) || (Array.isArray(maybe.nodes) && Array.isArray(maybe.objects));
 }
 
 function tryParseJsonString(value: unknown): unknown {
@@ -212,7 +213,11 @@ function extractSchemaCandidate(payload: Record<string, unknown>): unknown {
 	return undefined;
 }
 
-function parseSchemaResult(rawText: string): { schemaData: SchemaData; assumptions: string[]; ambiguities: string[] } {
+function parseSchemaResult(rawText: string): {
+	schemaData: SchemaData | SchemaDataV2;
+	assumptions: string[];
+	ambiguities: string[];
+} {
 	const fencedMatch = rawText.match(/```json\s*([\s\S]*?)```/i);
 	const candidate = fencedMatch?.[1] ?? extractFirstJsonObject(rawText);
 	if (!candidate) {
@@ -254,6 +259,17 @@ function parseSchemaResult(rawText: string): { schemaData: SchemaData; assumptio
 		assumptions: normalizeStringArray(payload.assumptions),
 		ambiguities: normalizeStringArray(payload.ambiguities)
 	};
+}
+
+async function generateSchemaStage(
+	history: GeminiHistory[],
+	systemPrompt: string,
+	question: string,
+	forcedModel?: string | null
+): Promise<{ parsed: { schemaData: SchemaData | SchemaDataV2; assumptions: string[]; ambiguities: string[] }; model: GeminiModel; tokens: number }> {
+	const messages = buildContext(history, systemPrompt, question);
+	const generation = await generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, forcedModel);
+	return { parsed: parseSchemaResult(generation.text), model: generation.model, tokens: generation.tokens };
 }
 
 function formatTokenAttribution(model: GeminiModel, stage: string, tokens: number): string {
@@ -385,44 +401,76 @@ export async function generateInitialSchema(
 		contextMessage = `[IMAGE_DESCRIPTION]\n${vision.text}\n\n[USER_TASK]\n${userMessage}`;
 	}
 
-	const prompt = `You build ONLY the initial engineering scheme and must not solve the task.
-Return strict JSON object with keys:
+	const baseInstruction = `You build ONLY engineering schema data and must not solve the task.
+Return strict JSON object with keys: schemaData, assumptions, ambiguities.
+schemaData MUST be version "2.0" with root keys:
 {
-  "schemaData": {
-    "version": "1.0",
-    "coordinateSystem": {"xUnit":"m","yUnit":"m","origin":{"x":0,"y":0}},
-    "elements": [],
-    "annotations": [],
-    "assumptions": []
-  },
+  "version":"2.0",
+  "meta":{"taskDomain":"mechanics","catalogVersion":"2026-04-11"},
+  "coordinateSystem":{"xUnit":"m","yUnit":"m","origin":{"x":0,"y":0},"axisOrientation":"right-handed"},
+  "nodes": [],
+  "objects": [],
+  "results": [],
+  "annotations": [],
   "assumptions": [],
   "ambiguities": []
 }
-Allowed element types: beam_segment, support_pin, support_roller, support_fixed, point_load, distributed_load, moment, hinge, joint, axis, dimension, label.
-Use finite numeric values only and include all supports/loads/moments from the condition.
-Use canonical geometry keys:
-- beam_segment / axis / dimension: geometry.start + geometry.end
-- distributed_load: geometry.start + geometry.end + intensity (number) OR intensity object {start,end}
-- support_pin / support_roller / support_fixed / hinge / joint / label: geometry.point
-- point_load: geometry.point (optional geometry.from/geometry.to for arrow direction)
-- moment: geometry.center (optionally duplicate into geometry.point), direction MUST be exactly "cw" or "ccw"; if numeric value is unknown, set symbolic geometry.label (for example "M") and still set direction
-Never encode a point as bare geometry {"x":...,"y":...}; always use the canonical keys above.
-Build an internal coordinate map from the task and place elements accordingly.
-Do NOT place all supports or all point loads at (0,0) by default.
-If exact coordinates are missing, use a consistent non-degenerate axis with distinct anchor positions and record assumptions.
-Every element MUST include the key "geometry" and it MUST be an object.
-Every element MUST include a non-empty unique string field "id".
+Allowed object types: bar, cable, spring, damper, rigid_disk, fixed_wall, hinge_fixed, hinge_roller, internal_hinge, slider, force, moment, distributed, velocity, acceleration, angular_velocity, angular_acceleration, trajectory, epure, label, dimension, axis, ground.
+Every object MUST contain non-empty id, type, geometry object.
+Use nodeRefs to reference node ids from nodes array.
+For distributed, include geometry.kind and geometry.intensity.
+For moment/angular types, geometry.direction MUST be exactly "cw" or "ccw".
+Do NOT place all supports/loads at (0,0) by default.
+Preserve language of assumptions/ambiguities according to user request.
 ${languagePolicy(userMessage)}`;
 
-	const messages = buildContext(history, prompt, `Task for scheme generation:\n${contextMessage}`);
-	const generation = await generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, params?.forcedModel);
-	const parsed = parseSchemaResult(generation.text);
-	usedModels.push(formatTokenAttribution(generation.model, 'SchemaGen', generation.tokens));
+	const stageAPrompt = `${baseInstruction}
+Stage A objective: create a stable node skeleton and coarse object list.
+At this stage, prioritize correct node positions and object-node linkage.`;
+	const stageAQuestion = `Task for scheme generation (Stage A):\n${contextMessage}`;
+	const stageA = await generateSchemaStage(history, stageAPrompt, stageAQuestion, params?.forcedModel);
+	usedModels.push(formatTokenAttribution(stageA.model, 'SchemaGen-A', stageA.tokens));
+
+	const stageASchemaJson = JSON.stringify(stageA.parsed.schemaData, null, 2);
+	const stageBPrompt = `${baseInstruction}
+Stage B objective: refine geometry/style/details using prepared skeleton.
+Keep existing node ids and object ids stable where possible.
+Do not remove valid supports/loads/moments detected in task.
+Fill canonical geometry per type:
+- bar/cable/spring/damper/axis/dimension/ground: use nodeRefs [start,end]
+- fixed_wall/hinge_fixed/hinge_roller/internal_hinge/label: use nodeRefs [node]
+- slider: nodeRefs [node, guideStart, guideEnd]
+- force/velocity/acceleration: nodeRefs [node] + direction
+- moment: nodeRefs [node] + direction cw|ccw (+ optional magnitude or label)
+- distributed: nodeRefs [start,end] + kind + intensity
+- rigid_disk: nodeRefs [center] + radius
+- trajectory: geometry.points array
+- epure (if present): put into results with baseLine + values`;
+	const stageBQuestion = `Task context:\n${contextMessage}\n\nStage A schema JSON:\n${stageASchemaJson}\n\nNow return finalized schemaData v2.`;
+	const stageB = await generateSchemaStage(history, stageBPrompt, stageBQuestion, params?.forcedModel);
+	usedModels.push(formatTokenAttribution(stageB.model, 'SchemaGen-B', stageB.tokens));
+
+	const stageBSchemaJson = JSON.stringify(stageB.parsed.schemaData, null, 2);
+	const stageCPrompt = `${baseInstruction}
+Stage C objective: perform self-check and return corrected schema.
+Self-check rules:
+1) all nodeRefs must reference existing nodes
+2) object ids must be unique and non-empty
+3) no unsupported type names
+4) avoid coordinate collapse unless explicitly requested
+5) keep physical meaning from task and keep prior valid details`;
+	const stageCQuestion = `Task context:\n${contextMessage}\n\nCandidate schema JSON:\n${stageBSchemaJson}\n\nReturn corrected final schemaData v2.`;
+	const stageC = await generateSchemaStage(history, stageCPrompt, stageCQuestion, params?.forcedModel);
+	usedModels.push(formatTokenAttribution(stageC.model, 'SchemaGen-C', stageC.tokens));
+
+	const parsed = stageC.parsed;
+	const totalTokens = stageA.tokens + stageB.tokens + stageC.tokens;
+	const finalModel = stageC.model;
 
 	return {
 		...parsed,
-		model: generation.model,
-		tokens: generation.tokens,
+		model: finalModel,
+		tokens: totalTokens,
 		usedModels
 	};
 }
@@ -431,7 +479,7 @@ export async function reviseSchema(
 	history: GeminiHistory[],
 	params: {
 		originalPrompt: string;
-		currentSchema: SchemaData;
+		currentSchema: SchemaData | SchemaDataV2;
 		revisionNotes: string;
 		forcedModel?: string | null;
 	}
@@ -440,18 +488,15 @@ export async function reviseSchema(
 	const prompt = `You revise ONLY the engineering scheme and must not solve the task.
 Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 Preserve correct existing elements and update only what is needed per revision notes.
-Keep schemaData.version = "1.0" and finite numbers.
-Use canonical geometry keys:
-- beam_segment / axis / dimension: geometry.start + geometry.end
-- distributed_load: geometry.start + geometry.end + intensity (number) OR intensity object {start,end}
-- support_pin / support_roller / support_fixed / hinge / joint / label: geometry.point
-- point_load: geometry.point (optional geometry.from/geometry.to for arrow direction)
-- moment: geometry.center (optionally duplicate into geometry.point), direction MUST be exactly "cw" or "ccw"; if numeric value is unknown, set symbolic geometry.label (for example "M") and still set direction
-Never encode a point as bare geometry {"x":...,"y":...}; always use the canonical keys above.
+Keep schemaData.version = "2.0" and finite numbers.
+Use ONLY object types from catalog v2:
+bar, cable, spring, damper, rigid_disk, fixed_wall, hinge_fixed, hinge_roller, internal_hinge, slider, force, moment, distributed, velocity, acceleration, angular_velocity, angular_acceleration, trajectory, epure, label, dimension, axis, ground.
+Use nodeRefs to bind all objects to nodes.
+For distributed include kind + intensity.
+For moment/angular include direction "cw" | "ccw".
 Preserve existing coordinates unless revision notes explicitly request moving elements.
 Do NOT collapse supports/loads/moments to (0,0) unless the user explicitly requests coincidence at the origin.
-Every element MUST include the key "geometry" and it MUST be an object.
-Every element MUST include a non-empty unique string field "id".
+Every object MUST include geometry object and non-empty unique id.
 ${languagePolicy(languageSeed)}`;
 
 	const currentSchemaJson = JSON.stringify(params.currentSchema, null, 2);
@@ -459,12 +504,22 @@ ${languagePolicy(languageSeed)}`;
 	const messages = buildContext(history, prompt, question);
 
 	const generation = await generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, params.forcedModel);
-	const parsed = parseSchemaResult(generation.text);
+	const parsedRevision = parseSchemaResult(generation.text);
+	const stage2Prompt = `You perform final schema self-check for contract v2.
+Return strict JSON object with keys: schemaData, assumptions, ambiguities.
+Keep same physical meaning and ids where valid.
+Fix only structural issues: invalid/missing nodeRefs, wrong type names, empty ids, malformed geometry.
+${languagePolicy(languageSeed)}`;
+	const stage2Question = `Original task:\n${params.originalPrompt}\n\nRevision notes:\n${params.revisionNotes}\n\nCandidate revised schema:\n${JSON.stringify(parsedRevision.schemaData, null, 2)}`;
+	const stage2 = await generateSchemaStage(history, stage2Prompt, stage2Question, params.forcedModel);
 
 	return {
-		...parsed,
-		model: generation.model,
-		tokens: generation.tokens,
-		usedModels: [formatTokenAttribution(generation.model, 'SchemaRevision', generation.tokens)]
+		...stage2.parsed,
+		model: stage2.model,
+		tokens: generation.tokens + stage2.tokens,
+		usedModels: [
+			formatTokenAttribution(generation.model, 'SchemaRevision', generation.tokens),
+			formatTokenAttribution(stage2.model, 'SchemaRevision-SelfCheck', stage2.tokens)
+		]
 	};
 }

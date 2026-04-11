@@ -17,7 +17,7 @@ import {
 	type GeminiHistory
 } from './gemini.js';
 import { workerPool, SandboxError } from '../sandbox/worker-pool.js';
-import type { SchemaData } from '$lib/schema/schema-data.js';
+import type { SchemaAny } from '$lib/schema/schema-any.js';
 
 export type PipelineStatus =
 	| { type: 'ping' }
@@ -48,7 +48,7 @@ const MAX_RETRIES = 2;
 export async function runPipelineWithApprovedSchema(
 	params: {
 		userMessage: string;
-		approvedSchema: SchemaData;
+		approvedSchema: SchemaAny;
 		revisionNotes?: string[];
 	},
 	history: GeminiHistory[],

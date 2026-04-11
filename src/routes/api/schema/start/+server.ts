@@ -1,8 +1,8 @@
-﻿import type { RequestHandler } from './$types';
+import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
 import { generateInitialSchema } from '$lib/server/ai/gemini.js';
-import { validateSchemaData } from '$lib/schema/schema-data.js';
+import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import {
 	detectPromptLanguage,
 	formatSchemaAssistantContent,
@@ -89,6 +89,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			userId: locals.user.id,
 			mode: 'schema_check',
 			status: 'DRAFT',
+			schemaVersion: '2.0',
 			originalPrompt: message,
 			originalImageData: imageData ? JSON.stringify(imageData) : null
 		}
@@ -109,7 +110,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			assumptions: generated.assumptions.length,
 			ambiguities: generated.ambiguities.length
 		});
-		const validation = validateSchemaData(generated.schemaData);
+		const validation = validateSchemaAny(generated.schemaData);
 		if (!validation.ok || !validation.value) {
 			await db.taskDraft.update({ where: { id: draft.id }, data: { status: 'FAILED' } });
 			logSchemaCheck('start.schema_invalid', {
@@ -133,6 +134,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				data: {
 					status: 'AWAITING_REVIEW',
 					currentSchema: validation.value,
+					schemaVersion: validation.version ?? '2.0',
 					revisionCount: 0
 				}
 			});
@@ -141,6 +143,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				data: {
 					draftId: draft.id,
 					revisionIndex: 0,
+					schemaVersion: validation.version ?? '2.0',
 					schema: validation.value,
 					assumptions: generated.assumptions
 				}
@@ -153,6 +156,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 					role: 'ASSISTANT',
 					content: assistantContent,
 					schemaData: JSON.stringify(validation.value),
+					schemaVersion: validation.version ?? '2.0',
 					usedModels: JSON.stringify(generated.usedModels)
 				}
 			});
@@ -169,6 +173,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		return json({
 			draftId: draft.id,
 			status: result.updatedDraft.status,
+			schemaVersion: validation.version ?? '2.0',
 			revisionIndex: result.updatedDraft.revisionCount,
 			schema: validation.value,
 			assumptions: generated.assumptions,
@@ -200,3 +205,4 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		});
 	}
 };
+

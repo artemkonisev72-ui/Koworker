@@ -70,6 +70,7 @@ model Message {
   executionLogs String?     @db.Text
   graphData     Json?
   schemaData    Json?
+  schemaVersion String?     @default("1.0")
   usedModels    Json?
   imageData     String?     @db.Text
   createdAt     DateTime    @default(now())
@@ -86,6 +87,7 @@ model TaskDraft {
   userId            String
   mode              String              @default("standard")
   status            DraftStatus         @default(DRAFT)
+  schemaVersion     String              @default("1.0")
   originalPrompt    String              @db.Text
   originalImageData String?             @db.Text
   currentSchema     Json?
@@ -106,6 +108,7 @@ model TaskDraftRevision {
   id            String    @id @default(cuid())
   draftId       String
   revisionIndex Int
+  schemaVersion String    @default("1.0")
   userNotes     String?   @db.Text
   schema        Json
   assumptions   Json?

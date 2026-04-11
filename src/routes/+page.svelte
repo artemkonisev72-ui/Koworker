@@ -5,7 +5,6 @@
 	 */
 	import { onMount, tick } from 'svelte';
 	import MessageRenderer from '$lib/components/MessageRenderer.svelte';
-	import type { SchemaData } from '$lib/schema/schema-data.js';
 
 	interface GraphPoint {
 		x: number;
@@ -20,7 +19,7 @@
 		draftId: string;
 		status: string;
 		revisionIndex: number;
-		schema: SchemaData;
+		schema: unknown;
 		assumptions: string[];
 		ambiguities: string[];
 	}
@@ -29,7 +28,8 @@
 		role: 'USER' | 'ASSISTANT' | 'SYSTEM';
 		content: string;
 		graphData?: GraphData[] | string | null;
-		schemaData?: SchemaData | string | null;
+		schemaData?: unknown;
+		schemaVersion?: string | null;
 		imageData?: string | null;
 		usedModels?: string[] | string | null;
 		draftId?: string | null;
@@ -267,6 +267,7 @@
 					...m,
 					graphData: typeof m.graphData === 'string' ? JSON.parse(m.graphData) : m.graphData,
 					schemaData: parseMaybeJson(m.schemaData),
+					schemaVersion: typeof m.schemaVersion === 'string' ? m.schemaVersion : null,
 					usedModels: typeof m.usedModels === 'string' ? JSON.parse(m.usedModels) : m.usedModels,
 					draftId: m.draftId ?? null
 				}));

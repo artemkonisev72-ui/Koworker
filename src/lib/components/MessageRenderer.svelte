@@ -6,7 +6,7 @@
 	import { onMount } from 'svelte';
 	import GraphView from './GraphView.svelte';
 	import SchemeView from './SchemeView.svelte';
-	import type { SchemaData } from '$lib/schema/schema-data.js';
+	import { isSchemaDataV2 } from '$lib/schema/schema-v2.js';
 
 	interface GraphPoint {
 		x: number;
@@ -22,7 +22,8 @@
 		role: 'USER' | 'ASSISTANT' | 'SYSTEM';
 		content: string;
 		graphData?: GraphData[] | string | null;
-		schemaData?: SchemaData | string | null;
+		schemaData?: unknown;
+		schemaVersion?: string | null;
 		usedModels?: string[] | string | null;
 		createdAt?: string;
 	}
@@ -56,21 +57,22 @@
 	});
 
 	let schemes = $derived.by(() => {
-		if (!message.schemaData) return [] as SchemaData[];
+		if (!message.schemaData) return [] as unknown[];
 		const raw = message.schemaData;
 		let parsed: unknown = raw;
 		if (typeof raw === 'string') {
 			try {
 				parsed = JSON.parse(raw);
 			} catch {
-				return [] as SchemaData[];
+				return [] as unknown[];
 			}
 		}
 		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-			const schema = parsed as SchemaData;
+			const schema = parsed as Record<string, unknown>;
 			if (Array.isArray(schema.elements)) return [schema];
+			if (isSchemaDataV2(schema)) return [schema];
 		}
-		return [] as SchemaData[];
+		return [] as unknown[];
 	});
 
 	const KATEX_CLASSES =

@@ -254,6 +254,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			generatedCode: true,
 			graphData: true,
 			schemaData: true,
+			schemaVersion: true,
 			usedModels: true,
 			imageData: true,
 			draftId: true,

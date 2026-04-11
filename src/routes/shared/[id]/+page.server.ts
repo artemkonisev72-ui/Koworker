@@ -48,6 +48,7 @@ export const load: PageServerLoad = async ({ params }) => {
 			executionLogs: m.executionLogs,
 			graphData: parseMaybeJson(m.graphData),
 			schemaData: parseMaybeJson(m.schemaData),
+			schemaVersion: m.schemaVersion,
 			usedModels: parseMaybeJson(m.usedModels),
 			draftId: m.draftId,
 			createdAt: m.createdAt.toISOString()
