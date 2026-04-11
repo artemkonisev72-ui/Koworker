@@ -17,6 +17,23 @@ import { runPipeline, type PipelineStatus } from '$lib/server/ai/pipeline.js';
 import { prisma } from '$lib/server/db.js';
 import { json, error } from '@sveltejs/kit';
 
+const MAX_MESSAGE_LENGTH = 8_000;
+const MAX_IMAGE_BASE64_LENGTH = 2_800_000; // ~2 MB binary payload in base64
+const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const RATE_WINDOW_MS = 60_000;
+const MAX_REQUESTS_PER_WINDOW = 20;
+const MAX_CONCURRENT_PIPELINES_PER_USER = 2;
+
+type RateEntry = {
+	windowStart: number;
+	requestCount: number;
+	activePipelines: number;
+};
+
+const globalRate = globalThis as unknown as { _chatRateMap?: Map<string, RateEntry> };
+const chatRateMap = globalRate._chatRateMap ?? new Map<string, RateEntry>();
+if (!globalRate._chatRateMap) globalRate._chatRateMap = chatRateMap;
+
 export const POST: RequestHandler = async ({ locals, request }) => {
 	console.log('[SSE] POST /api/chat received');
 	if (!locals.user) return error(401, 'Unauthorized');
@@ -44,12 +61,30 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		console.error('[SSE] Missing chatId or message');
 		return error(400, 'chatId and message are required');
 	}
+	if (message.length > MAX_MESSAGE_LENGTH) {
+		return error(413, `message is too large (max ${MAX_MESSAGE_LENGTH} chars)`);
+	}
+
+	if (imageData) {
+		if (!ALLOWED_IMAGE_MIME_TYPES.has(imageData.mimeType)) {
+			return error(400, 'Unsupported image mime type');
+		}
+		if (typeof imageData.base64 !== 'string' || imageData.base64.length > MAX_IMAGE_BASE64_LENGTH) {
+			return error(413, 'image is too large');
+		}
+	}
 
 	// Проверяем существование чата и получаем предпочтения модели
-	const chat = await prisma.chat.findUnique({ where: { id: chatId } });
+	const chat = await prisma.chat.findUnique({
+		where: { id: chatId },
+		select: { id: true, userId: true, modelPreference: true }
+	});
 	if (!chat) {
 		console.error('[SSE] Chat not found:', chatId);
 		return error(404, 'Chat not found');
+	}
+	if (chat.userId !== locals.user.id) {
+		return error(403, 'Forbidden');
 	}
 
 	const forcedModel = chat.modelPreference === 'auto' ? null : chat.modelPreference;
@@ -67,15 +102,47 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		imageData: m.imageData ? JSON.parse(m.imageData) : undefined
 	}));
 
+	const now = Date.now();
+	const userRate = chatRateMap.get(locals.user.id) ?? {
+		windowStart: now,
+		requestCount: 0,
+		activePipelines: 0
+	};
+	if (now - userRate.windowStart >= RATE_WINDOW_MS) {
+		userRate.windowStart = now;
+		userRate.requestCount = 0;
+	}
+	if (userRate.requestCount >= MAX_REQUESTS_PER_WINDOW) {
+		return error(429, 'Too many requests. Please wait and try again.');
+	}
+	if (userRate.activePipelines >= MAX_CONCURRENT_PIPELINES_PER_USER) {
+		return error(429, 'Too many concurrent requests. Please wait for completion.');
+	}
+	userRate.requestCount += 1;
+	userRate.activePipelines += 1;
+	chatRateMap.set(locals.user.id, userRate);
+
+	const releasePipelineSlot = () => {
+		const entry = chatRateMap.get(locals.user!.id);
+		if (!entry) return;
+		entry.activePipelines = Math.max(0, entry.activePipelines - 1);
+		chatRateMap.set(locals.user!.id, entry);
+	};
+
 	// Сохраняем сообщение пользователя
-	await prisma.message.create({
-		data: {
-			chatId,
-			role: 'USER',
-			content: message,
-			imageData: imageData ? JSON.stringify(imageData) : null
-		}
-	});
+	try {
+		await prisma.message.create({
+			data: {
+				chatId,
+				role: 'USER',
+				content: message,
+				imageData: imageData ? JSON.stringify(imageData) : null
+			}
+		});
+	} catch (err) {
+		releasePipelineSlot();
+		throw err;
+	}
 
 	// ── SSE ReadableStream ────────────────────────────────────────────────────
 	const stream = new ReadableStream({
@@ -143,6 +210,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				})
 				.finally(() => {
 					clearInterval(pingInterval);
+					releasePipelineSlot();
 					sendDone();
 				});
 		}

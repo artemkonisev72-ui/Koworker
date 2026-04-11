@@ -1,43 +1,42 @@
 /**
  * worker-pool.ts
- * Пул воркеров Pyodide. Реализует:
- *   • External Heartbeat (Promise.race + 10s таймаут из главного потока)
- *   • Lifecycle Policy (terminate + пересоздание каждые 10 задач)
- *   • Pre-flight валидация кода (разрешены только math, sympy, numpy, json)
+ * Pyodide worker pool with:
+ * - main-thread timeout watchdog
+ * - strict worker lifecycle isolation
+ * - pre-flight code validation
  */
 import { Worker } from 'worker_threads';
 import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import path from 'path';
-
 import fs from 'node:fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const isDev = process.env.NODE_ENV !== 'production';
 
-// Ищем воркер сначала рядом с этим файлом, а затем жестко от корня проекта (для production)
-let JS_WORKER = path.resolve(__dirname, 'pyodide-worker.js');
-if (!fs.existsSync(JS_WORKER)) {
-	JS_WORKER = path.resolve(process.cwd(), 'src/lib/server/sandbox/pyodide-worker.js');
+let jsWorkerPath = path.resolve(__dirname, 'pyodide-worker.js');
+if (!fs.existsSync(jsWorkerPath)) {
+	jsWorkerPath = path.resolve(process.cwd(), 'src/lib/server/sandbox/pyodide-worker.js');
 }
 
-let TS_WORKER = path.resolve(__dirname, 'pyodide-worker.ts');
-if (!fs.existsSync(TS_WORKER)) {
-	TS_WORKER = path.resolve(process.cwd(), 'src/lib/server/sandbox/pyodide-worker.ts');
+let tsWorkerPath = path.resolve(__dirname, 'pyodide-worker.ts');
+if (!fs.existsSync(tsWorkerPath)) {
+	tsWorkerPath = path.resolve(process.cwd(), 'src/lib/server/sandbox/pyodide-worker.ts');
 }
 
-const WORKER_SCRIPT = fs.existsSync(JS_WORKER) ? JS_WORKER : TS_WORKER;
-
-// Флаг tsx нужен ТОЛЬКО если мы запускаем сырой .ts файл
+const WORKER_SCRIPT = fs.existsSync(jsWorkerPath) ? jsWorkerPath : tsWorkerPath;
 const WORKER_OPTIONS = WORKER_SCRIPT.endsWith('.ts') ? { execArgv: ['--import', 'tsx/esm'] } : {};
 
-const TASK_TIMEOUT_MS = 10_000; // 10 секунд на задачу
-const MAX_TASKS_PER_WORKER = 10; // Lifecycle Policy
-const POOL_SIZE = 2; // Количество параллельных воркеров
+const TASK_TIMEOUT_MS = 10_000;
+const MAX_TASKS_PER_WORKER = 1; // strict isolation between tasks/users
+const POOL_SIZE = 2;
+const MAX_QUEUE_SIZE = 100;
+const MAX_CODE_LENGTH = 30_000;
 
-// ── Разрешённые модули (Pre-flight) ──────────────────────────────────────────
-// Паттерн ловит любой import/from за пределами: math, sympy, numpy, json
-const FORBIDDEN_IMPORT_RE = /^(?:import|from)\s+(?!math\b|sympy\b|numpy\b|json\b)(\w+)/m;
+const ALLOWED_IMPORT_ROOTS = new Set(['math', 'sympy', 'numpy', 'json']);
+const FORBIDDEN_TOKENS_RE =
+	/\b(open|eval|exec|compile|__import__|importlib|os\.|sys\.|subprocess|__loader__|__spec__)\b/;
+const BUILTINS_ESCAPE_RE =
+	/getattr\s*\(\s*__builtins__|__builtins__\s*\[|globals\s*\(\s*\)\s*\[\s*['"]__builtins__['"]|locals\s*\(\s*\)\s*\[\s*['"]__builtins__['"]/;
 
 export interface ExecutionResult {
 	stdout: string;
@@ -53,20 +52,17 @@ export class SandboxError extends Error {
 	}
 }
 
-// ── Одна запись пула ─────────────────────────────────────────────────────────
 interface PoolEntry {
 	worker: Worker;
 	taskCount: number;
 	busy: boolean;
 	ready: boolean;
-	// Ожидающие обещания, индексированные по id задачи
 	pending: Map<string, { resolve: (v: ExecutionResult) => void; reject: (e: Error) => void }>;
 }
 
-// ── Пул ─────────────────────────────────────────────────────────────────────
 class WorkerPool {
 	private entries: PoolEntry[] = [];
-	private queue: Array<() => void> = []; // Задачи, ждущие свободного воркера
+	private queue: Array<() => void> = [];
 
 	constructor() {
 		for (let i = 0; i < POOL_SIZE; i++) {
@@ -74,7 +70,6 @@ class WorkerPool {
 		}
 	}
 
-	// ── Создание нового воркера ──────────────────────────────────────────────
 	private createEntry(): PoolEntry {
 		const worker = new Worker(WORKER_SCRIPT, WORKER_OPTIONS);
 		const entry: PoolEntry = {
@@ -96,10 +91,10 @@ class WorkerPool {
 				return;
 			}
 
-			// Обычный ответ задачи
 			if (msg.id) {
 				const promise = entry.pending.get(msg.id);
 				if (!promise) return;
+
 				entry.pending.delete(msg.id);
 				entry.busy = false;
 
@@ -109,7 +104,6 @@ class WorkerPool {
 					promise.reject(new SandboxError(msg.error ?? 'Unknown error'));
 				}
 
-				// Lifecycle Policy — убиваем и пересоздаём воркер
 				if (entry.taskCount >= MAX_TASKS_PER_WORKER) {
 					this.recycleEntry(entry);
 				} else {
@@ -120,13 +114,12 @@ class WorkerPool {
 
 		worker.on('error', (err) => {
 			console.error('[WorkerPool] Worker error:', err);
-			// Отклоняем все ожидающие задачи
+
 			for (const [, promise] of entry.pending) {
 				promise.reject(new SandboxError(`Worker crashed: ${err.message}`));
 			}
 			entry.pending.clear();
-			
-			// Задержка 1000мс: защита от бесконечного синхронного цикла падений при ENOENT
+
 			setTimeout(() => {
 				this.recycleEntry(entry);
 			}, 1000);
@@ -135,69 +128,94 @@ class WorkerPool {
 		return entry;
 	}
 
-	// ── Lifecycle Policy: убиваем и пересоздаём ──────────────────────────────
 	private recycleEntry(entry: PoolEntry): void {
-		entry.worker.terminate(); // Жёсткое уничтожение
+		entry.worker.terminate();
 		const idx = this.entries.indexOf(entry);
 		if (idx !== -1) {
 			this.entries[idx] = this.createEntry();
 		}
 	}
 
-	// ── Сброс очереди: даём задачи свободным воркерам ────────────────────────
 	private drainQueue(): void {
 		const freeEntry = this.entries.find((e) => e.ready && !e.busy);
 		if (!freeEntry || this.queue.length === 0) return;
-		const next = this.queue.shift()!;
-		next();
+		const next = this.queue.shift();
+		if (next) next();
 	}
 
-	// ── Pre-flight проверка кода ─────────────────────────────────────────────
-	private validateCode(code: string): void {
-		const lines = code.split('\n');
-		for (const line of lines) {
-			const trimmed = line.trim();
-			if (!trimmed || trimmed.startsWith('#')) continue;
-			if (FORBIDDEN_IMPORT_RE.test(trimmed)) {
-				const match = trimmed.match(FORBIDDEN_IMPORT_RE);
-				throw new SandboxError(
-					`Запрещённый импорт: "${match?.[1]}". Разрешены только: math, sympy, numpy, json`
-				);
+	private assertAllowedImport(modulePath: string): void {
+		const root = modulePath.split('.')[0].trim();
+		if (!root || !ALLOWED_IMPORT_ROOTS.has(root)) {
+			throw new SandboxError(
+				`Forbidden import "${modulePath}". Allowed: ${Array.from(ALLOWED_IMPORT_ROOTS).join(', ')}`
+			);
+		}
+	}
+
+	private validateImports(code: string): void {
+		const importRe = /(?:^|\n)\s*import\s+([^\n#;]+)/g;
+		for (const match of code.matchAll(importRe)) {
+			const payload = match[1];
+			const modules = payload
+				.split(',')
+				.map((p) => p.trim())
+				.filter(Boolean)
+				.map((p) => p.split(/\s+as\s+/i)[0]?.trim())
+				.filter((p): p is string => Boolean(p));
+
+			for (const moduleName of modules) {
+				this.assertAllowedImport(moduleName);
 			}
 		}
-		// Дополнительно блокируем опасные builtins
-		if (/\b(open|eval|exec|compile|__import__|os\.|sys\.|subprocess)\b/.test(code)) {
-			throw new SandboxError('Код содержит запрещённые операции (open/eval/exec/os/sys)');
+
+		const fromRe = /(?:^|\n)\s*from\s+([A-Za-z_][A-Za-z0-9_.]*)\s+import\s+/g;
+		for (const match of code.matchAll(fromRe)) {
+			this.assertAllowedImport(match[1]);
 		}
 	}
 
-	// ── Публичный метод выполнения ───────────────────────────────────────────
+	private validateCode(code: string): void {
+		if (code.length > MAX_CODE_LENGTH) {
+			throw new SandboxError(`Code is too large (>${MAX_CODE_LENGTH} chars)`);
+		}
+
+		this.validateImports(code);
+
+		if (FORBIDDEN_TOKENS_RE.test(code) || BUILTINS_ESCAPE_RE.test(code)) {
+			throw new SandboxError('Code contains blocked operations');
+		}
+	}
+
 	execute(code: string): Promise<ExecutionResult> {
-		// Pre-flight валидация
-		this.validateCode(code);
+		try {
+			this.validateCode(code);
+		} catch (err) {
+			return Promise.reject(err);
+		}
+
+		const freeEntry = this.entries.find((e) => e.ready && !e.busy);
+		if (!freeEntry && this.queue.length >= MAX_QUEUE_SIZE) {
+			return Promise.reject(
+				new SandboxError('Sandbox queue is full. Please retry in a few seconds.')
+			);
+		}
 
 		return new Promise<ExecutionResult>((resolve, reject) => {
 			const runOnEntry = (entry: PoolEntry) => {
 				entry.busy = true;
 				entry.taskCount++;
+
 				const id = randomUUID();
 				entry.pending.set(id, { resolve, reject });
 
-				// ── External Heartbeat: Promise.race с тайм-аутом из главного потока ──
-				// Wasm блокирует внутренние таймеры воркера, поэтому таймаут
-				// ОБЯЗАТЕЛЬНО запускается в главном потоке здесь.
 				const timer = setTimeout(() => {
 					entry.pending.delete(id);
 					entry.busy = false;
-
-					// Жёсткое уничтожение зависшего процесса
-					console.warn(`[WorkerPool] Task ${id} timed out — terminating worker`);
+					console.warn(`[WorkerPool] Task ${id} timed out, terminating worker`);
 					this.recycleEntry(entry);
-
-					reject(new SandboxError('Превышен лимит времени выполнения (10 сек)'));
+					reject(new SandboxError('Execution timeout exceeded (10 seconds)'));
 				}, TASK_TIMEOUT_MS);
 
-				// Оборачиваем resolve/reject чтобы отменять таймер
 				const originalResolve = entry.pending.get(id)!.resolve;
 				const originalReject = entry.pending.get(id)!.reject;
 				entry.pending.set(id, {
@@ -214,11 +232,9 @@ class WorkerPool {
 				entry.worker.postMessage({ id, code });
 			};
 
-			const freeEntry = this.entries.find((e) => e.ready && !e.busy);
 			if (freeEntry) {
 				runOnEntry(freeEntry);
 			} else {
-				// Ставим в очередь
 				this.queue.push(() => {
 					const entry = this.entries.find((e) => e.ready && !e.busy);
 					if (entry) runOnEntry(entry);
@@ -228,7 +244,6 @@ class WorkerPool {
 	}
 }
 
-// ── Синглтон пула (переиспользуется между запросами) ─────────────────────────
 const globalPool = globalThis as unknown as { _workerPool?: WorkerPool };
 export const workerPool = globalPool._workerPool ?? new WorkerPool();
 if (!globalPool._workerPool) globalPool._workerPool = workerPool;

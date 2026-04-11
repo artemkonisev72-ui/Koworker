@@ -5,10 +5,61 @@ if (!parentPort) {
 }
 let pyodide = null;
 let currentStdout = "";
+const EXEC_WRAPPER = `
+import builtins as __builtins_mod
+import math, sympy, numpy, json
+
+_ALLOWED_IMPORTS = {"math", "sympy", "numpy", "json"}
+_REAL_IMPORT = __builtins_mod.__import__
+
+def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+    root = name.split(".")[0]
+    if root not in _ALLOWED_IMPORTS:
+        raise ImportError(f"Import '{name}' is blocked")
+    return _REAL_IMPORT(name, globals, locals, fromlist, level)
+
+_SAFE_BUILTINS = {
+    "__import__": _safe_import,
+    "abs": abs,
+    "all": all,
+    "any": any,
+    "bool": bool,
+    "dict": dict,
+    "enumerate": enumerate,
+    "float": float,
+    "int": int,
+    "len": len,
+    "list": list,
+    "max": max,
+    "min": min,
+    "pow": pow,
+    "print": print,
+    "range": range,
+    "round": round,
+    "set": set,
+    "sorted": sorted,
+    "str": str,
+    "sum": sum,
+    "tuple": tuple,
+    "zip": zip,
+    "Exception": Exception,
+    "ValueError": ValueError,
+    "TypeError": TypeError
+}
+
+_globals = {
+    "__builtins__": _SAFE_BUILTINS,
+    "math": math,
+    "sympy": sympy,
+    "numpy": numpy,
+    "np": numpy,
+    "json": json
+}
+
+exec(compile(__sandbox_code, "<sandbox>", "exec"), _globals, None)
+`;
 async function init() {
   pyodide = await loadPyodide({
-    // Перехватываем stdout/stderr на уровне Pyodide, не используя process.stdout.fd
-    // (в worker_threads fd === undefined, что и вызывало ошибку)
     stdout: (s) => {
       currentStdout += s + "\n";
     },
@@ -26,12 +77,17 @@ async function runTask(id, code) {
   }
   currentStdout = "";
   try {
-    await pyodide.runPythonAsync(code);
+    pyodide.globals.set("__sandbox_code", code);
+    await pyodide.runPythonAsync(EXEC_WRAPPER);
     parentPort.postMessage({ id, ok: true, stdout: currentStdout.trim() });
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    parentPort.postMessage({ id, ok: false, error });
+    const message = err instanceof Error ? err.message : String(err);
+    parentPort.postMessage({ id, ok: false, error: message });
   } finally {
+    try {
+      pyodide.globals.delete("__sandbox_code");
+    } catch {
+    }
     currentStdout = "";
   }
 }
