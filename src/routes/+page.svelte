@@ -1,29 +1,52 @@
-<script lang="ts">
+﻿<script lang="ts">
 	/**
-	 * +page.svelte — Main chat interface
+	 * +page.svelte - Main chat interface
 	 * SSE client + sidebar + message list + input
 	 */
 	import { onMount, tick } from 'svelte';
 	import MessageRenderer from '$lib/components/MessageRenderer.svelte';
+	import type { SchemaData } from '$lib/schema/schema-data.js';
 
-	interface GraphPoint { x: number; y: number; }
-	interface GraphData { title?: string; type?: 'function' | 'diagram'; points: GraphPoint[]; }
+	interface GraphPoint {
+		x: number;
+		y: number;
+	}
+	interface GraphData {
+		title?: string;
+		type?: 'function' | 'diagram';
+		points: GraphPoint[];
+	}
+	interface ActiveDraftState {
+		draftId: string;
+		status: string;
+		revisionIndex: number;
+		schema: SchemaData;
+		assumptions: string[];
+		ambiguities: string[];
+	}
 	interface ChatMessage {
 		id: string;
 		role: 'USER' | 'ASSISTANT' | 'SYSTEM';
 		content: string;
 		graphData?: GraphData[] | string | null;
-		imageData?: string | null; // JSON string of {base64, mimeType}
+		schemaData?: SchemaData | string | null;
+		imageData?: string | null;
 		usedModels?: string[] | string | null;
+		draftId?: string | null;
 		createdAt?: string;
 		isStreaming?: boolean;
 	}
-	interface Chat { id: string; title: string; updatedAt: string; isPinned: boolean; modelPreference: string; isPublic: boolean; }
+	interface Chat {
+		id: string;
+		title: string;
+		updatedAt: string;
+		isPinned: boolean;
+		modelPreference: string;
+		isPublic: boolean;
+	}
 
-	// ── Props ─────────────────────────────────────────────────────────────────
 	let { data }: { data: import('./$types').PageData } = $props();
 
-	// ── State ─────────────────────────────────────────────────────────────────
 	let chats = $state<Chat[]>([]);
 	let activeChatId = $state<string | null>(null);
 	let messages = $state<ChatMessage[]>([]);
@@ -35,25 +58,25 @@
 	let inputEl: HTMLTextAreaElement | undefined = $state();
 	let fileInputEl: HTMLInputElement | undefined = $state();
 
-	// Editing state
 	let editingChatId = $state<string | null>(null);
 	let editingTitle = $state('');
 
-	// Derived
 	let isSharing = $state(false);
 	let copySuccess = $state(false);
 
-	let pinnedChats = $derived(chats.filter(c => c.isPinned));
-	let otherChats = $derived(chats.filter(c => !c.isPinned));
-	let activeChat = $derived(chats.find(c => c.id === activeChatId));
+	let pinnedChats = $derived(chats.filter((c) => c.isPinned));
+	let otherChats = $derived(chats.filter((c) => !c.isPinned));
+	let activeChat = $derived(chats.find((c) => c.id === activeChatId));
 
-	// Image upload state
 	let selectedImage = $state<{ base64: string; mimeType: string } | null>(null);
+	let schemaCheckEnabled = $state(false);
+	let activeDraft = $state<ActiveDraftState | null>(null);
+	let revisionNotes = $state('');
+	let showRevisionBox = $state(false);
+	let isSchemaActionLoading = $state(false);
 
-	// ── Init ──────────────────────────────────────────────────────────────────
 	onMount(async () => {
 		await loadChats();
-		// Auto-select first chat or create one
 		if (chats.length > 0) {
 			await selectChat(chats[0].id);
 		}
@@ -86,10 +109,11 @@
 		try {
 			const res = await fetch(`/api/chats/${id}`, { method: 'DELETE' });
 			if (res.ok) {
-				chats = chats.filter(c => c.id !== id);
+				chats = chats.filter((c) => c.id !== id);
 				if (activeChatId === id) {
 					activeChatId = null;
 					messages = [];
+					activeDraft = null;
 				}
 			}
 		} catch (e) {
@@ -106,7 +130,7 @@
 			});
 			if (res.ok) {
 				const updated = await res.json();
-				chats = chats.map(c => c.id === chat.id ? updated : c);
+				chats = chats.map((c) => (c.id === chat.id ? updated : c));
 			}
 		} catch (e) {
 			console.error('Failed to pin chat', e);
@@ -131,7 +155,7 @@
 			});
 			if (res.ok) {
 				const updated = await res.json();
-				chats = chats.map(c => c.id === editingChatId ? updated : c);
+				chats = chats.map((c) => (c.id === editingChatId ? updated : c));
 			}
 		} catch (e) {
 			console.error('Failed to rename chat', e);
@@ -141,7 +165,7 @@
 	}
 
 	async function togglePublic() {
-		if (!activeChat) return;
+		if (!activeChatId || !activeChat) return;
 		const newStatus = !activeChat.isPublic;
 		try {
 			const res = await fetch(`/api/chats/${activeChatId}`, {
@@ -151,7 +175,7 @@
 			});
 			if (res.ok) {
 				const updated = await res.json();
-				chats = chats.map(c => c.id === activeChatId ? updated : c);
+				chats = chats.map((c) => (c.id === activeChatId ? updated : c));
 			}
 		} catch (e) {
 			console.error('Failed to toggle public status', e);
@@ -176,7 +200,7 @@
 			});
 			if (res.ok) {
 				const updated = await res.json();
-				chats = chats.map(c => c.id === activeChatId ? updated : c);
+				chats = chats.map((c) => (c.id === activeChatId ? updated : c));
 			}
 		} catch (e) {
 			console.error('Failed to update model preference', e);
@@ -187,7 +211,51 @@
 		if (activeChatId === chatId) return;
 		activeChatId = chatId;
 		messages = [];
+		activeDraft = null;
+		showRevisionBox = false;
+		revisionNotes = '';
 		await loadMessages(chatId);
+	}
+
+	function parseMaybeJson(value: unknown): unknown {
+		if (typeof value !== 'string') return value;
+		try {
+			return JSON.parse(value);
+		} catch {
+			return value;
+		}
+	}
+
+	async function hydrateDraftStateFromMessage(messageDraftId: string | null | undefined) {
+		if (!messageDraftId) {
+			activeDraft = null;
+			return;
+		}
+		try {
+			const res = await fetch(`/api/schema/${messageDraftId}`);
+			if (!res.ok) {
+				activeDraft = null;
+				return;
+			}
+			const payload = await res.json();
+			if (payload.status !== 'AWAITING_REVIEW' || !payload.currentSchema) {
+				activeDraft = null;
+				showRevisionBox = false;
+				return;
+			}
+			activeDraft = {
+				draftId: payload.draftId,
+				status: payload.status,
+				revisionIndex: payload.revisionCount,
+				schema: payload.currentSchema,
+				assumptions: Array.isArray(payload.latestRevision?.assumptions)
+					? payload.latestRevision.assumptions.filter((item: unknown) => typeof item === 'string')
+					: [],
+				ambiguities: []
+			};
+		} catch {
+			activeDraft = null;
+		}
 	}
 
 	async function loadMessages(chatId: string) {
@@ -197,13 +265,15 @@
 				const data = await res.json();
 				messages = data.map((m: any) => ({
 					...m,
-					graphData: typeof m.graphData === 'string'
-						? JSON.parse(m.graphData)
-						: m.graphData,
-					usedModels: typeof m.usedModels === 'string'
-						? JSON.parse(m.usedModels)
-						: m.usedModels
+					graphData: typeof m.graphData === 'string' ? JSON.parse(m.graphData) : m.graphData,
+					schemaData: parseMaybeJson(m.schemaData),
+					usedModels: typeof m.usedModels === 'string' ? JSON.parse(m.usedModels) : m.usedModels,
+					draftId: m.draftId ?? null
 				}));
+				const latestDraftMessage = [...messages]
+					.reverse()
+					.find((m) => m.draftId && m.role === 'ASSISTANT');
+				await hydrateDraftStateFromMessage(latestDraftMessage?.draftId);
 				await scrollToBottom();
 			}
 		} catch (e) {
@@ -238,28 +308,26 @@
 		node.focus();
 	}
 
-	// ── SSE Send ──────────────────────────────────────────────────────────────
 	async function logout() {
 		const res = await fetch('/api/auth/logout', { method: 'POST' });
 		if (res.ok) {
 			window.location.href = '/login';
 		}
 	}
-	// ── Вспомогательная функция для ID ────────────────────────────────────────
+
 	function generateSafeId() {
 		if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
 			return crypto.randomUUID();
 		}
-		// Fallback для небезопасных соединений (HTTP IP-адреса)
-		return 'temp-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+		return `temp-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 	}
 
- 	async function deleteMessage(msgId: string) {
+	async function deleteMessage(msgId: string) {
 		if (!confirm('Удалить это сообщение?')) return;
 		try {
 			const res = await fetch(`/api/messages/${msgId}`, { method: 'DELETE' });
 			if (res.ok) {
-				messages = messages.filter(m => m.id !== msgId);
+				messages = messages.filter((m) => m.id !== msgId);
 			}
 		} catch (e) {
 			console.error('Failed to delete message', e);
@@ -275,33 +343,151 @@
 		}
 	}
 
- 	async function sendMessage() {
-		const text = inputValue.trim();
-		if (!text || isLoading) return;
+	async function parseErrorMessage(res: Response): Promise<string> {
+		try {
+			const text = await res.text();
+			return text || `HTTP ${res.status}`;
+		} catch {
+			return `HTTP ${res.status}`;
+		}
+	}
 
-		// Create chat if none active
+	async function startSchemaCheckFlow(text: string, imageData: { base64: string; mimeType: string } | null) {
+		if (!activeChatId) return;
+		statusMessage = 'Building initial scheme...';
+		isSchemaActionLoading = true;
+		try {
+			const res = await fetch('/api/schema/start', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					chatId: activeChatId,
+					message: text,
+					imageData,
+					mode: 'schema_check'
+				})
+			});
+			if (!res.ok) {
+				throw new Error(await parseErrorMessage(res));
+			}
+			const payload = await res.json();
+			activeDraft = {
+				draftId: payload.draftId,
+				status: payload.status,
+				revisionIndex: payload.revisionIndex,
+				schema: payload.schema,
+				assumptions: payload.assumptions ?? [],
+				ambiguities: payload.ambiguities ?? []
+			};
+			showRevisionBox = false;
+			revisionNotes = '';
+			await loadMessages(activeChatId);
+			await loadChats();
+		} finally {
+			isSchemaActionLoading = false;
+			statusMessage = '';
+		}
+	}
+
+	async function submitSchemaRevision() {
+		if (!activeDraft || !activeChatId) return;
+		const notes = revisionNotes.trim();
+		if (!notes || isSchemaActionLoading || isLoading) return;
+		statusMessage = 'Applying scheme revisions...';
+		isSchemaActionLoading = true;
+		try {
+			const res = await fetch(`/api/schema/${activeDraft.draftId}/revise`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ notes })
+			});
+			if (!res.ok) {
+				throw new Error(await parseErrorMessage(res));
+			}
+			const payload = await res.json();
+			activeDraft = {
+				draftId: payload.draftId,
+				status: payload.status,
+				revisionIndex: payload.revisionIndex,
+				schema: payload.schema,
+				assumptions: payload.assumptions ?? [],
+				ambiguities: payload.ambiguities ?? []
+			};
+			revisionNotes = '';
+			showRevisionBox = false;
+			await loadMessages(activeChatId);
+		} catch (err) {
+			console.error('Schema revision failed:', err);
+			alert(err instanceof Error ? err.message : String(err));
+		} finally {
+			isSchemaActionLoading = false;
+			statusMessage = '';
+		}
+	}
+
+	async function confirmDraftAndSolve() {
+		if (!activeDraft || !activeChatId || isSchemaActionLoading || isLoading) return;
+		statusMessage = 'Solving using approved scheme...';
+		isSchemaActionLoading = true;
+		try {
+			const res = await fetch(`/api/schema/${activeDraft.draftId}/confirm`, { method: 'POST' });
+			if (!res.ok) {
+				throw new Error(await parseErrorMessage(res));
+			}
+			activeDraft = null;
+			showRevisionBox = false;
+			revisionNotes = '';
+			await loadMessages(activeChatId);
+			await loadChats();
+		} catch (err) {
+			console.error('Schema confirm failed:', err);
+			alert(err instanceof Error ? err.message : String(err));
+		} finally {
+			isSchemaActionLoading = false;
+			statusMessage = '';
+		}
+	}
+
+	async function sendMessage() {
+		const text = inputValue.trim();
+		if (!text || isLoading || isSchemaActionLoading) return;
+
+		if (activeDraft && activeDraft.status === 'AWAITING_REVIEW') {
+			statusMessage = 'Confirm or revise the current scheme before sending a new task.';
+			return;
+		}
+
 		if (!activeChatId) await createChat();
 		if (!activeChatId) return;
 
+		const imageData = selectedImage;
+		selectedImage = null;
+		if (fileInputEl) fileInputEl.value = '';
 		inputValue = '';
+
+		if (schemaCheckEnabled) {
+			try {
+				await startSchemaCheckFlow(text, imageData);
+			} catch (err) {
+				console.error('Schema check start failed:', err);
+				alert(err instanceof Error ? err.message : String(err));
+				statusMessage = '';
+			}
+			return;
+		}
+
 		isLoading = true;
 		statusMessage = '';
 
-		// Optimistically add user message
 		const userMsg: ChatMessage = {
 			id: generateSafeId(),
 			role: 'USER',
 			content: text,
-			imageData: selectedImage ? JSON.stringify(selectedImage) : null,
+			imageData: imageData ? JSON.stringify(imageData) : null,
 			createdAt: new Date().toISOString()
 		};
 		messages = [...messages, userMsg];
 
-		const imageData = selectedImage;
-		selectedImage = null; // Clear input
-		if (fileInputEl) fileInputEl.value = '';
-
-		// Placeholder for assistant response
 		const assistantId = generateSafeId();
 		const assistantPlaceholder: ChatMessage = {
 			id: assistantId,
@@ -314,20 +500,19 @@
 
 		try {
 			abortController = new AbortController();
-			// Open SSE connection
 			const res = await fetch('/api/chat', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ 
-					chatId: activeChatId, 
+				body: JSON.stringify({
+					chatId: activeChatId,
 					message: text,
-					imageData: imageData
+					imageData
 				}),
 				signal: abortController.signal
 			});
 
 			if (!res.ok || !res.body) {
-				throw new Error(`HTTP ${res.status}: Ошибка сети или блокировка.`);
+				throw new Error(`HTTP ${res.status}: network error or blocked request`);
 			}
 
 			const reader = res.body.getReader();
@@ -352,8 +537,6 @@
 							type: string;
 							message?: string;
 							content?: string;
-							generatedCode?: string;
-							executionLogs?: string;
 							graphData?: GraphData[];
 							usedModels?: string[];
 						};
@@ -367,38 +550,39 @@
 											...m,
 											content: event.content ?? '',
 											graphData: event.graphData ?? null,
+											usedModels: event.usedModels ?? null,
 											isStreaming: false
-										}
+									  }
 									: m
 							);
 							statusMessage = '';
-							await loadChats(); // Refresh sidebar titles
+							await loadChats();
 							await scrollToBottom();
 						} else if (event.type === 'error') {
 							messages = messages.map((m) =>
-								m.id === assistantId
-									? { ...m, content: `⚠️ ${event.message}`, isStreaming: false }
-									: m
+								m.id === assistantId ? { ...m, content: `Error: ${event.message}`, isStreaming: false } : m
 							);
 							statusMessage = '';
 							await scrollToBottom();
 						}
 					} catch {
-						// JSON parse error — skip the line
+						// ignore malformed SSE line
 					}
 				}
 			}
-		} catch (error) {
-			if (error instanceof Error && error.name === 'AbortError') {
+		} catch (chatError) {
+			if (chatError instanceof Error && chatError.name === 'AbortError') {
 				console.log('Request aborted by user');
-				messages = messages.map((m) =>
-					m.id === assistantId ? { ...m, isStreaming: false } : m
-				);
+				messages = messages.map((m) => (m.id === assistantId ? { ...m, isStreaming: false } : m));
 			} else {
-				console.error('Chat error:', error);
+				console.error('Chat error:', chatError);
 				messages = messages.map((m) =>
 					m.id === assistantId
-						? { ...m, content: `⚠️ Проблема с сетью: ${error instanceof Error ? error.message : String(error)}`, isStreaming: false }
+						? {
+								...m,
+								content: `Network error: ${chatError instanceof Error ? chatError.message : String(chatError)}`,
+								isStreaming: false
+						  }
 						: m
 				);
 			}
@@ -424,7 +608,6 @@
 	}
 
 	$effect(() => {
-		// Run autoResize whenever inputValue changes
 		inputValue;
 		autoResize();
 	});
@@ -442,13 +625,12 @@
 					selectedImage = { base64, mimeType: file.type };
 				};
 				reader.readAsDataURL(file);
-				e.preventDefault(); // Prevent pasting filename string into the textarea
+				e.preventDefault();
 				break;
 			}
 		}
 	}
 
-	// Example prompts
 	const EXAMPLES = [
 		'Найди реакции опор балки длиной 4 м с равномерной нагрузкой q=10 кН/м',
 		'Вычисли интеграл ∫ x²·sin(x) dx',
@@ -459,14 +641,14 @@
 
 <div class="app-shell">
 
-	<!-- ── Sidebar ────────────────────────────────────────────────────────── -->
+	<!-- в”Ђв”Ђ Sidebar в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ -->
 	<aside class="sidebar" class:collapsed={!sidebarOpen}>
 		<div class="sidebar-header">
 			<div class="logo">
 				<img src="/favicon.svg" alt="Koworker Logo" class="logo-icon" />
 				<span class="logo-text">Koworker AI</span>
 			</div>
-			<button class="icon-btn" onclick={() => (sidebarOpen = !sidebarOpen)} title="Свернуть">
+			<button class="icon-btn" onclick={() => (sidebarOpen = !sidebarOpen)} title="РЎРІРµСЂРЅСѓС‚СЊ">
 				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 					<path d="M21 3H3M21 12H3M21 21H3"/>
 				</svg>
@@ -477,12 +659,12 @@
 			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
 				<path d="M12 5v14M5 12h14"/>
 			</svg>
-			Новый чат
+			РќРѕРІС‹Р№ С‡Р°С‚
 		</button>
 
 		<div class="sidebar-content">
 			{#if pinnedChats.length > 0}
-				<div class="chat-section-label">Закрепленные</div>
+				<div class="chat-section-label">Р—Р°РєСЂРµРїР»РµРЅРЅС‹Рµ</div>
 				<div class="chat-list pinned">
 					{#each pinnedChats as chat (chat.id)}
 						{@render chatItem(chat)}
@@ -490,10 +672,10 @@
 				</div>
 			{/if}
 
-			<div class="chat-section-label">{pinnedChats.length > 0 ? 'Все чаты' : 'Чаты'}</div>
+			<div class="chat-section-label">{pinnedChats.length > 0 ? 'Р’СЃРµ С‡Р°С‚С‹' : 'Р§Р°С‚С‹'}</div>
 			<div class="chat-list">
 				{#if chats.length === 0}
-					<div class="chat-list-empty">Нет чатов. Создайте первый!</div>
+					<div class="chat-list-empty">РќРµС‚ С‡Р°С‚РѕРІ. РЎРѕР·РґР°Р№С‚Рµ РїРµСЂРІС‹Р№!</div>
 				{/if}
 				{#each otherChats as chat (chat.id)}
 					{@render chatItem(chat)}
@@ -525,17 +707,17 @@
 				</button>
 				
 				<div class="chat-actions">
-					<button class="action-btn" onclick={() => pinChat(chat)} title={chat.isPinned ? "Открепить" : "Закрепить"}>
+					<button class="action-btn" onclick={() => pinChat(chat)} title={chat.isPinned ? "РћС‚РєСЂРµРїРёС‚СЊ" : "Р—Р°РєСЂРµРїРёС‚СЊ"}>
 						<svg width="12" height="12" viewBox="0 0 24 24" fill={chat.isPinned ? "currentColor" : "none"} stroke="currentColor" stroke-width="2">
 							<path d="M21 10V8l-2.09-.41A3 3 0 0 1 17 4.68V3h-1v1.68a3 3 0 0 1-1.91 2.91L12 8v2l2.09.41A3 3 0 0 1 16 13.32V15h1v-1.68a3 3 0 0 1 1.91-2.91L21 10zM12 15h10M16.5 15v6"/>
 						</svg>
 					</button>
-					<button class="action-btn" onclick={() => startEditing(chat)} title="Переименовать">
+					<button class="action-btn" onclick={() => startEditing(chat)} title="РџРµСЂРµРёРјРµРЅРѕРІР°С‚СЊ">
 						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 							<path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
 						</svg>
 					</button>
-					<button class="action-btn delete" onclick={() => deleteChat(chat.id)} title="Удалить">
+					<button class="action-btn delete" onclick={() => deleteChat(chat.id)} title="РЈРґР°Р»РёС‚СЊ">
 						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 							<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
 						</svg>
@@ -549,11 +731,11 @@
 				<div class="user-info">
 					<a href="/account" class="user-details-link">
 						<div class="user-details">
-							<span class="user-name">{data.user.name || 'Пользователь'}</span>
+							<span class="user-name">{data.user.name || 'РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ'}</span>
 							<span class="user-email">{data.user.email}</span>
 						</div>
 					</a>
-					<button class="logout-btn" onclick={logout} title="Выйти">
+					<button class="logout-btn" onclick={logout} title="Р’С‹Р№С‚Рё">
 						<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 							<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>
 						</svg>
@@ -567,24 +749,24 @@
 		</div>
 	</aside>
 
-	<!-- ── Main ──────────────────────────────────────────────────────────── -->
+	<!-- в”Ђв”Ђ Main в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ -->
 	<main class="chat-main">
 
 		<!-- Header -->
 		<header class="chat-header">
 			{#if !sidebarOpen}
-				<button class="icon-btn" onclick={() => (sidebarOpen = true)} title="Открыть меню">
+				<button class="icon-btn" onclick={() => (sidebarOpen = true)} title="РћС‚РєСЂС‹С‚СЊ РјРµРЅСЋ">
 					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 						<path d="M21 3H3M21 12H3M21 21H3"/>
 					</svg>
 				</button>
 			{/if}
 			<div class="header-title">
-				<h1>Точные науки</h1>
-				<span class="header-subtitle">Термех · Сопромат · Матанализ</span>
+				<h1>РўРѕС‡РЅС‹Рµ РЅР°СѓРєРё</h1>
+				<span class="header-subtitle">РўРµСЂРјРµС… В· РЎРѕРїСЂРѕРјР°С‚ В· РњР°С‚Р°РЅР°Р»РёР·</span>
 			</div>
-			<div class="header-status" class:active={isLoading}>
-				{#if isLoading}
+			<div class="header-status" class:active={isLoading || isSchemaActionLoading}>
+				{#if isLoading || isSchemaActionLoading}
 					<span class="typing-indicator">
 						<span></span><span></span><span></span>
 					</span>
@@ -596,8 +778,8 @@
 						<button 
 							class="icon-btn share-btn" 
 							onclick={() => (isSharing = !isSharing)} 
-							title="Поделиться чатом"
-							aria-label="Поделиться чатом"
+							title="РџРѕРґРµР»РёС‚СЊСЃСЏ С‡Р°С‚РѕРј"
+							aria-label="РџРѕРґРµР»РёС‚СЊСЃСЏ С‡Р°С‚РѕРј"
 							class:active={isSharing}
 						>
 							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -608,22 +790,22 @@
 						{#if isSharing}
 							<div class="share-menu">
 								<div class="share-menu-header">
-									<span>Публичный доступ</span>
+									<span>РџСѓР±Р»РёС‡РЅС‹Р№ РґРѕСЃС‚СѓРї</span>
 									<button 
 										class="toggle-switch" 
 										class:on={activeChat?.isPublic} 
 										onclick={togglePublic}
-										aria-label="Переключить публичный доступ"
-										title="Переключить публичный доступ"
+										aria-label="РџРµСЂРµРєР»СЋС‡РёС‚СЊ РїСѓР±Р»РёС‡РЅС‹Р№ РґРѕСЃС‚СѓРї"
+										title="РџРµСЂРµРєР»СЋС‡РёС‚СЊ РїСѓР±Р»РёС‡РЅС‹Р№ РґРѕСЃС‚СѓРї"
 									></button>
 								</div>
 								
 								{#if activeChat?.isPublic}
 									<div class="share-link-box">
 										<input type="text" readonly value={`${window.location.origin}/shared/${activeChatId}`} />
-										<button class="copy-btn" onclick={copyShareLink} title="Копировать ссылку" aria-label="Копировать ссылку">
+										<button class="copy-btn" onclick={copyShareLink} title="РљРѕРїРёСЂРѕРІР°С‚СЊ СЃСЃС‹Р»РєСѓ" aria-label="РљРѕРїРёСЂРѕРІР°С‚СЊ СЃСЃС‹Р»РєСѓ">
 											{#if copySuccess}
-												<span>✓</span>
+												<span>вњ“</span>
 											{:else}
 												<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 													<rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
@@ -631,9 +813,9 @@
 											{/if}
 										</button>
 									</div>
-									<p class="share-hint">Любой, у кого есть ссылка, сможет просматривать этот чат.</p>
+									<p class="share-hint">Р›СЋР±РѕР№, Сѓ РєРѕРіРѕ РµСЃС‚СЊ СЃСЃС‹Р»РєР°, СЃРјРѕР¶РµС‚ РїСЂРѕСЃРјР°С‚СЂРёРІР°С‚СЊ СЌС‚РѕС‚ С‡Р°С‚.</p>
 								{:else}
-									<p class="share-hint">Включите публичный доступ, чтобы создать ссылку на этот чат.</p>
+									<p class="share-hint">Р’РєР»СЋС‡РёС‚Рµ РїСѓР±Р»РёС‡РЅС‹Р№ РґРѕСЃС‚СѓРї, С‡С‚РѕР±С‹ СЃРѕР·РґР°С‚СЊ СЃСЃС‹Р»РєСѓ РЅР° СЌС‚РѕС‚ С‡Р°С‚.</p>
 								{/if}
 							</div>
 						{/if}
@@ -644,22 +826,22 @@
 					value={activeChat?.modelPreference || 'auto'} 
 					onchange={(e) => updateModelPreference(e.currentTarget.value)}
 					class="model-select"
-					disabled={isLoading}
+					disabled={isLoading || isSchemaActionLoading}
 				>
-					<option value="auto">✨ Авто-режим</option>
+					<option value="auto">вњЁ РђРІС‚Рѕ-СЂРµР¶РёРј</option>
 					<optgroup label="Gemini 3.1">
-						<option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Умная)</option>
-						<option value="gemini-3.1-flash-preview">Gemini 3.1 Flash (Быстрая)</option>
-						<option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash-Lite (Самая быстрая)</option>
+						<option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (РЈРјРЅР°СЏ)</option>
+						<option value="gemini-3.1-flash-preview">Gemini 3.1 Flash (Р‘С‹СЃС‚СЂР°СЏ)</option>
+						<option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash-Lite (РЎР°РјР°СЏ Р±С‹СЃС‚СЂР°СЏ)</option>
 					</optgroup>
 					<optgroup label="Gemini 3.0">
 						<option value="gemini-3-pro-preview">Gemini 3.0 Pro</option>
 						<option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
 					</optgroup>
 					<optgroup label="Gemini 2.5">
-						<option value="gemini-2.5-pro">Gemini 2.5 Pro (Умная)</option>
-						<option value="gemini-2.5-flash">Gemini 2.5 Flash (Быстрая)</option>
-						<option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite (Самая быстрая)</option>
+						<option value="gemini-2.5-pro">Gemini 2.5 Pro (РЈРјРЅР°СЏ)</option>
+						<option value="gemini-2.5-flash">Gemini 2.5 Flash (Р‘С‹СЃС‚СЂР°СЏ)</option>
+						<option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite (РЎР°РјР°СЏ Р±С‹СЃС‚СЂР°СЏ)</option>
 					</optgroup>
 				</select>
 			</div>
@@ -670,9 +852,9 @@
 			{#if messages.length === 0}
 				<div class="welcome-screen">
 					<div class="welcome-hero">
-						<div class="hero-icon">∑</div>
-						<h2>Задайте инженерную задачу</h2>
-						<p>AI анализирует условие, генерирует Python-код и выполняет точные вычисления в Wasm-песочнице</p>
+						<div class="hero-icon">в€‘</div>
+						<h2>Р—Р°РґР°Р№С‚Рµ РёРЅР¶РµРЅРµСЂРЅСѓСЋ Р·Р°РґР°С‡Сѓ</h2>
+						<p>AI Р°РЅР°Р»РёР·РёСЂСѓРµС‚ СѓСЃР»РѕРІРёРµ, РіРµРЅРµСЂРёСЂСѓРµС‚ Python-РєРѕРґ Рё РІС‹РїРѕР»РЅСЏРµС‚ С‚РѕС‡РЅС‹Рµ РІС‹С‡РёСЃР»РµРЅРёСЏ РІ Wasm-РїРµСЃРѕС‡РЅРёС†Рµ</p>
 					</div>
 
 					<div class="examples-grid">
@@ -715,11 +897,11 @@
 							</div>
 
 							{#if msg.role === 'USER'}
-								<div class="avatar user-avatar">Вы</div>
+								<div class="avatar user-avatar">Р’С‹</div>
 							{/if}
 
 							{#if !msg.isStreaming}
-								<button class="delete-msg-btn" onclick={() => deleteMessage(msg.id)} title="Удалить сообщение">
+								<button class="delete-msg-btn" onclick={() => deleteMessage(msg.id)} title="РЈРґР°Р»РёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ">
 									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 										<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
 									</svg>
@@ -734,20 +916,110 @@
 
 		<!-- Input area -->
 		<div class="input-area">
-			{#if statusMessage && isLoading}
+			{#if statusMessage && (isLoading || isSchemaActionLoading)}
 				<div class="status-bar">
 					<span class="status-spinner"></span>
 					{statusMessage}
 				</div>
 			{/if}
 
+			{#if activeDraft}
+				<div class="schema-review-card">
+					<div class="schema-review-header">
+						<div>
+							<strong>Schema review is active</strong>
+							<div class="schema-revision-meta">Revision #{activeDraft.revisionIndex}</div>
+						</div>
+						<div class="schema-actions">
+							<button
+								class="schema-action-btn primary"
+								onclick={confirmDraftAndSolve}
+								disabled={isLoading || isSchemaActionLoading}
+							>
+								Confirm scheme
+							</button>
+							<button
+								class="schema-action-btn"
+								onclick={() => (showRevisionBox = !showRevisionBox)}
+								disabled={isLoading || isSchemaActionLoading}
+							>
+								{showRevisionBox ? 'Hide edit' : 'Revise scheme'}
+							</button>
+						</div>
+					</div>
+
+					{#if activeDraft.assumptions.length > 0}
+						<div class="schema-list-block">
+							<div class="schema-list-title">Assumptions</div>
+							<ul>
+								{#each activeDraft.assumptions as assumption}
+									<li>{assumption}</li>
+								{/each}
+							</ul>
+						</div>
+					{/if}
+
+					{#if activeDraft.ambiguities.length > 0}
+						<div class="schema-list-block">
+							<div class="schema-list-title">Ambiguities</div>
+							<ul>
+								{#each activeDraft.ambiguities as ambiguity}
+									<li>{ambiguity}</li>
+								{/each}
+							</ul>
+						</div>
+					{/if}
+
+					{#if showRevisionBox}
+						<div class="schema-revision-box">
+							<textarea
+								bind:value={revisionNotes}
+								rows="3"
+								placeholder="Describe what should be corrected in the scheme..."
+								disabled={isLoading || isSchemaActionLoading}
+							></textarea>
+							<div class="schema-revision-actions">
+								<button
+									class="schema-action-btn primary"
+									onclick={submitSchemaRevision}
+									disabled={!revisionNotes.trim() || isLoading || isSchemaActionLoading}
+								>
+									Submit revision
+								</button>
+								<button
+									class="schema-action-btn"
+									onclick={() => {
+										showRevisionBox = false;
+										revisionNotes = '';
+									}}
+									disabled={isLoading || isSchemaActionLoading}
+								>
+									Cancel
+								</button>
+							</div>
+						</div>
+					{/if}
+				</div>
+			{/if}
+
+			<div class="input-options">
+				<label class="schema-toggle">
+					<input
+						type="checkbox"
+						bind:checked={schemaCheckEnabled}
+						disabled={isLoading || isSchemaActionLoading || (!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
+					/>
+					<span>Schema check mode</span>
+				</label>
+			</div>
+
 			<div class="input-container">
 				<!-- File upload button -->
 				<button 
 					class="attach-btn" 
 					onclick={() => fileInputEl?.click()} 
-					disabled={isLoading}
-					title="Прикрепить фото задачи"
+					disabled={isLoading || isSchemaActionLoading}
+					title="РџСЂРёРєСЂРµРїРёС‚СЊ С„РѕС‚Рѕ Р·Р°РґР°С‡Рё"
 				>
 					<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 						<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
@@ -766,7 +1038,7 @@
 					{#if selectedImage}
 						<div class="image-preview">
 							<img src={`data:${selectedImage.mimeType};base64,${selectedImage.base64}`} alt="Preview" />
-							<button class="remove-img-btn" onclick={removeImage}>×</button>
+							<button class="remove-img-btn" onclick={removeImage}>Г—</button>
 						</div>
 					{/if}
 					<textarea
@@ -775,9 +1047,9 @@
 						bind:value={inputValue}
 						onkeydown={handleKeydown}
 						onpaste={handlePaste}
-						placeholder="Опишите задачу или прикрепите фото..."
+						placeholder="РћРїРёС€РёС‚Рµ Р·Р°РґР°С‡Сѓ РёР»Рё РїСЂРёРєСЂРµРїРёС‚Рµ С„РѕС‚Рѕ..."
 						rows="1"
-						disabled={isLoading}
+						disabled={isLoading || isSchemaActionLoading}
 						class="message-input"
 					></textarea>
 				</div>
@@ -786,7 +1058,7 @@
 					<button
 						class="send-btn stop-btn"
 						onclick={cancelGeneration}
-						title="Остановить генерацию"
+						title="РћСЃС‚Р°РЅРѕРІРёС‚СЊ РіРµРЅРµСЂР°С†РёСЋ"
 					>
 						<span class="stop-icon"></span>
 					</button>
@@ -794,8 +1066,8 @@
 					<button
 						class="send-btn"
 						onclick={sendMessage}
-						disabled={!inputValue.trim()}
-						title="Отправить"
+						disabled={!inputValue.trim() || isSchemaActionLoading || (!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
+						title="РћС‚РїСЂР°РІРёС‚СЊ"
 					>
 						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
 							<path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/>
@@ -805,7 +1077,7 @@
 			</div>
 
 			<div class="input-hint">
-				Числа берутся из Python · sympy · numpy. Gemini не вычисляет — только анализирует и объясняет.
+				Р§РёСЃР»Р° Р±РµСЂСѓС‚СЃСЏ РёР· Python В· sympy В· numpy. Gemini РЅРµ РІС‹С‡РёСЃР»СЏРµС‚ вЂ” С‚РѕР»СЊРєРѕ Р°РЅР°Р»РёР·РёСЂСѓРµС‚ Рё РѕР±СЉСЏСЃРЅСЏРµС‚.
 			</div>
 		</div>
 
@@ -813,7 +1085,7 @@
 </div>
 
 <style>
-/* ── App Shell ─────────────────────────────────────────────────────────────── */
+/* в”Ђв”Ђ App Shell в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ */
 .app-shell {
 	display: flex;
 	height: 100vh;
@@ -821,7 +1093,7 @@
 	background: var(--bg-base);
 }
 
-/* ── Sidebar ───────────────────────────────────────────────────────────────── */
+/* в”Ђв”Ђ Sidebar в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ */
 .sidebar {
 	width: var(--sidebar-width);
 	min-width: var(--sidebar-width);
@@ -1131,7 +1403,7 @@
 	animation: pulse-soft 2s infinite;
 }
 
-/* ── Chat Main ─────────────────────────────────────────────────────────────── */
+/* в”Ђв”Ђ Chat Main в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ */
 .chat-main {
 	flex: 1;
 	display: flex;
@@ -1139,7 +1411,7 @@
 	overflow: hidden;
 }
 
-/* ── Header ────────────────────────────────────────────────────────────────── */
+/* в”Ђв”Ђ Header в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ */
 .chat-header {
 	display: flex;
 	align-items: center;
@@ -1172,7 +1444,7 @@
 	margin-left: auto;
 }
 
-/* ── Messages ──────────────────────────────────────────────────────────────── */
+/* в”Ђв”Ђ Messages в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ */
 .messages-area {
 	flex: 1;
 	overflow-y: auto;
@@ -1356,7 +1628,7 @@
 	display: inline-block;
 }
 
-/* ── Typing dots ───────────────────────────────────────────────────────────── */
+/* в”Ђв”Ђ Typing dots в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ */
 .typing-dots, .typing-indicator {
 	display: inline-flex;
 	gap: 4px;
@@ -1377,7 +1649,7 @@
 .typing-dots span:nth-child(3),
 .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
 
-/* ── Input Area ────────────────────────────────────────────────────────────── */
+/* в”Ђв”Ђ Input Area в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ */
 .input-area {
 	padding: 0.75rem 1.25rem 1rem;
 	border-top: 1px solid var(--border-subtle);
@@ -1395,7 +1667,124 @@
 	padding: 0 0.25rem;
 }
 
-/* ── Input container refinements ────────────────────────────────────────── */
+.schema-review-card {
+	margin-bottom: 0.75rem;
+	padding: 0.75rem;
+	border: 1px solid var(--border-medium);
+	border-radius: var(--radius-lg);
+	background: var(--bg-card);
+	display: flex;
+	flex-direction: column;
+	gap: 0.65rem;
+}
+
+.schema-review-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem;
+}
+
+.schema-revision-meta {
+	font-size: 0.75rem;
+	color: var(--text-muted);
+}
+
+.schema-actions {
+	display: flex;
+	gap: 0.5rem;
+}
+
+.schema-action-btn {
+	border: 1px solid var(--border-medium);
+	background: var(--bg-elevated);
+	color: var(--text-primary);
+	border-radius: var(--radius-sm);
+	padding: 0.38rem 0.7rem;
+	font-size: 0.75rem;
+	font-weight: 600;
+	cursor: pointer;
+	transition: opacity var(--transition-fast), border-color var(--transition-fast);
+}
+
+.schema-action-btn.primary {
+	background: var(--accent-primary);
+	color: #ffffff;
+	border-color: var(--accent-primary);
+}
+
+.schema-action-btn:hover:not(:disabled) {
+	opacity: 0.9;
+	border-color: var(--accent-primary);
+}
+
+.schema-action-btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.schema-list-block {
+	font-size: 0.8rem;
+	color: var(--text-secondary);
+}
+
+.schema-list-title {
+	font-weight: 700;
+	margin-bottom: 0.25rem;
+}
+
+.schema-list-block ul {
+	margin: 0;
+	padding-left: 1rem;
+}
+
+.schema-list-block li {
+	margin: 0.15rem 0;
+}
+
+.schema-revision-box {
+	display: flex;
+	flex-direction: column;
+	gap: 0.45rem;
+}
+
+.schema-revision-box textarea {
+	background: var(--bg-surface);
+	border: 1px solid var(--border-medium);
+	border-radius: var(--radius-sm);
+	color: var(--text-primary);
+	padding: 0.5rem 0.6rem;
+	font-family: var(--font-sans);
+	font-size: 0.82rem;
+	resize: vertical;
+}
+
+.schema-revision-actions {
+	display: flex;
+	gap: 0.5rem;
+}
+
+.input-options {
+	display: flex;
+	justify-content: flex-start;
+	margin-bottom: 0.5rem;
+	padding: 0 0.15rem;
+}
+
+.schema-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.45rem;
+	font-size: 0.78rem;
+	color: var(--text-secondary);
+	user-select: none;
+}
+
+.schema-toggle input {
+	accent-color: var(--accent-primary);
+}
+
+/* в”Ђв”Ђ Input container refinements в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ */
 .input-container {
 	display: flex;
 	align-items: flex-end;
@@ -1661,3 +2050,4 @@
 		min-width: 0;
 	}
 </style>
+

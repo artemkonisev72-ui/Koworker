@@ -1,5 +1,3 @@
-// PWA AI-Ассистент для точных наук — Prisma Schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -9,13 +7,14 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
+  id           String     @id @default(cuid())
+  email        String     @unique
   passwordHash String
   name         String?
-  createdAt    DateTime @default(now())
+  createdAt    DateTime   @default(now())
   chats        Chat[]
   sessions     Session[]
+  drafts       TaskDraft[]
 }
 
 model Session {
@@ -28,16 +27,17 @@ model Session {
 }
 
 model Chat {
-  id              String    @id @default(cuid())
+  id              String     @id @default(cuid())
   userId          String
-  title           String    @default("Новый чат")
-  modelPreference String    @default("auto") // "auto" или конкретная модель
-  isPinned        Boolean   @default(false)
-  isPublic        Boolean   @default(false)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title           String     @default("New chat")
+  modelPreference String     @default("auto")
+  isPinned        Boolean    @default(false)
+  isPublic        Boolean    @default(false)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages        Message[]
+  drafts          TaskDraft[]
 
   @@index([userId])
 }
@@ -48,18 +48,70 @@ enum MessageRole {
   SYSTEM
 }
 
+enum DraftStatus {
+  DRAFT
+  SCHEMA_GENERATED
+  AWAITING_REVIEW
+  NEEDS_REVISION
+  SCHEMA_APPROVED
+  SOLVING
+  SOLVED
+  CANCELED
+  FAILED
+}
+
 model Message {
   id            String      @id @default(cuid())
   chatId        String
+  draftId       String?
   role          MessageRole
   content       String      @db.Text
   generatedCode String?     @db.Text
   executionLogs String?     @db.Text
-  graphData     Json?       // Теперь массив объектов [{ title, points: [{x,y}, ...] }]
-  usedModels    Json?       // Список моделей: ["gemini-3.1-pro-preview", ...]
+  graphData     Json?
+  schemaData    Json?
+  usedModels    Json?
   imageData     String?     @db.Text
   createdAt     DateTime    @default(now())
   chat          Chat        @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  draft         TaskDraft?  @relation(fields: [draftId], references: [id], onDelete: SetNull)
 
   @@index([chatId])
+  @@index([draftId])
+}
+
+model TaskDraft {
+  id               String              @id @default(cuid())
+  chatId            String
+  userId            String
+  mode              String              @default("standard")
+  status            DraftStatus         @default(DRAFT)
+  originalPrompt    String              @db.Text
+  originalImageData String?             @db.Text
+  currentSchema     Json?
+  approvedSchema    Json?
+  revisionCount     Int                 @default(0)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  chat              Chat                @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  revisions         TaskDraftRevision[]
+  messages          Message[]
+
+  @@index([chatId])
+  @@index([userId, createdAt])
+}
+
+model TaskDraftRevision {
+  id            String    @id @default(cuid())
+  draftId       String
+  revisionIndex Int
+  userNotes     String?   @db.Text
+  schema        Json
+  assumptions   Json?
+  createdAt     DateTime  @default(now())
+  draft         TaskDraft @relation(fields: [draftId], references: [id], onDelete: Cascade)
+
+  @@unique([draftId, revisionIndex])
+  @@index([draftId, createdAt])
 }

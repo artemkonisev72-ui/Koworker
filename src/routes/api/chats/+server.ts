@@ -34,7 +34,14 @@ export const GET: RequestHandler = async ({ locals }) => {
 			{ isPinned: 'desc' },
 			{ updatedAt: 'desc' }
 		],
-		select: { id: true, title: true, updatedAt: true, isPinned: true }
+		select: {
+			id: true,
+			title: true,
+			updatedAt: true,
+			isPinned: true,
+			modelPreference: true,
+			isPublic: true
+		}
 	});
 
 	return json(chats);

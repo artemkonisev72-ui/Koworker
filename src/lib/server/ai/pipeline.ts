@@ -17,6 +17,7 @@ import {
 	type GeminiHistory
 } from './gemini.js';
 import { workerPool, SandboxError } from '../sandbox/worker-pool.js';
+import type { SchemaData } from '$lib/schema/schema-data.js';
 
 export type PipelineStatus =
 	| { type: 'ping' }
@@ -43,6 +44,31 @@ interface SandboxOutput {
 }
 
 const MAX_RETRIES = 2;
+
+export async function runPipelineWithApprovedSchema(
+	params: {
+		userMessage: string;
+		approvedSchema: SchemaData;
+		revisionNotes?: string[];
+	},
+	history: GeminiHistory[],
+	onStatus: (event: PipelineStatus) => void,
+	imageData?: { base64: string; mimeType: string },
+	forcedModel?: string | null
+): Promise<void> {
+	if (!params.approvedSchema) {
+		throw new Error('Approved schema is required for schema-check solving');
+	}
+
+	const schemaJson = JSON.stringify(params.approvedSchema, null, 2);
+	const notesBlock =
+		params.revisionNotes && params.revisionNotes.length > 0
+			? `\n\n[ACCEPTED_SCHEMA_REVISIONS]\n${params.revisionNotes.map((note, i) => `${i + 1}. ${note}`).join('\n')}`
+			: '';
+	const messageWithSchemaContext = `${params.userMessage}\n\n[APPROVED_SCHEMA_JSON]\n${schemaJson}${notesBlock}\n\nUse approved schema as source of truth.`;
+
+	return runPipeline(messageWithSchemaContext, history, onStatus, imageData, forcedModel);
+}
 
 export async function runPipeline(
 	userMessage: string,

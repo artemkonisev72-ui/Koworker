@@ -244,7 +244,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		if (chat.userId !== locals.user.id) return error(403, 'Forbidden');
 	}
 
-	const messages = await prisma.message.findMany({
+	const messages = await (prisma as any).message.findMany({
 		where: { chatId },
 		orderBy: { createdAt: 'asc' },
 		select: {
@@ -253,8 +253,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			content: true,
 			generatedCode: true,
 			graphData: true,
+			schemaData: true,
 			usedModels: true,
 			imageData: true,
+			draftId: true,
 			createdAt: true
 		}
 	});

@@ -1,11 +1,22 @@
-import { error } from '@sveltejs/kit';
+﻿import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { prisma } from '$lib/server/db';
 
+function parseMaybeJson(value: unknown): unknown {
+	if (value === null || value === undefined) return null;
+	if (typeof value !== 'string') return value;
+	try {
+		return JSON.parse(value);
+	} catch {
+		return value;
+	}
+}
+
 export const load: PageServerLoad = async ({ params }) => {
+	const db = prisma as any;
 	const { id } = params;
 
-	const chat = await prisma.chat.findUnique({
+	const chat = await db.chat.findUnique({
 		where: { id },
 		include: {
 			messages: {
@@ -15,11 +26,11 @@ export const load: PageServerLoad = async ({ params }) => {
 	});
 
 	if (!chat) {
-		throw error(404, 'Чат не найден');
+		throw error(404, 'Chat not found');
 	}
 
 	if (!chat.isPublic) {
-		throw error(403, 'Этот чат не является публичным');
+		throw error(403, 'This chat is not public');
 	}
 
 	return {
@@ -28,15 +39,17 @@ export const load: PageServerLoad = async ({ params }) => {
 			title: chat.title,
 			createdAt: chat.createdAt
 		},
-		messages: chat.messages.map(m => ({
+		messages: chat.messages.map((m: any) => ({
 			id: m.id,
 			role: m.role,
 			content: m.content,
-			imageData: m.imageData ? JSON.parse(m.imageData as string) : null,
-			generatedCode: m.generatedCode as string | null,
-			executionLogs: m.executionLogs as string | null,
-			graphData: m.graphData ? JSON.parse(m.graphData as string) : null,
-			usedModels: m.usedModels ? JSON.parse(m.usedModels as string) : null,
+			imageData: parseMaybeJson(m.imageData),
+			generatedCode: m.generatedCode,
+			executionLogs: m.executionLogs,
+			graphData: parseMaybeJson(m.graphData),
+			schemaData: parseMaybeJson(m.schemaData),
+			usedModels: parseMaybeJson(m.usedModels),
+			draftId: m.draftId,
 			createdAt: m.createdAt.toISOString()
 		}))
 	};

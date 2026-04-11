@@ -26,7 +26,7 @@
 
 	<main class="message-list">
 		{#each data.messages as message}
-			<MessageRenderer {message} />
+			<MessageRenderer message={message as any} />
 		{/each}
 	</main>
 
