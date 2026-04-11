@@ -401,10 +401,11 @@ Return strict JSON object with keys:
 Allowed element types: beam_segment, support_pin, support_roller, support_fixed, point_load, distributed_load, moment, hinge, joint, axis, dimension, label.
 Use finite numeric values only and include all supports/loads/moments from the condition.
 Use canonical geometry keys:
-- beam_segment / distributed_load / axis / dimension: geometry.start + geometry.end
+- beam_segment / axis / dimension: geometry.start + geometry.end
+- distributed_load: geometry.start + geometry.end + intensity (number) OR intensity object {start,end}
 - support_pin / support_roller / support_fixed / hinge / joint / label: geometry.point
 - point_load: geometry.point (optional geometry.from/geometry.to for arrow direction)
-- moment: geometry.center (optionally duplicate into geometry.point)
+- moment: geometry.center (optionally duplicate into geometry.point), direction MUST be exactly "cw" or "ccw"; if numeric value is unknown, set symbolic geometry.label (for example "M") and still set direction
 Never encode a point as bare geometry {"x":...,"y":...}; always use the canonical keys above.
 Build an internal coordinate map from the task and place elements accordingly.
 Do NOT place all supports or all point loads at (0,0) by default.
@@ -441,10 +442,11 @@ Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 Preserve correct existing elements and update only what is needed per revision notes.
 Keep schemaData.version = "1.0" and finite numbers.
 Use canonical geometry keys:
-- beam_segment / distributed_load / axis / dimension: geometry.start + geometry.end
+- beam_segment / axis / dimension: geometry.start + geometry.end
+- distributed_load: geometry.start + geometry.end + intensity (number) OR intensity object {start,end}
 - support_pin / support_roller / support_fixed / hinge / joint / label: geometry.point
 - point_load: geometry.point (optional geometry.from/geometry.to for arrow direction)
-- moment: geometry.center (optionally duplicate into geometry.point)
+- moment: geometry.center (optionally duplicate into geometry.point), direction MUST be exactly "cw" or "ccw"; if numeric value is unknown, set symbolic geometry.label (for example "M") and still set direction
 Never encode a point as bare geometry {"x":...,"y":...}; always use the canonical keys above.
 Preserve existing coordinates unless revision notes explicitly request moving elements.
 Do NOT collapse supports/loads/moments to (0,0) unless the user explicitly requests coincidence at the origin.

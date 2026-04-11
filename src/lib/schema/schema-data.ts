@@ -65,6 +65,16 @@ function isFiniteNumber(value: unknown): value is number {
 	return typeof value === 'number' && Number.isFinite(value);
 }
 
+function toFiniteNumber(value: unknown): number | null {
+	if (isFiniteNumber(value)) return value;
+	if (typeof value !== 'string') return null;
+	const normalized = value.replace(',', '.');
+	const match = normalized.match(/[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?/);
+	if (!match) return null;
+	const parsed = Number.parseFloat(match[0]);
+	return Number.isFinite(parsed) ? parsed : null;
+}
+
 function toPoint(value: unknown): SchemaPoint | null {
 	if (isValidPoint(value)) {
 		return { x: value.x, y: value.y };
@@ -91,6 +101,50 @@ function pickFirstPoint(source: Record<string, unknown>, keys: string[], include
 	if (includeSelf) {
 		return toPoint(source);
 	}
+	return null;
+}
+
+function pickFirstFiniteNumber(source: Record<string, unknown>, keys: string[]): number | null {
+	for (const key of keys) {
+		const value = toFiniteNumber(source[key]);
+		if (value !== null) return value;
+	}
+	return null;
+}
+
+function normalizeMomentDirection(value: unknown): 'cw' | 'ccw' | null {
+	if (typeof value === 'string') {
+		const compact = value.trim().toLowerCase();
+		const normalized = compact.replace(/\s+/g, ' ');
+		const flat = compact.replace(/[\s_-]+/g, '');
+
+		if (
+			normalized === 'cw' ||
+			flat === 'cw' ||
+			flat === 'clockwise' ||
+			flat === 'по часовой стрелке'.replace(/\s+/g, '') ||
+			flat === 'почасовойстрелке' ||
+			flat === 'почасовой'
+		) {
+			return 'cw';
+		}
+		if (
+			normalized === 'ccw' ||
+			flat === 'ccw' ||
+			flat === 'counterclockwise' ||
+			flat === 'anticlockwise' ||
+			flat === 'противчасовойстрелки' ||
+			flat === 'противчасовой'
+		) {
+			return 'ccw';
+		}
+	}
+
+	const numeric = toFiniteNumber(value);
+	if (numeric !== null) {
+		return numeric < 0 ? 'cw' : 'ccw';
+	}
+
 	return null;
 }
 
@@ -194,6 +248,8 @@ function validateMoment(element: SchemaElement, errors: string[]): void {
 	const geometry = element.geometry;
 	const direction = geometry.direction;
 	const magnitude = geometry.magnitude;
+	const label = typeof geometry.label === 'string' ? geometry.label.trim() : '';
+	const text = typeof geometry.text === 'string' ? geometry.text.trim() : '';
 	const center = extractPoint(geometry, 'center') ?? extractPoint(geometry, 'point');
 	if (!center) {
 		pushError(errors, `${element.id}: moment requires geometry.center or geometry.point`);
@@ -201,8 +257,8 @@ function validateMoment(element: SchemaElement, errors: string[]): void {
 	if (direction !== 'cw' && direction !== 'ccw') {
 		pushError(errors, `${element.id}: moment.direction must be "cw" or "ccw"`);
 	}
-	if (!isFiniteNumber(magnitude)) {
-		pushError(errors, `${element.id}: moment.magnitude must be a finite number`);
+	if (!isFiniteNumber(magnitude) && !label && !text) {
+		pushError(errors, `${element.id}: moment.magnitude must be a finite number or provide geometry.label`);
 	}
 }
 
@@ -234,6 +290,153 @@ function validatePointAnchoredElement(
 	const geometry = element.geometry;
 	if (!extractPoint(geometry, 'point')) {
 		pushError(errors, `${element.id}: ${typeLabel} requires geometry.point`);
+	}
+}
+
+function normalizeDistributedLoadIntensity(geometry: Record<string, unknown>): void {
+	const intensityRaw = geometry.intensity;
+
+	if (Array.isArray(intensityRaw) && intensityRaw.length >= 2) {
+		const start = toFiniteNumber(intensityRaw[0]);
+		const end = toFiniteNumber(intensityRaw[1]);
+		if (start !== null && end !== null) {
+			geometry.intensity = { start, end };
+		}
+	}
+
+	if (isRecord(geometry.intensity)) {
+		const intensityObj = geometry.intensity as Record<string, unknown>;
+		const start =
+			toFiniteNumber(intensityObj.start) ??
+			toFiniteNumber(intensityObj.from) ??
+			toFiniteNumber(intensityObj.min) ??
+			toFiniteNumber(intensityObj.qStart) ??
+			toFiniteNumber(intensityObj.wStart) ??
+			toFiniteNumber(intensityObj.initial);
+		const end =
+			toFiniteNumber(intensityObj.end) ??
+			toFiniteNumber(intensityObj.to) ??
+			toFiniteNumber(intensityObj.max) ??
+			toFiniteNumber(intensityObj.qEnd) ??
+			toFiniteNumber(intensityObj.wEnd) ??
+			toFiniteNumber(intensityObj.final);
+		const scalar =
+			toFiniteNumber(intensityObj.value) ??
+			toFiniteNumber(intensityObj.q) ??
+			toFiniteNumber(intensityObj.w) ??
+			toFiniteNumber(intensityObj.magnitude);
+
+		if (start !== null && end !== null) {
+			geometry.intensity = { start, end };
+		} else if (scalar !== null) {
+			geometry.intensity = scalar;
+		} else if (start !== null) {
+			geometry.intensity = start;
+		} else if (end !== null) {
+			geometry.intensity = end;
+		}
+	}
+
+	const intensityStart =
+		toFiniteNumber(geometry.intensityStart) ??
+		toFiniteNumber(geometry.startIntensity) ??
+		toFiniteNumber(geometry.qStart) ??
+		toFiniteNumber(geometry.wStart);
+	const intensityEnd =
+		toFiniteNumber(geometry.intensityEnd) ??
+		toFiniteNumber(geometry.endIntensity) ??
+		toFiniteNumber(geometry.qEnd) ??
+		toFiniteNumber(geometry.wEnd);
+
+	if (intensityStart !== null) {
+		geometry.intensityStart = intensityStart;
+	}
+	if (intensityEnd !== null) {
+		geometry.intensityEnd = intensityEnd;
+	}
+	if (geometry.intensity === undefined && intensityStart !== null && intensityEnd !== null) {
+		geometry.intensity = { start: intensityStart, end: intensityEnd };
+	}
+	if (geometry.intensity === undefined && intensityStart !== null) {
+		geometry.intensity = intensityStart;
+	}
+	if (geometry.intensity === undefined && intensityEnd !== null) {
+		geometry.intensity = intensityEnd;
+	}
+
+	if (geometry.intensity === undefined) {
+		const scalar = pickFirstFiniteNumber(geometry, [
+			'q',
+			'w',
+			'value',
+			'load',
+			'loadValue',
+			'magnitude',
+			'intensityValue',
+			'uniformIntensity',
+			'pressure'
+		]);
+		if (scalar !== null) {
+			geometry.intensity = scalar;
+		}
+	}
+
+	if (geometry.intensity === undefined) {
+		const scalarFromText = pickFirstFiniteNumber(geometry, ['label', 'text', 'name']);
+		if (scalarFromText !== null) {
+			geometry.intensity = scalarFromText;
+		}
+	}
+}
+
+function normalizeMomentGeometry(geometry: Record<string, unknown>): void {
+	const directionCandidate =
+		geometry.direction ??
+		geometry.sense ??
+		geometry.rotation ??
+		geometry.orientation ??
+		geometry.dir;
+	const normalizedDirection = normalizeMomentDirection(directionCandidate);
+	if (normalizedDirection) {
+		geometry.direction = normalizedDirection;
+	}
+
+	const magnitude = pickFirstFiniteNumber(geometry, [
+		'magnitude',
+		'value',
+		'moment',
+		'torque',
+		'momentValue',
+		'torqueValue',
+		'M',
+		'm'
+	]);
+	if (magnitude !== null) {
+		geometry.magnitude = Math.abs(magnitude);
+		if (!geometry.direction) {
+			geometry.direction = magnitude < 0 ? 'cw' : 'ccw';
+		}
+	} else {
+		const textualMagnitudeCandidates = [
+			geometry.magnitude,
+			geometry.value,
+			geometry.moment,
+			geometry.torque,
+			geometry.M,
+			geometry.m
+		];
+		for (const candidate of textualMagnitudeCandidates) {
+			if (typeof candidate === 'string' && candidate.trim()) {
+				if (typeof geometry.label !== 'string' || !geometry.label.trim()) {
+					geometry.label = candidate.trim();
+				}
+				break;
+			}
+		}
+	}
+
+	if ((typeof geometry.label !== 'string' || !geometry.label.trim()) && typeof geometry.text === 'string' && geometry.text.trim()) {
+		geometry.label = geometry.text.trim();
 	}
 }
 
@@ -311,10 +514,24 @@ function normalizeElementShape(element: Record<string, unknown>): Record<string,
 					geometry.point = center;
 				}
 			}
+			normalizeMomentGeometry(geometry);
+			break;
+		}
+		case 'distributed_load': {
+			const start = pickFirstPoint(
+				geometry,
+				['start', 'from', 'p1', 'pointA', 'a', 'left', 'begin']
+			);
+			const end = pickFirstPoint(
+				geometry,
+				['end', 'to', 'p2', 'pointB', 'b', 'right', 'finish']
+			);
+			if (start) geometry.start = start;
+			if (end) geometry.end = end;
+			normalizeDistributedLoadIntensity(geometry);
 			break;
 		}
 		case 'beam_segment':
-		case 'distributed_load':
 		case 'axis':
 		case 'dimension': {
 			const start = pickFirstPoint(

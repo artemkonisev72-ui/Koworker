@@ -213,6 +213,12 @@
 		const center = pointFrom(geometry, 'center', pointFrom(geometry, 'point'));
 		const direction = geometry.direction === 'cw' ? 'cw' : 'ccw';
 		const magnitudeLabel = typeof geometry.magnitude === 'number' ? geometry.magnitude.toString() : '';
+		const explicitLabel =
+			typeof geometry.label === 'string'
+				? geometry.label.trim()
+				: typeof geometry.text === 'string'
+					? geometry.text.trim()
+					: '';
 		const radius = typeof geometry.radius === 'number' ? Math.max(0.25, Math.min(1.2, Math.abs(geometry.radius))) : 0.5;
 
 		board.create('circle', [[center.x, center.y], radius], {
@@ -237,7 +243,7 @@
 			lastArrow: true
 		});
 
-		const label = magnitudeLabel ? `M=${magnitudeLabel}` : `M ${direction}`;
+		const label = explicitLabel || (magnitudeLabel ? `M=${magnitudeLabel}` : `M ${direction}`);
 		board.create('text', [center.x + radius + 0.15, center.y + radius + 0.1, label], {
 			strokeColor: 'var(--text-secondary)',
 			fontSize: 12,
