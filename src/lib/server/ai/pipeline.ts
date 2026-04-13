@@ -44,6 +44,256 @@ interface SandboxOutput {
 }
 
 const MAX_RETRIES = 2;
+const APPROVED_SCHEMA_MARKER = '\n\n[APPROVED_SCHEMA_JSON]\n';
+
+type FinalizerPayloadMode = 'normal' | 'compact' | 'minimal';
+
+const FINALIZER_HISTORY_LIMIT = readIntEnv('FINALIZER_HISTORY_LIMIT', 2, 0, 6);
+const FINALIZER_HISTORY_ENTRY_MAX_CHARS = readIntEnv('FINALIZER_HISTORY_ENTRY_MAX_CHARS', 1200, 200, 6000);
+const FINALIZER_TASK_MAX_CHARS = readIntEnv('FINALIZER_TASK_MAX_CHARS', 3000, 400, 20000);
+const FINALIZER_MAX_INPUT_CHARS = readIntEnv('FINALIZER_MAX_INPUT_CHARS', 12000, 2000, 120000);
+
+const FINALIZER_PAYLOAD_CONFIG: Record<
+	FinalizerPayloadMode,
+	{
+		maxGraphSamples: number;
+		includeGraphSamples: boolean;
+		includeExtras: boolean;
+		maxDepth: number;
+		maxArray: number;
+		maxObjectKeys: number;
+		maxString: number;
+		stdoutChars: number;
+	}
+> = {
+	normal: {
+		maxGraphSamples: 12,
+		includeGraphSamples: true,
+		includeExtras: true,
+		maxDepth: 4,
+		maxArray: 24,
+		maxObjectKeys: 24,
+		maxString: 1200,
+		stdoutChars: 2000
+	},
+	compact: {
+		maxGraphSamples: 6,
+		includeGraphSamples: true,
+		includeExtras: false,
+		maxDepth: 3,
+		maxArray: 12,
+		maxObjectKeys: 12,
+		maxString: 700,
+		stdoutChars: 1000
+	},
+	minimal: {
+		maxGraphSamples: 0,
+		includeGraphSamples: false,
+		includeExtras: false,
+		maxDepth: 2,
+		maxArray: 8,
+		maxObjectKeys: 8,
+		maxString: 320,
+		stdoutChars: 600
+	}
+};
+
+function readIntEnv(name: string, fallback: number, min: number, max: number): number {
+	const raw = Number(process.env[name]);
+	if (!Number.isFinite(raw)) return fallback;
+	const rounded = Math.floor(raw);
+	return Math.max(min, Math.min(max, rounded));
+}
+
+function truncateText(value: string, maxChars: number): string {
+	if (value.length <= maxChars) return value;
+	return `${value.slice(0, maxChars)}...`;
+}
+
+function isFiniteGraphPoint(value: unknown): value is GraphPoint {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+	const maybe = value as Record<string, unknown>;
+	return (
+		typeof maybe.x === 'number' &&
+		Number.isFinite(maybe.x) &&
+		typeof maybe.y === 'number' &&
+		Number.isFinite(maybe.y)
+	);
+}
+
+function sampleGraphPoints(points: GraphPoint[], maxSamples: number): GraphPoint[] {
+	if (maxSamples <= 0) return [];
+	if (points.length <= maxSamples) return points;
+	if (maxSamples === 1) return [points[0]];
+
+	const sampled: GraphPoint[] = [];
+	const seen = new Set<string>();
+	for (let i = 0; i < maxSamples; i++) {
+		const index = Math.round((i * (points.length - 1)) / (maxSamples - 1));
+		const point = points[index];
+		const key = `${point.x}:${point.y}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		sampled.push(point);
+	}
+	return sampled;
+}
+
+function summarizeGraph(pointsRaw: unknown, maxSamples: number, includeSamples: boolean): Record<string, unknown> {
+	const points = Array.isArray(pointsRaw) ? pointsRaw.filter(isFiniteGraphPoint) : [];
+	const summary: Record<string, unknown> = { pointCount: points.length };
+
+	if (points.length > 0) {
+		let xMin = points[0].x;
+		let xMax = points[0].x;
+		let yMin = points[0].y;
+		let yMax = points[0].y;
+		for (const point of points) {
+			if (point.x < xMin) xMin = point.x;
+			if (point.x > xMax) xMax = point.x;
+			if (point.y < yMin) yMin = point.y;
+			if (point.y > yMax) yMax = point.y;
+		}
+		summary.bounds = { xMin, xMax, yMin, yMax };
+	}
+
+	if (includeSamples && points.length > 0) {
+		summary.samplePoints = sampleGraphPoints(points, maxSamples);
+	}
+
+	return summary;
+}
+
+function compactUnknownValue(
+	value: unknown,
+	cfg: {
+		maxDepth: number;
+		maxArray: number;
+		maxObjectKeys: number;
+		maxString: number;
+	},
+	depth = 0
+): unknown {
+	if (value === null || value === undefined) return value;
+	if (typeof value === 'number' || typeof value === 'boolean') return value;
+	if (typeof value === 'string') return truncateText(value, cfg.maxString);
+	if (depth >= cfg.maxDepth) {
+		if (Array.isArray(value)) return `[array(${value.length})]`;
+		if (typeof value === 'object') return '[object]';
+		return String(value);
+	}
+	if (Array.isArray(value)) {
+		if (value.length <= cfg.maxArray) {
+			return value.map((entry) => compactUnknownValue(entry, cfg, depth + 1));
+		}
+		return {
+			length: value.length,
+			sample: value.slice(0, cfg.maxArray).map((entry) => compactUnknownValue(entry, cfg, depth + 1))
+		};
+	}
+	if (typeof value === 'object') {
+		const record = value as Record<string, unknown>;
+		const keys = Object.keys(record);
+		const compacted: Record<string, unknown> = {};
+		for (const key of keys.slice(0, cfg.maxObjectKeys)) {
+			compacted[key] = compactUnknownValue(record[key], cfg, depth + 1);
+		}
+		if (keys.length > cfg.maxObjectKeys) {
+			compacted._truncatedKeys = keys.length - cfg.maxObjectKeys;
+		}
+		return compacted;
+	}
+	return String(value);
+}
+
+function sanitizeFinalizerTaskContext(rawUserMessage: string): string {
+	const markerIndex = rawUserMessage.indexOf(APPROVED_SCHEMA_MARKER);
+	const task = markerIndex >= 0 ? rawUserMessage.slice(0, markerIndex) : rawUserMessage;
+	return task.trim();
+}
+
+function trimHistoryForFinalizer(history: GeminiHistory[]): GeminiHistory[] {
+	if (FINALIZER_HISTORY_LIMIT <= 0) return [];
+	return history
+		.slice(-FINALIZER_HISTORY_LIMIT)
+		.map((entry) => ({
+			role: entry.role,
+			content: truncateText(entry.content || '', FINALIZER_HISTORY_ENTRY_MAX_CHARS)
+		}))
+		.filter((entry) => entry.content.trim().length > 0);
+}
+
+function getHistoryChars(history: GeminiHistory[]): number {
+	return history.reduce((sum, entry) => sum + (entry.content?.length ?? 0), 0);
+}
+
+function estimateTokensByChars(chars: number): number {
+	return Math.ceil(chars / 4);
+}
+
+function countGraphPoints(output: SandboxOutput | null): number {
+	if (!output) return 0;
+	let total = 0;
+	if (Array.isArray(output.graph_points)) {
+		total += output.graph_points.filter(isFiniteGraphPoint).length;
+	}
+	if (Array.isArray(output.graphs)) {
+		for (const graph of output.graphs) {
+			if (!graph || typeof graph !== 'object') continue;
+			total += Array.isArray(graph.points) ? graph.points.filter(isFiniteGraphPoint).length : 0;
+		}
+	}
+	return total;
+}
+
+function buildFinalizerExecutionPayload(
+	output: SandboxOutput | null,
+	rawStdout: string,
+	mode: FinalizerPayloadMode
+): Record<string, unknown> {
+	const cfg = FINALIZER_PAYLOAD_CONFIG[mode];
+	const payload: Record<string, unknown> = {};
+
+	if (output) {
+		if (output.result !== undefined) {
+			payload.result = compactUnknownValue(output.result, cfg);
+		}
+
+		if (Array.isArray(output.graphs) && output.graphs.length > 0) {
+			payload.graphs = output.graphs.map((graph, index) => {
+				const summary = summarizeGraph(graph?.points, cfg.maxGraphSamples, cfg.includeGraphSamples);
+				return {
+					id: `graph_${index + 1}`,
+					title: typeof graph?.title === 'string' ? graph.title : undefined,
+					type: typeof graph?.type === 'string' ? graph.type : undefined,
+					...summary
+				};
+			});
+		} else if (Array.isArray(output.graph_points) && output.graph_points.length > 0) {
+			payload.graph_points_summary = summarizeGraph(
+				output.graph_points,
+				cfg.maxGraphSamples,
+				cfg.includeGraphSamples
+			);
+		}
+
+		if (cfg.includeExtras) {
+			let extrasAdded = 0;
+			for (const [key, value] of Object.entries(output)) {
+				if (key === 'result' || key === 'graphs' || key === 'graph_points') continue;
+				payload[key] = compactUnknownValue(value, cfg);
+				extrasAdded += 1;
+				if (extrasAdded >= 6) break;
+			}
+		}
+	}
+
+	if (Object.keys(payload).length === 0) {
+		payload.stdout_excerpt = truncateText(rawStdout, cfg.stdoutChars);
+	}
+
+	return payload;
+}
 
 export async function runPipelineWithApprovedSchema(
 	params: {
@@ -189,13 +439,50 @@ export async function runPipeline(
 		console.log('[Pipeline] Step 4: assembling final answer...');
 		onStatus({ type: 'status', message: 'Формирование ответа...' });
 
-		const executionSummary = sandboxOutput
-			? JSON.stringify(sandboxOutput, null, 2)
-			: rawStdout;
+		const finalizerHistory = trimHistoryForFinalizer(history);
+		const finalizerTask = truncateText(
+			sanitizeFinalizerTaskContext(userMessage) || sanitizeFinalizerTaskContext(currentContext) || userMessage,
+			FINALIZER_TASK_MAX_CHARS
+		);
+		const historyChars = getHistoryChars(finalizerHistory);
+
+		let finalizerMode: FinalizerPayloadMode = 'normal';
+		let executionSummary = JSON.stringify(buildFinalizerExecutionPayload(sandboxOutput, rawStdout, finalizerMode));
+		let totalInputChars = historyChars + finalizerTask.length + executionSummary.length;
+
+		if (totalInputChars > FINALIZER_MAX_INPUT_CHARS) {
+			finalizerMode = 'compact';
+			executionSummary = JSON.stringify(buildFinalizerExecutionPayload(sandboxOutput, rawStdout, finalizerMode));
+			totalInputChars = historyChars + finalizerTask.length + executionSummary.length;
+		}
+		if (totalInputChars > FINALIZER_MAX_INPUT_CHARS) {
+			finalizerMode = 'minimal';
+			executionSummary = JSON.stringify(buildFinalizerExecutionPayload(sandboxOutput, rawStdout, finalizerMode));
+			totalInputChars = historyChars + finalizerTask.length + executionSummary.length;
+		}
+		if (totalInputChars > FINALIZER_MAX_INPUT_CHARS) {
+			const budgetForExecution = Math.max(
+				600,
+				FINALIZER_MAX_INPUT_CHARS - historyChars - finalizerTask.length
+			);
+			executionSummary = truncateText(executionSummary, budgetForExecution);
+			totalInputChars = historyChars + finalizerTask.length + executionSummary.length;
+		}
+
+		console.log('[Pipeline] Finalizer input metrics:', {
+			mode: finalizerMode,
+			historyEntries: finalizerHistory.length,
+			historyChars,
+			taskChars: finalizerTask.length,
+			executionChars: executionSummary.length,
+			totalChars: totalInputChars,
+			estimatedTokens: estimateTokensByChars(totalInputChars),
+			graphPointsTotal: countGraphPoints(sandboxOutput)
+		});
 
 		const { text: finalAnswer, model: assembleModel, tokens: assembleTokens } = await assembleFinalAnswer(
-			history,
-			{ userMessage: currentContext, pythonCode, executionResult: executionSummary },
+			finalizerHistory,
+			{ userMessage: finalizerTask, executionResult: executionSummary },
 			forcedModel
 		);
 		usedModelsList.push(`${assembleModel} (Finalizer): ${assembleTokens.toLocaleString('ru-RU')} токенов`);

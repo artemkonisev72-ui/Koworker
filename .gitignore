@@ -24,3 +24,4 @@ vite.config.ts.timestamp-*
 
 /generated/prisma
 deploy
+OPENROUTER_API_MIGRATION_PLAN.md

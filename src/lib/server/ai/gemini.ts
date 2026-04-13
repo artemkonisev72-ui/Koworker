@@ -394,12 +394,13 @@ Rules:
 
 export async function assembleFinalAnswer(
 	history: GeminiHistory[],
-	params: { userMessage: string; pythonCode: string; executionResult: string },
+	params: { userMessage: string; executionResult: string },
 	forcedModel?: string | null
 ): Promise<{ text: string; model: GeminiModel; tokens: number }> {
 	const prompt = `Provide the final solution in this structure: Given / Solution / Answer.
 Use only these computed data: ${params.executionResult}
 Use LaTeX for formulas. Do not include Python code.
+Keep the answer concise and avoid repeating long condition text verbatim.
 ${languagePolicy(params.userMessage)}`;
 	const messages = buildContext(history, prompt, `Task: ${params.userMessage}`);
 	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
