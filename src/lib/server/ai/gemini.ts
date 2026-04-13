@@ -378,10 +378,12 @@ Rules:
 2. Always print JSON using print(json.dumps({...})).
 3. Do not draw text/ASCII graphs.
 4. For plots/diagrams output graph points in key "graphs":
-   "graphs": [{"title":"...","type":"function"|"diagram","points":[{"x":...,"y":...}, ...]}]
-5. Put primary numeric/text result in key "result".
-6. Prefer sympy for exact math and numpy arrays for sampling points.
-7. ${languagePolicy(userMessage)}`;
+   "graphs": [{"title":"...","type":"function"|"diagram","memberId":"...", "diagramType":"N|Q|M|...", "points":[{"x":...,"y":...}, ...]}]
+5. For frame/truss/beam-system diagrams (epures), STRICT RULE: one graph object = one member (memberId). Never mix points from different members inside one graph.
+6. For type="diagram", always provide non-empty memberId.
+7. Put primary numeric/text result in key "result".
+8. Prefer sympy for exact math and numpy arrays for sampling points.
+9. ${languagePolicy(userMessage)}`;
 
 	let userContent = `Task: ${userMessage}`;
 	if (retryContext) userContent += `\n\nFix this error context:\n${retryContext}`;

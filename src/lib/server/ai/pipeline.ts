@@ -33,6 +33,8 @@ export interface GraphPoint {
 export interface GraphData {
 	title?: string;
 	type?: 'function' | 'diagram';
+	memberId?: string;
+	diagramType?: string;
 	points: GraphPoint[];
 }
 
@@ -41,6 +43,11 @@ interface SandboxOutput {
 	graph_points?: GraphPoint[]; // Для обратной совместимости
 	graphs?: GraphData[];        // Массив нескольких графиков
 	[key: string]: unknown;
+}
+
+interface GraphNormalizationResult {
+	graphs: GraphData[];
+	issues: string[];
 }
 
 const MAX_RETRIES = 2;
@@ -108,6 +115,167 @@ function readIntEnv(name: string, fallback: number, min: number, max: number): n
 function truncateText(value: string, maxChars: number): string {
 	if (value.length <= maxChars) return value;
 	return `${value.slice(0, maxChars)}...`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeGraphType(value: unknown): 'function' | 'diagram' {
+	if (typeof value !== 'string') return 'function';
+	const normalized = value.trim().toLowerCase();
+	if (normalized === 'diagram' || normalized === 'epure' || normalized === 'moment' || normalized === 'shear') {
+		return 'diagram';
+	}
+	return 'function';
+}
+
+function looksLikeDiagramTitle(value: unknown): boolean {
+	if (typeof value !== 'string') return false;
+	const normalized = value.trim().toLowerCase();
+	if (!normalized) return false;
+	return (
+		normalized.includes('epure') ||
+		normalized.includes('эпюр') ||
+		normalized.includes('m(x)') ||
+		normalized.includes('q(x)') ||
+		normalized.includes('n(x)') ||
+		normalized.includes('shear') ||
+		normalized.includes('moment') ||
+		normalized.includes('axial')
+	);
+}
+
+function normalizeString(value: unknown): string | null {
+	if (typeof value !== 'string') return null;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeMemberId(raw: Record<string, unknown>): string | null {
+	const meta = isRecord(raw.meta) ? raw.meta : null;
+	const candidates = [
+		raw.memberId,
+		raw.member,
+		raw.member_id,
+		raw.barId,
+		raw.bar_id,
+		raw.elementId,
+		raw.element_id,
+		raw.rodId,
+		raw.rod_id,
+		meta?.memberId,
+		meta?.member
+	];
+	for (const candidate of candidates) {
+		const normalized = normalizeString(candidate);
+		if (normalized) return normalized;
+	}
+	return null;
+}
+
+function normalizeDiagramType(raw: Record<string, unknown>): string | null {
+	const candidates = [raw.diagramType, raw.diagram_type, raw.kind, raw.epureType, raw.resultType];
+	for (const candidate of candidates) {
+		const normalized = normalizeString(candidate);
+		if (normalized) return normalized;
+	}
+	return null;
+}
+
+function extractPointMemberId(point: unknown): string | null {
+	if (!isRecord(point)) return null;
+	return normalizeString(point.memberId ?? point.member ?? point.member_id ?? point.barId ?? point.elementId);
+}
+
+function normalizeGraphPoints(pointsRaw: unknown): GraphPoint[] {
+	if (!Array.isArray(pointsRaw)) return [];
+	const points: GraphPoint[] = [];
+	for (const entry of pointsRaw) {
+		if (isRecord(entry) && typeof entry.x === 'number' && Number.isFinite(entry.x) && typeof entry.y === 'number' && Number.isFinite(entry.y)) {
+			points.push({ x: entry.x, y: entry.y });
+			continue;
+		}
+		if (Array.isArray(entry) && entry.length >= 2) {
+			const x = Number(entry[0]);
+			const y = Number(entry[1]);
+			if (Number.isFinite(x) && Number.isFinite(y)) {
+				points.push({ x, y });
+			}
+		}
+	}
+	return points;
+}
+
+function normalizeGraphTitle(raw: Record<string, unknown>, fallback: string): string {
+	const title = normalizeString(raw.title) ?? normalizeString(raw.name) ?? normalizeString(raw.label);
+	return title ?? fallback;
+}
+
+function normalizeAndValidateGraphs(output: SandboxOutput | null): GraphNormalizationResult {
+	if (!output) return { graphs: [], issues: [] };
+
+	const rawGraphs: unknown[] = Array.isArray(output.graphs)
+		? (output.graphs as unknown[])
+		: Array.isArray(output.graph_points)
+			? [{ title: 'График решения', type: 'function', points: output.graph_points }]
+			: [];
+	if (rawGraphs.length === 0) return { graphs: [], issues: [] };
+
+	const normalizedGraphs: GraphData[] = [];
+	const issues: string[] = [];
+
+	for (let index = 0; index < rawGraphs.length; index++) {
+		const rawGraph = rawGraphs[index];
+		if (!isRecord(rawGraph)) {
+			issues.push(`graphs[${index}] must be an object`);
+			continue;
+		}
+
+		let type = normalizeGraphType(rawGraph.type ?? rawGraph.graphType ?? rawGraph.kind);
+		if (type === 'function' && looksLikeDiagramTitle(rawGraph.title ?? rawGraph.name ?? rawGraph.label)) {
+			type = 'diagram';
+		}
+		const points = normalizeGraphPoints(rawGraph.points ?? rawGraph.data ?? rawGraph.values);
+		if (points.length < 2) {
+			issues.push(`graphs[${index}] must contain at least 2 points`);
+			continue;
+		}
+
+		const pointMemberIds = Array.isArray(rawGraph.points)
+			? Array.from(new Set(rawGraph.points.map(extractPointMemberId).filter((item): item is string => Boolean(item))))
+			: [];
+		const declaredMemberIds = Array.isArray(rawGraph.memberIds)
+			? Array.from(new Set(rawGraph.memberIds.map(normalizeString).filter((item): item is string => Boolean(item))))
+			: [];
+
+		let memberId = normalizeMemberId(rawGraph);
+		if (!memberId && pointMemberIds.length === 1) memberId = pointMemberIds[0];
+		if (!memberId && declaredMemberIds.length === 1) memberId = declaredMemberIds[0];
+
+		if (pointMemberIds.length > 1) {
+			issues.push(`graphs[${index}] mixes multiple members in points: ${pointMemberIds.join(', ')}`);
+		}
+		if (declaredMemberIds.length > 1) {
+			issues.push(`graphs[${index}] declares multiple memberIds: ${declaredMemberIds.join(', ')}`);
+		}
+		if (type === 'diagram' && !memberId) {
+			issues.push(`graphs[${index}] type "diagram" requires memberId (one graph per member)`);
+		}
+		if (memberId && /[,+;|]/.test(memberId)) {
+			issues.push(`graphs[${index}] memberId looks composite ("${memberId}"); use one member per graph`);
+		}
+
+		normalizedGraphs.push({
+			title: normalizeGraphTitle(rawGraph, `Graph ${index + 1}`),
+			type,
+			memberId: memberId ?? undefined,
+			diagramType: normalizeDiagramType(rawGraph) ?? undefined,
+			points
+		});
+	}
+
+	return { graphs: normalizedGraphs, issues };
 }
 
 function isFiniteGraphPoint(value: unknown): value is GraphPoint {
@@ -266,6 +434,8 @@ function buildFinalizerExecutionPayload(
 					id: `graph_${index + 1}`,
 					title: typeof graph?.title === 'string' ? graph.title : undefined,
 					type: typeof graph?.type === 'string' ? graph.type : undefined,
+					memberId: typeof graph?.memberId === 'string' ? graph.memberId : undefined,
+					diagramType: typeof graph?.diagramType === 'string' ? graph.diagramType : undefined,
 					...summary
 				};
 			});
@@ -415,6 +585,23 @@ export async function runPipeline(
 					sandboxOutput = { result: rawStdout };
 				}
 
+				const graphNormalization = normalizeAndValidateGraphs(sandboxOutput);
+				if (graphNormalization.issues.length > 0) {
+					lastError = `Graph contract violation: ${graphNormalization.issues.join('; ')}`;
+					console.warn('[Pipeline] Graph contract violation:', graphNormalization.issues);
+					if (attempt >= MAX_RETRIES) {
+						onStatus({
+							type: 'error',
+							message:
+								`Не удалось получить корректные эпюры по стержням после ${MAX_RETRIES + 1} попыток:\n` +
+								graphNormalization.issues.join('\n')
+						});
+						return;
+					}
+					continue;
+				}
+				sandboxOutput = { ...sandboxOutput, graphs: graphNormalization.graphs };
+
 				lastError = null;
 				break;
 
@@ -488,12 +675,10 @@ export async function runPipeline(
 		usedModelsList.push(`${assembleModel} (Finalizer): ${assembleTokens.toLocaleString('ru-RU')} токенов`);
 		console.log('[Pipeline] Step 4 done, answer length:', finalAnswer.length);
 
-		let graphData: GraphData[] | undefined = undefined;
-		if (sandboxOutput?.graphs) {
-			graphData = sandboxOutput.graphs;
-		} else if (sandboxOutput?.graph_points) {
-			graphData = [{ title: 'График решения', points: sandboxOutput.graph_points }];
-		}
+		const graphData: GraphData[] | undefined =
+			Array.isArray(sandboxOutput?.graphs) && sandboxOutput.graphs.length > 0
+				? sandboxOutput.graphs
+				: undefined;
 
 		onStatus({
 			type: 'result',

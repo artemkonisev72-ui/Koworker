@@ -15,7 +15,13 @@
 	interface GraphData {
 		title?: string;
 		type?: 'function' | 'diagram';
+		memberId?: string;
+		diagramType?: string;
 		points: GraphPoint[];
+	}
+	interface GraphGroup {
+		memberId: string | null;
+		items: GraphData[];
 	}
 	interface Message {
 		id: string;
@@ -54,6 +60,27 @@
 			}
 		}
 		return message.graphData as GraphData[];
+	});
+
+	let graphGroups = $derived.by(() => {
+		const groups = new Map<string, GraphGroup>();
+		for (const graph of graphs) {
+			if (!graph || !Array.isArray(graph.points) || graph.points.length < 2) continue;
+			const memberId =
+				typeof graph.memberId === 'string' && graph.memberId.trim().length > 0
+					? graph.memberId.trim()
+					: null;
+			const key = memberId ?? '__general__';
+			if (!groups.has(key)) {
+				groups.set(key, { memberId, items: [] });
+			}
+			groups.get(key)?.items.push(graph);
+		}
+		return Array.from(groups.values()).sort((a, b) => {
+			if (a.memberId === null && b.memberId !== null) return 1;
+			if (a.memberId !== null && b.memberId === null) return -1;
+			return (a.memberId ?? '').localeCompare(b.memberId ?? '');
+		});
 	});
 
 	let schemes = $derived.by(() => {
@@ -200,10 +227,26 @@
 		</div>
 	{/if}
 
-	{#if graphs.length > 0}
+	{#if graphGroups.length > 0}
 		<div class="graphs-container">
-			{#each graphs as graph}
-				<GraphView points={graph.points} title={graph.title || 'Solution graph'} type={graph.type} />
+			{#each graphGroups as group}
+				{#if group.memberId}
+					<div class="graph-group-title">Member: {group.memberId}</div>
+				{/if}
+				{#each group.items as graph}
+					<GraphView
+						points={graph.points}
+						title={
+							graph.title ||
+							(graph.diagramType && group.memberId
+								? `${graph.diagramType} - ${group.memberId}`
+								: group.memberId
+									? `Member ${group.memberId}`
+									: 'Solution graph')
+						}
+						type={graph.type}
+					/>
+				{/each}
 			{/each}
 		</div>
 	{/if}
@@ -239,6 +282,16 @@
 		color: var(--text-muted);
 		font-family: var(--font-mono);
 		opacity: 0.8;
+	}
+
+	.graph-group-title {
+		margin: 0.25rem 0 -0.65rem;
+		padding-left: 0.1rem;
+		font-size: 0.73rem;
+		font-weight: 600;
+		letter-spacing: 0.03em;
+		text-transform: uppercase;
+		color: var(--text-secondary);
 	}
 
 	.attribution-label {

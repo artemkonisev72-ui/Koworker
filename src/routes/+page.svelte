@@ -13,6 +13,8 @@
 	interface GraphData {
 		title?: string;
 		type?: 'function' | 'diagram';
+		memberId?: string;
+		diagramType?: string;
 		points: GraphPoint[];
 	}
 	interface ActiveDraftState {
