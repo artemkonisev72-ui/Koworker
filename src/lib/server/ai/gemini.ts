@@ -477,6 +477,11 @@ Coordinates are only a coarse scaffold and may be overridden by deterministic ba
 For linear members (bar/cable/spring/damper/axis/ground), include geometry.length and geometry.angleDeg or geometry.constraints.
 geometry.constraints object may include: collinearWith[], parallelTo[], perpendicularTo[], mirrorOf.
 For supports and loads, always bind to existing member nodes via nodeRefs (never default to origin).
+For force/distributed/velocity/acceleration ALWAYS provide explicit direction:
+- prefer geometry.directionAngle in degrees
+- or geometry.direction vector {x,y}
+- or geometry.cardinal (up/down/left/right)
+Never omit load direction fields.
 For support/load/moment placement on members, prefer geometry.attach: {memberId, s, side, offset}.
 For fixed_wall use geometry.wallSide = left|right|top|bottom when side semantics matter.
 If exact dimensions are unknown, keep consistent relative lengths and positions.
@@ -531,7 +536,7 @@ Fill canonical geometry per type:
 - slider: nodeRefs [node, guideStart, guideEnd]
 - force/velocity/acceleration: nodeRefs [node] + direction (+ attach for member-relative placement)
 - moment: nodeRefs [node] + direction cw|ccw (+ optional magnitude or label)
-- distributed: nodeRefs [start,end] + kind + intensity
+- distributed: nodeRefs [start,end] + kind + intensity + direction
 - rigid_disk: nodeRefs [center] + radius
 - trajectory: geometry.points array
 - epure (if present): put into results with baseLine + values`;
@@ -584,6 +589,7 @@ Use ONLY object types from catalog v2:
 bar, cable, spring, damper, rigid_disk, fixed_wall, hinge_fixed, hinge_roller, internal_hinge, slider, force, moment, distributed, velocity, acceleration, angular_velocity, angular_acceleration, trajectory, epure, label, dimension, axis, ground.
 Use nodeRefs to bind all objects to nodes.
 If epure is needed, place it in schemaData.results, not in schemaData.objects.
+For force/distributed/velocity/acceleration include explicit direction (directionAngle or direction vector or cardinal).
 Keep physically meaningful scale/proportions; avoid coordinate collapse and avoid decorative coordinates.
 Prefer coordinates in range [-10, 10] and preserve consistent relative lengths.
 For linear members include geometry.length and geometry.angleDeg or geometry.constraints.
@@ -591,7 +597,7 @@ Use geometry.constraints (collinearWith, parallelTo, perpendicularTo, mirrorOf) 
 Use geometry.attach for member-relative placement when loads/supports should be attached by parameter s.
 For fixed_wall side semantics use geometry.wallSide=left|right|top|bottom.
 For supports/loads always attach to member nodes (nodeRefs) instead of origin defaults.
-For distributed include kind + intensity.
+For distributed include kind + intensity + direction.
 For moment/angular include direction "cw" | "ccw".
 Preserve existing coordinates unless revision notes explicitly request moving elements.
 Do NOT collapse supports/loads/moments to (0,0) unless the user explicitly requests coincidence at the origin.
@@ -656,6 +662,7 @@ Do not solve the task. Do not rewrite the schema from scratch.
 Focus on topology and constraints:
 - linear members should have geometry.length and geometry.angleDeg or geometry.constraints
 - supports/loads should be attached via nodeRefs and, when needed, geometry.attach
+- force/distributed/velocity/acceleration must keep explicit direction fields
 - fixed_wall may use geometry.wallSide
 Keep schemaData.version = "2.0" and finite numbers.
 Keep epure entries only in schemaData.results (never in schemaData.objects).

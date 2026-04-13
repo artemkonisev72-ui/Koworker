@@ -81,3 +81,63 @@ describe('normalize-v2 epure canonicalization', () => {
 		expect((validation.warnings ?? []).some((warning) => warning.includes('epure removed'))).toBe(true);
 	});
 });
+
+describe('normalize-v2 direction normalization', () => {
+	it('normalizes force direction from textual geometry.direction', () => {
+		const validation = validateSchemaDataV2({
+			version: '2.0',
+			nodes: [{ id: 'A', x: 0, y: 0 }],
+			objects: [
+				{
+					id: 'force_1',
+					type: 'force',
+					nodeRefs: ['A'],
+					geometry: {
+						direction: 'left',
+						magnitude: 12
+					}
+				}
+			],
+			results: []
+		});
+
+		expect(validation.ok).toBe(true);
+		expect(validation.value).toBeTruthy();
+		if (!validation.value) return;
+
+		const force = validation.value.objects.find((object) => object.id === 'force_1');
+		expect(force).toBeTruthy();
+		expect(force?.geometry.direction).toEqual({ x: -1, y: 0 });
+	});
+
+	it('normalizes distributed direction angle aliases', () => {
+		const validation = validateSchemaDataV2({
+			version: '2.0',
+			nodes: [
+				{ id: 'A', x: 0, y: 0 },
+				{ id: 'B', x: 3, y: 0 }
+			],
+			objects: [
+				{
+					id: 'dist_1',
+					type: 'distributed',
+					nodeRefs: ['A', 'B'],
+					geometry: {
+						kind: 'uniform',
+						intensity: 5,
+						angleDeg: 180
+					}
+				}
+			],
+			results: []
+		});
+
+		expect(validation.ok).toBe(true);
+		expect(validation.value).toBeTruthy();
+		if (!validation.value) return;
+
+		const distributed = validation.value.objects.find((object) => object.id === 'dist_1');
+		expect(distributed).toBeTruthy();
+		expect(distributed?.geometry.directionAngle).toBe(180);
+	});
+});

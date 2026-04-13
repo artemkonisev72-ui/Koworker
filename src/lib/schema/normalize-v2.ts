@@ -285,19 +285,123 @@ function normalizeNode(raw: Record<string, unknown>, index: number): NodeV2 {
 	return { id, x, y, label, visible, meta };
 }
 
+function cardinalDirectionToVector(value: string): Point | null {
+	const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, '');
+	if (!normalized) return null;
+
+	if (
+		normalized === 'up' ||
+		normalized === 'u' ||
+		normalized === 'north' ||
+		normalized === '+y'
+	) {
+		return { x: 0, y: 1 };
+	}
+	if (
+		normalized === 'down' ||
+		normalized === 'd' ||
+		normalized === 'south' ||
+		normalized === '-y'
+	) {
+		return { x: 0, y: -1 };
+	}
+	if (
+		normalized === 'left' ||
+		normalized === 'l' ||
+		normalized === 'west' ||
+		normalized === '-x'
+	) {
+		return { x: -1, y: 0 };
+	}
+	if (
+		normalized === 'right' ||
+		normalized === 'r' ||
+		normalized === 'east' ||
+		normalized === '+x'
+	) {
+		return { x: 1, y: 0 };
+	}
+	if (normalized === 'upright' || normalized === 'northeast' || normalized === '+x+y') {
+		return { x: 1, y: 1 };
+	}
+	if (normalized === 'upleft' || normalized === 'northwest' || normalized === '-x+y') {
+		return { x: -1, y: 1 };
+	}
+	if (normalized === 'downright' || normalized === 'southeast' || normalized === '+x-y') {
+		return { x: 1, y: -1 };
+	}
+	if (normalized === 'downleft' || normalized === 'southwest' || normalized === '-x-y') {
+		return { x: -1, y: -1 };
+	}
+
+	return null;
+}
+
+function normalizeDirectionAngleAliases(geometry: Record<string, unknown>): void {
+	const angleCandidate =
+		toFiniteNumber(geometry.directionAngle) ??
+		toFiniteNumber(geometry.angleDeg) ??
+		toFiniteNumber(geometry.angle) ??
+		toFiniteNumber(geometry.thetaDeg) ??
+		toFiniteNumber(geometry.theta) ??
+		toFiniteNumber(geometry.headingDeg) ??
+		toFiniteNumber(geometry.orientationDeg);
+	if (angleCandidate !== null) {
+		geometry.directionAngle = angleCandidate;
+	}
+}
+
 function normalizeDirectionGeometry(geometry: Record<string, unknown>): void {
+	const rawDirection = geometry.direction;
+	if (isRecord(rawDirection)) {
+		const x = toFiniteNumber(rawDirection.x) ?? toFiniteNumber(rawDirection.dx);
+		const y = toFiniteNumber(rawDirection.y) ?? toFiniteNumber(rawDirection.dy);
+		if (x !== null && y !== null) {
+			geometry.direction = { x, y };
+		}
+	}
+	if (Array.isArray(rawDirection) && rawDirection.length >= 2) {
+		const x = toFiniteNumber(rawDirection[0]);
+		const y = toFiniteNumber(rawDirection[1]);
+		if (x !== null && y !== null) {
+			geometry.direction = { x, y };
+		}
+	}
+	if (typeof rawDirection === 'string') {
+		const fromCardinal = cardinalDirectionToVector(rawDirection);
+		if (fromCardinal) {
+			geometry.direction = fromCardinal;
+		} else {
+			const angle = toFiniteNumber(rawDirection);
+			if (angle !== null) {
+				geometry.directionAngle = angle;
+			}
+		}
+	}
+
 	const dirX = toFiniteNumber(geometry.dx) ?? toFiniteNumber(geometry.x);
 	const dirY = toFiniteNumber(geometry.dy) ?? toFiniteNumber(geometry.y);
 	if (dirX !== null && dirY !== null) {
 		geometry.direction = { x: dirX, y: dirY };
-		return;
 	}
 
-	const cardinal = typeof geometry.cardinal === 'string' ? geometry.cardinal.trim().toLowerCase() : '';
-	if (cardinal === 'up') geometry.direction = { x: 0, y: 1 };
-	if (cardinal === 'down') geometry.direction = { x: 0, y: -1 };
-	if (cardinal === 'left') geometry.direction = { x: -1, y: 0 };
-	if (cardinal === 'right') geometry.direction = { x: 1, y: 0 };
+	const cardinalCandidates = [
+		geometry.cardinal,
+		geometry.orientation,
+		geometry.bearing,
+		geometry.dir,
+		geometry.side
+	];
+	for (const candidate of cardinalCandidates) {
+		if (typeof candidate !== 'string') continue;
+		const vector = cardinalDirectionToVector(candidate);
+		if (vector) {
+			geometry.direction = vector;
+			break;
+		}
+	}
+
+	normalizeDirectionAngleAliases(geometry);
 }
 
 function normalizeBaseLine(input: unknown): Record<string, unknown> | null {
@@ -368,6 +472,7 @@ function normalizeObjectGeometry(
 	}
 
 	if (type === 'distributed') {
+		normalizeDirectionGeometry(geometry);
 		const kind = typeof geometry.kind === 'string' ? geometry.kind.trim().toLowerCase() : '';
 		geometry.kind = kind === 'linear' || kind === 'trapezoid' ? kind : 'uniform';
 		if (geometry.intensity === undefined) {
@@ -403,11 +508,15 @@ function normalizeObjectGeometry(
 			geometry.intensity = 1;
 			warnings.push(`${context} distributed intensity was missing and defaulted to 1`);
 		}
-		const directionAngle = toFiniteNumber(geometry.directionAngle);
-		if (directionAngle === null && geometry.directionAngle === undefined) {
+		const hasDirectionVector =
+			isRecord(geometry.direction) &&
+			isFiniteNumber(geometry.direction.x) &&
+			isFiniteNumber(geometry.direction.y);
+		const hasDirectionAngle = isFiniteNumber(geometry.directionAngle);
+		if (!hasDirectionVector && !hasDirectionAngle) {
 			geometry.directionAngle = -90;
-		} else if (directionAngle !== null) {
-			geometry.directionAngle = directionAngle;
+		} else if (hasDirectionAngle) {
+			geometry.directionAngle = toFiniteNumber(geometry.directionAngle);
 		}
 	}
 
@@ -418,8 +527,7 @@ function normalizeObjectGeometry(
 		if (!isRecord(geometry.direction) && from && to && (from.x !== to.x || from.y !== to.y)) {
 			geometry.direction = { x: to.x - from.x, y: to.y - from.y };
 		}
-		const directionAngle = toFiniteNumber(geometry.directionAngle);
-		if (directionAngle !== null) geometry.directionAngle = directionAngle;
+		normalizeDirectionAngleAliases(geometry);
 		const magnitude = toFiniteNumber(geometry.magnitude) ?? toFiniteNumber(geometry.value);
 		if (magnitude !== null) geometry.magnitude = magnitude;
 

@@ -102,21 +102,58 @@
 		return { x: Math.cos(rad), y: Math.sin(rad) };
 	}
 
+	function directionFromKeyword(value: string): SchemaPoint | null {
+		const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, '');
+		if (!normalized) return null;
+		if (normalized === 'up' || normalized === 'u' || normalized === 'north' || normalized === '+y') return { x: 0, y: 1 };
+		if (normalized === 'down' || normalized === 'd' || normalized === 'south' || normalized === '-y') return { x: 0, y: -1 };
+		if (normalized === 'left' || normalized === 'l' || normalized === 'west' || normalized === '-x') return { x: -1, y: 0 };
+		if (normalized === 'right' || normalized === 'r' || normalized === 'east' || normalized === '+x') return { x: 1, y: 0 };
+		if (normalized === 'upright' || normalized === 'northeast') return { x: 1, y: 1 };
+		if (normalized === 'upleft' || normalized === 'northwest') return { x: -1, y: 1 };
+		if (normalized === 'downright' || normalized === 'southeast') return { x: 1, y: -1 };
+		if (normalized === 'downleft' || normalized === 'southwest') return { x: -1, y: -1 };
+		return null;
+	}
+
 	function normalizeDirection(geometry: Record<string, unknown>, fallbackAngle = -90): SchemaPoint {
 		const dir = geometry.direction;
 		if (isPoint(dir)) {
 			const len = Math.hypot(dir.x, dir.y) || 1;
 			return { x: dir.x / len, y: dir.y / len };
 		}
+		if (Array.isArray(dir) && dir.length >= 2 && isFiniteNumber(dir[0]) && isFiniteNumber(dir[1])) {
+			const len = Math.hypot(dir[0], dir[1]) || 1;
+			return { x: dir[0] / len, y: dir[1] / len };
+		}
+		if (typeof dir === 'string') {
+			const fromKeyword = directionFromKeyword(dir);
+			if (fromKeyword) {
+				const len = Math.hypot(fromKeyword.x, fromKeyword.y) || 1;
+				return { x: fromKeyword.x / len, y: fromKeyword.y / len };
+			}
+			const angleFromString = Number.parseFloat(dir.replace(',', '.'));
+			if (Number.isFinite(angleFromString)) return vectorFromAngleDegrees(angleFromString);
+		}
 
-		const angle = isFiniteNumber(geometry.directionAngle) ? geometry.directionAngle : null;
+		const angle =
+			isFiniteNumber(geometry.directionAngle) ? geometry.directionAngle :
+			isFiniteNumber(geometry.angleDeg) ? geometry.angleDeg :
+			isFiniteNumber(geometry.angle) ? geometry.angle :
+			isFiniteNumber(geometry.thetaDeg) ? geometry.thetaDeg :
+			isFiniteNumber(geometry.theta) ? geometry.theta :
+			null;
 		if (angle !== null) return vectorFromAngleDegrees(angle);
 
-		const cardinal = typeof geometry.cardinal === 'string' ? geometry.cardinal.toLowerCase() : '';
-		if (cardinal === 'up') return { x: 0, y: 1 };
-		if (cardinal === 'down') return { x: 0, y: -1 };
-		if (cardinal === 'left') return { x: -1, y: 0 };
-		if (cardinal === 'right') return { x: 1, y: 0 };
+		const cardinals = [geometry.cardinal, geometry.orientation, geometry.bearing, geometry.dir];
+		for (const candidate of cardinals) {
+			if (typeof candidate !== 'string') continue;
+			const fromKeyword = directionFromKeyword(candidate);
+			if (fromKeyword) {
+				const len = Math.hypot(fromKeyword.x, fromKeyword.y) || 1;
+				return { x: fromKeyword.x / len, y: fromKeyword.y / len };
+			}
+		}
 
 		return vectorFromAngleDegrees(fallbackAngle);
 	}
@@ -433,10 +470,17 @@
 		const magnitude = isFiniteNumber(object.geometry.magnitude)
 			? Math.max(0.35, Math.min(1.4, Math.abs(object.geometry.magnitude) / 8))
 			: 0.9;
-		const start = { x: node.x + direction.x * magnitude, y: node.y + direction.y * magnitude };
+		const start = { x: node.x - direction.x * magnitude, y: node.y - direction.y * magnitude };
 		drawArrow(start, node, { strokeColor: color, strokeWidth: 2 });
-		const label = labelText(object, isFiniteNumber(object.geometry.magnitude) ? `${prefix}=${object.geometry.magnitude}` : prefix);
-		drawText({ x: start.x, y: start.y + 0.15 }, label, { strokeColor: COLOR.text });
+		const label = labelText(
+			object,
+			isFiniteNumber(object.geometry.magnitude) ? `${prefix}=${object.geometry.magnitude}` : prefix
+		);
+		drawText(
+			{ x: start.x - direction.x * 0.12, y: start.y - direction.y * 0.12 },
+			label,
+			{ strokeColor: COLOR.text }
+		);
 	}
 
 	function drawMomentLike(object: ObjectV2, nodeMap: Map<string, NodeV2>, color: string, defaultLabel: string): void {
@@ -470,13 +514,13 @@
 		for (let i = 0; i < count; i++) {
 			const t = count === 1 ? 0 : i / (count - 1);
 			const base = { x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t };
-			const from = { x: base.x + direction.x * length, y: base.y + direction.y * length };
+			const from = { x: base.x - direction.x * length, y: base.y - direction.y * length };
 			drawArrow(from, base, { strokeColor: COLOR.load, strokeWidth: 1.4 });
 		}
 
 		drawSegment(
-			{ x: start.x + direction.x * length, y: start.y + direction.y * length },
-			{ x: end.x + direction.x * length, y: end.y + direction.y * length },
+			{ x: start.x - direction.x * length, y: start.y - direction.y * length },
+			{ x: end.x - direction.x * length, y: end.y - direction.y * length },
 			{ strokeColor: COLOR.load, strokeWidth: 1.2, dash: 1 }
 		);
 
@@ -486,7 +530,14 @@
 		if (isRecord(intensity) && isFiniteNumber(intensity.start) && isFiniteNumber(intensity.end)) {
 			label = `q=[${intensity.start}; ${intensity.end}]`;
 		}
-		drawText({ x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 + direction.y * (length + 0.2) }, label, { anchorX: 'middle' });
+		drawText(
+			{
+				x: (start.x + end.x) / 2 - direction.x * (length + 0.2),
+				y: (start.y + end.y) / 2 - direction.y * (length + 0.2)
+			},
+			label,
+			{ anchorX: 'middle' }
+		);
 	}
 
 	function drawTrajectory(object: ObjectV2 | ResultV2): void {
