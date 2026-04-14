@@ -21,6 +21,33 @@
 	let visibilityObserver: IntersectionObserver | null = null;
 	let resizeObserver: ResizeObserver | null = null;
 
+	function getTitleHeight(): number {
+		const titleEl = wrapperEl?.querySelector<HTMLElement>('.scheme-title');
+		if (!titleEl) return 0;
+		return titleEl.offsetHeight;
+	}
+
+	function computeBoardSize(): { width: number; height: number } | null {
+		if (!boardEl) return null;
+		const titleHeight = getTitleHeight();
+		const fallbackWidth = Math.floor(boardEl.clientWidth || 320);
+		const fallbackHeight = Math.floor(boardEl.clientHeight || 250);
+
+		if (isFullscreen) {
+			const viewportWidth = Math.floor(window.visualViewport?.width ?? window.innerWidth);
+			const viewportHeight = Math.floor(window.visualViewport?.height ?? window.innerHeight);
+			return {
+				width: Math.max(320, viewportWidth),
+				height: Math.max(220, viewportHeight - titleHeight)
+			};
+		}
+
+		return {
+			width: Math.max(240, fallbackWidth),
+			height: Math.max(220, fallbackHeight)
+		};
+	}
+
 	const COLOR = {
 		base: 'var(--text-primary)',
 		support: 'var(--accent-primary)',
@@ -752,9 +779,18 @@
 
 	function requestBoardResize() {
 		if (!board || !boardEl) return;
-		const width = Math.floor(boardEl.clientWidth);
-		const height = Math.floor(boardEl.clientHeight);
+		const size = computeBoardSize();
+		if (!size) return;
+		const width = size.width;
+		const height = size.height;
 		if (width <= 0 || height <= 0) return;
+		if (isFullscreen) {
+			boardEl.style.width = `${width}px`;
+			boardEl.style.height = `${height}px`;
+		} else {
+			boardEl.style.width = '';
+			boardEl.style.height = '';
+		}
 		if (typeof board.resizeContainer === 'function') {
 			board.resizeContainer(width, height);
 		}
@@ -763,15 +799,47 @@
 	}
 
 	async function toggleFullscreen() {
-		isFullscreen = !isFullscreen;
+		if (document.fullscreenElement === wrapperEl) {
+			try {
+				await document.exitFullscreen();
+			} catch {
+				// fallback below
+			}
+			isFullscreen = false;
+			await tick();
+			requestBoardResize();
+			return;
+		}
+
+		if (isFullscreen && document.fullscreenElement !== wrapperEl) {
+			isFullscreen = false;
+			await tick();
+			requestBoardResize();
+			return;
+		}
+
+		if (wrapperEl && typeof wrapperEl.requestFullscreen === 'function') {
+			try {
+				await wrapperEl.requestFullscreen();
+				return;
+			} catch {
+				// Continue with CSS fullscreen fallback.
+			}
+		}
+
+		isFullscreen = true;
 		await tick();
 		requestBoardResize();
 	}
 
 	function closeFullscreen() {
 		if (!isFullscreen) return;
+		if (document.fullscreenElement === wrapperEl) {
+			void document.exitFullscreen();
+			return;
+		}
 		isFullscreen = false;
-		requestAnimationFrame(() => requestBoardResize());
+		requestAnimationFrame(requestBoardResize);
 	}
 
 	async function initializeBoard() {
@@ -868,24 +936,33 @@
 			activate();
 		}
 
-		if (typeof ResizeObserver === 'function' && boardEl) {
+		if (typeof ResizeObserver === 'function' && wrapperEl) {
 			resizeObserver = new ResizeObserver(() => requestBoardResize());
-			resizeObserver.observe(boardEl);
+			resizeObserver.observe(wrapperEl);
 		}
 
 		const onViewportChanged = () => requestBoardResize();
 		const onKeydown = (event: KeyboardEvent) => {
 			if (event.key === 'Escape') closeFullscreen();
 		};
+		const onFullscreenChanged = () => {
+			const nativeFullscreenActive = document.fullscreenElement === wrapperEl;
+			if (nativeFullscreenActive !== isFullscreen) {
+				isFullscreen = nativeFullscreenActive;
+			}
+			requestAnimationFrame(requestBoardResize);
+		};
 
 		window.addEventListener('resize', onViewportChanged);
 		window.addEventListener('orientationchange', onViewportChanged);
 		window.addEventListener('keydown', onKeydown);
+		document.addEventListener('fullscreenchange', onFullscreenChanged);
 
 		return () => {
 			window.removeEventListener('resize', onViewportChanged);
 			window.removeEventListener('orientationchange', onViewportChanged);
 			window.removeEventListener('keydown', onKeydown);
+			document.removeEventListener('fullscreenchange', onFullscreenChanged);
 			visibilityObserver?.disconnect();
 			resizeObserver?.disconnect();
 			visibilityObserver = null;
@@ -1007,14 +1084,31 @@
 		margin: 0;
 		z-index: 1200;
 		border-radius: 0;
+		display: flex;
+		flex-direction: column;
+		width: 100vw;
+		height: 100dvh;
 	}
 
-	.scheme-wrapper.fullscreen .scheme-title {
+	.scheme-wrapper:fullscreen {
+		margin: 0;
+		border-radius: 0;
+		display: flex;
+		flex-direction: column;
+		width: 100vw;
+		height: 100dvh;
+	}
+
+	.scheme-wrapper.fullscreen .scheme-title,
+	.scheme-wrapper:fullscreen .scheme-title {
 		padding-top: calc(0.5rem + env(safe-area-inset-top));
 	}
 
-	.scheme-wrapper.fullscreen .scheme-board {
-		height: calc(100dvh - 46px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+	.scheme-wrapper.fullscreen .scheme-board,
+	.scheme-wrapper:fullscreen .scheme-board {
+		flex: 1;
+		min-height: 0;
+		height: auto;
 	}
 
 	:global(.jxgtext) {
