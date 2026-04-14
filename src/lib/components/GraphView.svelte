@@ -25,11 +25,44 @@
 	let visibilityObserver: IntersectionObserver | null = null;
 	let resizeObserver: ResizeObserver | null = null;
 
+	function getTitleHeight(): number {
+		const titleEl = wrapperEl?.querySelector<HTMLElement>('.graph-title');
+		if (!titleEl) return 0;
+		return Math.ceil(titleEl.getBoundingClientRect().height);
+	}
+
+	function computeBoardSize(): { width: number; height: number } | null {
+		if (!boardEl) return null;
+		const titleHeight = getTitleHeight();
+		const fallbackWidth = Math.floor(boardEl.clientWidth || 320);
+		const fallbackHeight = Math.floor(boardEl.clientHeight || 220);
+
+		if (isFullscreen) {
+			const viewportWidth = Math.floor(window.visualViewport?.width ?? window.innerWidth);
+			const viewportHeight = Math.floor(window.visualViewport?.height ?? window.innerHeight);
+			return {
+				width: Math.max(320, viewportWidth),
+				height: Math.max(200, viewportHeight - titleHeight)
+			};
+		}
+
+		const wrapperWidth = Math.floor(wrapperEl?.clientWidth ?? fallbackWidth);
+		const wrapperHeight = Math.floor(wrapperEl?.clientHeight ?? fallbackHeight + titleHeight);
+		return {
+			width: Math.max(220, wrapperWidth),
+			height: Math.max(180, wrapperHeight - titleHeight)
+		};
+	}
+
 	function requestBoardResize() {
 		if (!board || !boardEl) return;
-		const width = Math.floor(boardEl.clientWidth);
-		const height = Math.floor(boardEl.clientHeight);
+		const size = computeBoardSize();
+		if (!size) return;
+		const width = size.width;
+		const height = size.height;
 		if (width <= 0 || height <= 0) return;
+		boardEl.style.width = `${width}px`;
+		boardEl.style.height = `${height}px`;
 		if (typeof board.resizeContainer === 'function') {
 			board.resizeContainer(width, height);
 		}
@@ -38,15 +71,47 @@
 	}
 
 	async function toggleFullscreen() {
-		isFullscreen = !isFullscreen;
+		if (document.fullscreenElement === wrapperEl) {
+			try {
+				await document.exitFullscreen();
+			} catch {
+				// fallback below
+			}
+			isFullscreen = false;
+			await tick();
+			requestBoardResize();
+			return;
+		}
+
+		if (isFullscreen && document.fullscreenElement !== wrapperEl) {
+			isFullscreen = false;
+			await tick();
+			requestBoardResize();
+			return;
+		}
+
+		if (wrapperEl && typeof wrapperEl.requestFullscreen === 'function') {
+			try {
+				await wrapperEl.requestFullscreen();
+				return;
+			} catch {
+				// Continue with CSS fullscreen fallback.
+			}
+		}
+
+		isFullscreen = true;
 		await tick();
 		requestBoardResize();
 	}
 
 	function closeFullscreen() {
 		if (!isFullscreen) return;
+		if (document.fullscreenElement === wrapperEl) {
+			void document.exitFullscreen();
+			return;
+		}
 		isFullscreen = false;
-		requestAnimationFrame(() => requestBoardResize());
+		requestAnimationFrame(requestBoardResize);
 	}
 
 	async function initializeBoard() {
@@ -219,15 +284,24 @@
 		const onKeydown = (event: KeyboardEvent) => {
 			if (event.key === 'Escape') closeFullscreen();
 		};
+		const onFullscreenChanged = () => {
+			const nativeFullscreenActive = document.fullscreenElement === wrapperEl;
+			if (nativeFullscreenActive !== isFullscreen) {
+				isFullscreen = nativeFullscreenActive;
+			}
+			requestAnimationFrame(requestBoardResize);
+		};
 
 		window.addEventListener('resize', onViewportChanged);
 		window.addEventListener('orientationchange', onViewportChanged);
 		window.addEventListener('keydown', onKeydown);
+		document.addEventListener('fullscreenchange', onFullscreenChanged);
 
 		return () => {
 			window.removeEventListener('resize', onViewportChanged);
 			window.removeEventListener('orientationchange', onViewportChanged);
 			window.removeEventListener('keydown', onKeydown);
+			document.removeEventListener('fullscreenchange', onFullscreenChanged);
 			visibilityObserver?.disconnect();
 			resizeObserver?.disconnect();
 			visibilityObserver = null;
@@ -317,14 +391,31 @@
 		margin: 0;
 		z-index: 1200;
 		border-radius: 0;
+		display: flex;
+		flex-direction: column;
+		width: 100vw;
+		height: 100dvh;
 	}
 
-	.graph-wrapper.fullscreen .graph-title {
+	.graph-wrapper:fullscreen {
+		margin: 0;
+		border-radius: 0;
+		display: flex;
+		flex-direction: column;
+		width: 100vw;
+		height: 100dvh;
+	}
+
+	.graph-wrapper.fullscreen .graph-title,
+	.graph-wrapper:fullscreen .graph-title {
 		padding-top: calc(0.5rem + env(safe-area-inset-top));
 	}
 
-	.graph-wrapper.fullscreen .graph-board {
-		height: calc(100dvh - 46px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+	.graph-wrapper.fullscreen .graph-board,
+	.graph-wrapper:fullscreen .graph-board {
+		flex: 1;
+		min-height: 0;
+		height: auto;
 	}
 
 	:global(.graph-tooltip-label) {

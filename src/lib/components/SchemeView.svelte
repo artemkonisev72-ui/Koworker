@@ -326,7 +326,7 @@
 		board.create('polygon', [[p1.x, p1.y], [p2.x, p2.y], [p3.x, p3.y], [p4.x, p4.y]], {
 			fixed: true,
 			highlight: false,
-			vertices: { visible: false },
+			vertices: { visible: false, fixed: true, highlight: false, withLabel: false },
 			fillColor: 'transparent',
 			strokeColor: COLOR.base,
 			strokeWidth: 1.5
@@ -413,7 +413,7 @@
 		board.create('polygon', [[node.x - 0.3, node.y - 0.25], [node.x + 0.3, node.y - 0.25], [node.x, node.y]], {
 			fixed: true,
 			highlight: false,
-			vertices: { visible: false },
+			vertices: { visible: false, fixed: true, highlight: false, withLabel: false },
 			fillColor: 'var(--bg-surface)',
 			fillOpacity: 0.85,
 			strokeColor: COLOR.support,
@@ -463,7 +463,7 @@
 		board.create('polygon', [[node.x - 0.16, node.y - 0.12], [node.x + 0.16, node.y - 0.12], [node.x + 0.16, node.y + 0.12], [node.x - 0.16, node.y + 0.12]], {
 			fixed: true,
 			highlight: false,
-			vertices: { visible: false },
+			vertices: { visible: false, fixed: true, highlight: false, withLabel: false },
 			fillColor: 'var(--bg-elevated)',
 			strokeColor: COLOR.base,
 			strokeWidth: 1.2
@@ -682,7 +682,7 @@
 		board.create('polygon', polygon as any, {
 			fixed: true,
 			highlight: false,
-			vertices: { visible: false },
+			vertices: { visible: false, fixed: true, highlight: false, withLabel: false },
 			fillColor: 'rgba(245, 158, 11, 0.15)',
 			strokeColor: COLOR.result,
 			strokeWidth: 1.3
@@ -803,6 +803,20 @@
 
 		board.options.grid.strokeColor = 'var(--border-subtle)';
 		board.options.axis.strokeColor = 'var(--border-medium)';
+		board.options.point.fixed = true;
+		board.options.point.highlight = false;
+		board.options.point.withLabel = false;
+		board.options.circle.center = {
+			...(board.options.circle.center ?? {}),
+			fixed: true,
+			highlight: false
+		};
+		board.options.polygon.vertices = {
+			...(board.options.polygon.vertices ?? {}),
+			fixed: true,
+			highlight: false,
+			withLabel: false
+		};
 
 		const nodeMap = createNodeMap(schema);
 		for (const object of schema.objects) {

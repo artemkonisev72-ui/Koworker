@@ -102,8 +102,7 @@
 		return [] as unknown[];
 	});
 
-	const KATEX_CLASSES =
-		/^(katex|katex-display|katex-html|katex-mathml|base|strut|mord|mbin|mrel|mopen|mclose|mpunct|mspace|minner|mop|accent|overline|underline|vlist|col-align|mtable|mrow|mfrac|msup|msub|munder|mover|msupsub|sqrt|rule|newline|arraycolsep|hline|mtd|mtr|mfrac|mstyle|mphantom|mpadded|menclose)(-[a-z]+)*$/;
+	const SAFE_CLASS_TOKEN = /^[A-Za-z0-9_-]+$/;
 
 	const DOMPURIFY_CONFIG = {
 		ALLOWED_TAGS: [
@@ -180,11 +179,9 @@
 		const DOMPurify = DOMPurifyModule.default;
 		DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
 			if (data.attrName === 'class') {
-				const classes = (data.attrValue || '').split(/\s+/);
-				const allSafe = classes.every(
-					(c) => !c || KATEX_CLASSES.test(c) || /^prose/.test(c) || /^(hljs|language-)/.test(c)
-				);
-				if (!allSafe) data.attrValue = '';
+				const classes = (data.attrValue || '').split(/\s+/).filter(Boolean);
+				const safeClasses = classes.filter((c) => SAFE_CLASS_TOKEN.test(c));
+				data.attrValue = safeClasses.join(' ');
 			}
 		});
 
