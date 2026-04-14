@@ -28,7 +28,7 @@
 	function getTitleHeight(): number {
 		const titleEl = wrapperEl?.querySelector<HTMLElement>('.graph-title');
 		if (!titleEl) return 0;
-		return Math.ceil(titleEl.getBoundingClientRect().height);
+		return titleEl.offsetHeight;
 	}
 
 	function computeBoardSize(): { width: number; height: number } | null {
@@ -46,11 +46,9 @@
 			};
 		}
 
-		const wrapperWidth = Math.floor(wrapperEl?.clientWidth ?? fallbackWidth);
-		const wrapperHeight = Math.floor(wrapperEl?.clientHeight ?? fallbackHeight + titleHeight);
 		return {
-			width: Math.max(220, wrapperWidth),
-			height: Math.max(180, wrapperHeight - titleHeight)
+			width: Math.max(220, fallbackWidth),
+			height: Math.max(180, fallbackHeight)
 		};
 	}
 
@@ -61,8 +59,13 @@
 		const width = size.width;
 		const height = size.height;
 		if (width <= 0 || height <= 0) return;
-		boardEl.style.width = `${width}px`;
-		boardEl.style.height = `${height}px`;
+		if (isFullscreen) {
+			boardEl.style.width = `${width}px`;
+			boardEl.style.height = `${height}px`;
+		} else {
+			boardEl.style.width = '';
+			boardEl.style.height = '';
+		}
 		if (typeof board.resizeContainer === 'function') {
 			board.resizeContainer(width, height);
 		}
@@ -275,9 +278,9 @@
 			activate();
 		}
 
-		if (typeof ResizeObserver === 'function' && boardEl) {
+		if (typeof ResizeObserver === 'function' && wrapperEl) {
 			resizeObserver = new ResizeObserver(() => requestBoardResize());
-			resizeObserver.observe(boardEl);
+			resizeObserver.observe(wrapperEl);
 		}
 
 		const onViewportChanged = () => requestBoardResize();

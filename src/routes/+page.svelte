@@ -2158,7 +2158,8 @@
 }
 
 .message-input {
-	flex: 1;
+	flex: 0 0 auto;
+	width: 100%;
 	background: transparent;
 	border: none;
 	outline: none;
