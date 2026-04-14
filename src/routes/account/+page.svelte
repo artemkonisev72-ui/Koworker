@@ -56,9 +56,13 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		min-height: 100vh;
+		min-height: 100dvh;
 		background: var(--bg-base);
-		padding: 1.5rem;
+		padding:
+			calc(1.5rem + env(safe-area-inset-top))
+			calc(1.5rem + env(safe-area-inset-right))
+			calc(1.5rem + env(safe-area-inset-bottom))
+			calc(1.5rem + env(safe-area-inset-left));
 	}
 
 	.account-card {

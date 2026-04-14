@@ -93,7 +93,7 @@
 
 html, body {
 	height: 100%;
-	overflow: hidden;
+	min-height: 100%;
 }
 
 body {
@@ -102,8 +102,17 @@ body {
 	color: var(--text-primary);
 	font-size: 15px;
 	line-height: 1.6;
+	min-height: 100dvh;
+	overflow: hidden;
 	-webkit-font-smoothing: antialiased;
 	-moz-osx-font-smoothing: grayscale;
+	padding: 0;
+}
+
+@supports not (height: 100dvh) {
+	body {
+		min-height: 100vh;
+	}
 }
 
 /* ── Scrollbar ─────────────────────────────────────────────────────────────── */

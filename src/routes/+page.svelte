@@ -56,6 +56,9 @@
 	let isLoading = $state(false);
 	let statusMessage = $state('');
 	let sidebarOpen = $state(true);
+	let isMobileView = $state(false);
+	let mobileToolsOpen = $state(false);
+	let hasViewportInit = false;
 	let messagesEnd: HTMLDivElement | undefined = $state();
 	let inputEl: HTMLTextAreaElement | undefined = $state();
 	let fileInputEl: HTMLInputElement | undefined = $state();
@@ -78,11 +81,55 @@
 	let showRevisionBox = $state(false);
 	let isSchemaActionLoading = $state(false);
 
-	onMount(async () => {
-		await loadChats();
-		if (chats.length > 0) {
-			await selectChat(chats[0].id);
+	onMount(() => {
+		const viewportQuery = window.matchMedia('(max-width: 900px)');
+		const applyViewportMode = () => {
+			const mobileNow = viewportQuery.matches;
+			if (!hasViewportInit) {
+				isMobileView = mobileNow;
+				sidebarOpen = !mobileNow;
+				hasViewportInit = true;
+				return;
+			}
+			if (mobileNow === isMobileView) return;
+			isMobileView = mobileNow;
+			if (mobileNow) {
+				sidebarOpen = false;
+				isSharing = false;
+			} else {
+				sidebarOpen = true;
+				mobileToolsOpen = false;
+			}
+		};
+
+		const onViewportChange = () => applyViewportMode();
+
+		applyViewportMode();
+
+		if (typeof viewportQuery.addEventListener === 'function') {
+			viewportQuery.addEventListener('change', onViewportChange);
+		} else {
+			viewportQuery.addListener(onViewportChange);
 		}
+		window.addEventListener('orientationchange', onViewportChange);
+		window.addEventListener('resize', onViewportChange);
+
+		void (async () => {
+			await loadChats();
+			if (chats.length > 0) {
+				await selectChat(chats[0].id);
+			}
+		})();
+
+		return () => {
+			if (typeof viewportQuery.removeEventListener === 'function') {
+				viewportQuery.removeEventListener('change', onViewportChange);
+			} else {
+				viewportQuery.removeListener(onViewportChange);
+			}
+			window.removeEventListener('orientationchange', onViewportChange);
+			window.removeEventListener('resize', onViewportChange);
+		};
 	});
 
 	async function loadChats() {
@@ -218,6 +265,10 @@
 		showRevisionBox = false;
 		revisionNotes = '';
 		await loadMessages(chatId);
+		if (isMobileView) {
+			sidebarOpen = false;
+			isSharing = false;
+		}
 	}
 
 	function parseMaybeJson(value: unknown): unknown {
@@ -468,6 +519,7 @@
 		selectedImage = null;
 		if (fileInputEl) fileInputEl.value = '';
 		inputValue = '';
+		if (isMobileView) mobileToolsOpen = false;
 
 		if (schemaCheckEnabled) {
 			try {
@@ -635,6 +687,10 @@
 		}
 	}
 
+	function toggleMobileTools() {
+		mobileToolsOpen = !mobileToolsOpen;
+	}
+
 	const EXAMPLES = [
 		'Найди реакции опор балки длиной 4 м с равномерной нагрузкой q=10 кН/м',
 		'Вычисли интеграл ∫ x²·sin(x) dx',
@@ -644,9 +700,19 @@
 </script>
 
 <div class="app-shell">
+	<button
+		class="sidebar-backdrop"
+		class:visible={isMobileView && sidebarOpen}
+		onclick={() => {
+			sidebarOpen = false;
+			isSharing = false;
+		}}
+		aria-label="Закрыть меню"
+		title="Закрыть меню"
+	></button>
 
 	<!-- в”Ђв”Ђ Sidebar в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ -->
-	<aside class="sidebar" class:collapsed={!sidebarOpen}>
+	<aside class="sidebar" class:collapsed={!sidebarOpen} class:mobile-drawer={isMobileView} class:open={sidebarOpen}>
 		<div class="sidebar-header">
 			<div class="logo">
 				<img src="/favicon.svg" alt="Koworker Logo" class="logo-icon" />
@@ -758,7 +824,7 @@
 
 		<!-- Header -->
 		<header class="chat-header">
-			{#if !sidebarOpen}
+			{#if isMobileView || !sidebarOpen}
 				<button class="icon-btn" onclick={() => (sidebarOpen = true)} title="Открыть меню">
 					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 						<path d="M21 3H3M21 12H3M21 21H3"/>
@@ -829,7 +895,7 @@
 				<select 
 					value={activeChat?.modelPreference || 'auto'} 
 					onchange={(e) => updateModelPreference(e.currentTarget.value)}
-					class="model-select"
+					class="model-select desktop-only"
 					disabled={isLoading || isSchemaActionLoading}
 				>
 					<option value="auto">✨ Авто-режим</option>
@@ -1006,7 +1072,7 @@
 				</div>
 			{/if}
 
-			<div class="input-options">
+			<div class="input-options desktop-options">
 				<label class="schema-toggle">
 					<input
 						type="checkbox"
@@ -1020,6 +1086,61 @@
 					<span>Scheme debug</span>
 				</label>
 			</div>
+
+			<div class="mobile-tools-row">
+				<button
+					class="mobile-tools-toggle"
+					onclick={toggleMobileTools}
+					disabled={isLoading || isSchemaActionLoading}
+				>
+					<span>Доп. параметры</span>
+					<span class="mobile-tools-chevron" class:open={mobileToolsOpen}>⌄</span>
+				</button>
+			</div>
+
+			{#if mobileToolsOpen}
+				<div class="mobile-tools-sheet">
+					<div class="mobile-tools-grid">
+						<label class="schema-toggle">
+							<input
+								type="checkbox"
+								bind:checked={schemaCheckEnabled}
+								disabled={isLoading || isSchemaActionLoading || (!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
+							/>
+							<span>Schema check mode</span>
+						</label>
+						<label class="schema-toggle">
+							<input type="checkbox" bind:checked={schemeDebugEnabled} disabled={isLoading || isSchemaActionLoading} />
+							<span>Scheme debug</span>
+						</label>
+					</div>
+
+					<label class="mobile-model-label" for="mobile-model-select">Модель</label>
+					<select
+						id="mobile-model-select"
+						value={activeChat?.modelPreference || 'auto'}
+						onchange={(e) => updateModelPreference(e.currentTarget.value)}
+						class="model-select mobile-model-select"
+						disabled={isLoading || isSchemaActionLoading}
+					>
+						<option value="auto">✨ Авто-режим</option>
+						<optgroup label="Gemini 3.1">
+							<option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Умная)</option>
+							<option value="gemini-3.1-flash-preview">Gemini 3.1 Flash (Быстрая)</option>
+							<option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash-Lite (Самая быстрая)</option>
+						</optgroup>
+						<optgroup label="Gemini 3.0">
+							<option value="gemini-3-pro-preview">Gemini 3.0 Pro</option>
+							<option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
+						</optgroup>
+						<optgroup label="Gemini 2.5">
+							<option value="gemini-2.5-pro">Gemini 2.5 Pro (Умная)</option>
+							<option value="gemini-2.5-flash">Gemini 2.5 Flash (Быстрая)</option>
+							<option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite (Самая быстрая)</option>
+						</optgroup>
+					</select>
+				</div>
+			{/if}
 
 			<div class="input-container">
 				<!-- File upload button -->
@@ -1096,9 +1217,34 @@
 /* в”Ђв”Ђ App Shell в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ */
 .app-shell {
 	display: flex;
-	height: 100vh;
+	height: 100dvh;
+	min-height: 100svh;
 	overflow: hidden;
 	background: var(--bg-base);
+	position: relative;
+	isolation: isolate;
+}
+
+@supports not (height: 100dvh) {
+	.app-shell {
+		height: 100vh;
+	}
+}
+
+.sidebar-backdrop {
+	position: fixed;
+	inset: 0;
+	border: none;
+	background: rgba(0, 0, 0, 0.42);
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity var(--transition-base);
+	z-index: 90;
+}
+
+.sidebar-backdrop.visible {
+	opacity: 1;
+	pointer-events: auto;
 }
 
 /* в”Ђв”Ђ Sidebar в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ */
@@ -1110,13 +1256,40 @@
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
-	transition: width var(--transition-base), min-width var(--transition-base);
+	transition:
+		width var(--transition-base),
+		min-width var(--transition-base),
+		transform var(--transition-base),
+		box-shadow var(--transition-base);
+	will-change: transform;
 }
 
 .sidebar.collapsed {
 	width: 0;
 	min-width: 0;
 	border-right: none;
+}
+
+.sidebar.mobile-drawer {
+	position: fixed;
+	top: 0;
+	bottom: 0;
+	left: 0;
+	width: min(84vw, 320px);
+	min-width: min(84vw, 320px);
+	z-index: 100;
+	transform: translateX(-104%);
+	box-shadow: var(--shadow-lg);
+}
+
+.sidebar.mobile-drawer.open {
+	transform: translateX(0);
+}
+
+.sidebar.mobile-drawer.collapsed {
+	width: min(84vw, 320px);
+	min-width: min(84vw, 320px);
+	border-right: 1px solid var(--border-subtle);
 }
 
 .sidebar-header {
@@ -1248,6 +1421,7 @@
 	display: flex;
 	align-items: center;
 	gap: 0.5rem;
+	min-width: 0;
 }
 
 .model-select {
@@ -1424,8 +1598,12 @@
 	display: flex;
 	align-items: center;
 	gap: 0.75rem;
-	padding: 0 1.25rem;
-	height: var(--header-height);
+	padding:
+		max(0px, env(safe-area-inset-top))
+		calc(1.25rem + env(safe-area-inset-right))
+		0
+		calc(1.25rem + env(safe-area-inset-left));
+	min-height: calc(var(--header-height) + env(safe-area-inset-top));
 	border-bottom: 1px solid var(--border-subtle);
 	background: var(--bg-surface);
 	flex-shrink: 0;
@@ -1456,7 +1634,11 @@
 .messages-area {
 	flex: 1;
 	overflow-y: auto;
-	padding: 1.5rem;
+	padding:
+		1.25rem
+		calc(1.25rem + env(safe-area-inset-right))
+		1.25rem
+		calc(1.25rem + env(safe-area-inset-left));
 	scroll-behavior: smooth;
 }
 
@@ -1659,10 +1841,17 @@
 
 /* в”Ђв”Ђ Input Area в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ */
 .input-area {
-	padding: 0.75rem 1.25rem 1rem;
+	padding:
+		0.75rem
+		calc(1.25rem + env(safe-area-inset-right))
+		calc(1rem + env(safe-area-inset-bottom))
+		calc(1.25rem + env(safe-area-inset-left));
 	border-top: 1px solid var(--border-subtle);
 	background: var(--bg-surface);
 	flex-shrink: 0;
+	position: sticky;
+	bottom: 0;
+	z-index: 20;
 }
 
 .status-bar {
@@ -1775,8 +1964,10 @@
 .input-options {
 	display: flex;
 	justify-content: flex-start;
+	gap: 0.75rem;
 	margin-bottom: 0.5rem;
 	padding: 0 0.15rem;
+	flex-wrap: wrap;
 }
 
 .schema-toggle {
@@ -1790,6 +1981,68 @@
 
 .schema-toggle input {
 	accent-color: var(--accent-primary);
+}
+
+.desktop-only {
+	display: initial;
+}
+
+.mobile-tools-row {
+	display: none;
+	margin-bottom: 0.5rem;
+}
+
+.mobile-tools-toggle {
+	width: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem;
+	padding: 0.45rem 0.65rem;
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-md);
+	background: var(--bg-card);
+	color: var(--text-secondary);
+	font-size: 0.76rem;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.mobile-tools-chevron {
+	font-size: 0.95rem;
+	line-height: 1;
+	transition: transform var(--transition-fast);
+}
+
+.mobile-tools-chevron.open {
+	transform: rotate(180deg);
+}
+
+.mobile-tools-sheet {
+	margin-bottom: 0.55rem;
+	padding: 0.65rem;
+	border: 1px solid var(--border-subtle);
+	border-radius: var(--radius-md);
+	background: var(--bg-card);
+	display: flex;
+	flex-direction: column;
+	gap: 0.6rem;
+}
+
+.mobile-tools-grid {
+	display: flex;
+	flex-direction: column;
+	gap: 0.45rem;
+}
+
+.mobile-model-label {
+	font-size: 0.73rem;
+	font-weight: 600;
+	color: var(--text-muted);
+}
+
+.mobile-model-select {
+	width: 100%;
 }
 
 /* в”Ђв”Ђ Input container refinements в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ */
@@ -2041,12 +2294,208 @@
 		color: var(--accent-primary);
 	}
 
-	.share-hint {
-		font-size: 0.7rem;
-		color: var(--text-muted);
-		line-height: 1.4;
-		margin: 0;
+.share-hint {
+	font-size: 0.7rem;
+	color: var(--text-muted);
+	line-height: 1.4;
+	margin: 0;
+}
+
+@media (max-width: 1024px) {
+	.messages-list {
+		max-width: 100%;
 	}
+
+	.message-bubble {
+		max-width: 84%;
+	}
+}
+
+@media (max-width: 900px) {
+	.sidebar {
+		position: fixed;
+	}
+
+	.chat-header {
+		gap: 0.55rem;
+	}
+
+	.header-subtitle {
+		display: none;
+	}
+}
+
+@media (max-width: 768px) {
+	.desktop-only,
+	.desktop-options {
+		display: none;
+	}
+
+	.mobile-tools-row {
+		display: block;
+	}
+
+	.chat-main {
+		width: 100%;
+	}
+
+	.chat-header {
+		padding:
+			max(0px, env(safe-area-inset-top))
+			calc(0.8rem + env(safe-area-inset-right))
+			0
+			calc(0.8rem + env(safe-area-inset-left));
+		min-height: calc(50px + env(safe-area-inset-top));
+	}
+
+	.header-title h1 {
+		font-size: 0.9rem;
+	}
+
+	.messages-area {
+		padding:
+			0.8rem
+			calc(0.7rem + env(safe-area-inset-right))
+			0.9rem
+			calc(0.7rem + env(safe-area-inset-left));
+	}
+
+	.welcome-screen {
+		padding: 1.15rem 0.3rem;
+		gap: 1.2rem;
+	}
+
+	.welcome-hero h2 {
+		font-size: 1.15rem;
+	}
+
+	.welcome-hero p {
+		font-size: 0.82rem;
+	}
+
+	.hero-icon {
+		font-size: 2.8rem;
+		margin-bottom: 0.65rem;
+	}
+
+	.examples-grid {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 0.55rem;
+	}
+
+	.example-card {
+		padding: 0.72rem 0.78rem;
+		font-size: 0.79rem;
+	}
+
+	.messages-list {
+		gap: 0.8rem;
+	}
+
+	.message-wrapper,
+	.message-wrapper.user {
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+
+	.message-wrapper.user .message-bubble {
+		margin-left: auto;
+	}
+
+	.avatar {
+		display: none;
+	}
+
+	.message-bubble {
+		max-width: 94%;
+		padding: 0.65rem 0.82rem;
+	}
+
+	.delete-msg-btn {
+		opacity: 0.72;
+		position: absolute;
+		right: 0;
+		top: 0;
+		margin-top: 0;
+	}
+
+	.schema-review-card {
+		padding: 0.62rem;
+		gap: 0.5rem;
+	}
+
+	.schema-review-header {
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0.45rem;
+	}
+
+	.schema-actions,
+	.schema-revision-actions {
+		width: 100%;
+		display: grid;
+		grid-template-columns: 1fr;
+		gap: 0.45rem;
+	}
+
+	.input-area {
+		padding:
+			0.56rem
+			calc(0.7rem + env(safe-area-inset-right))
+			calc(0.72rem + env(safe-area-inset-bottom))
+			calc(0.7rem + env(safe-area-inset-left));
+	}
+
+	.input-container {
+		gap: 0.5rem;
+		padding: 0.42rem 0.52rem;
+	}
+
+	.attach-btn,
+	.send-btn {
+		width: 34px;
+		height: 34px;
+		min-width: 34px;
+	}
+
+	.message-input {
+		font-size: 0.86rem;
+		max-height: min(32dvh, 170px);
+	}
+
+	.input-hint {
+		font-size: 0.66rem;
+		line-height: 1.3;
+	}
+
+	.share-menu {
+		width: min(312px, calc(100vw - 1rem));
+		right: 0;
+	}
+}
+
+@media (max-width: 480px) {
+	.chat-header {
+		padding-right: calc(0.58rem + env(safe-area-inset-right));
+		padding-left: calc(0.58rem + env(safe-area-inset-left));
+	}
+
+	.header-title h1 {
+		font-size: 0.84rem;
+	}
+
+	.input-hint {
+		display: none;
+	}
+
+	.schema-toggle {
+		font-size: 0.72rem;
+	}
+
+	.share-menu {
+		right: -0.15rem;
+	}
+}
 
 	@keyframes scaleIn {
 		from { opacity: 0; transform: scale(0.95) translateY(-10px); }

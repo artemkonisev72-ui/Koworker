@@ -45,9 +45,13 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		min-height: 100vh;
+		min-height: 100dvh;
 		background: var(--bg-base);
-		padding: 1rem;
+		padding:
+			calc(1rem + env(safe-area-inset-top))
+			calc(1rem + env(safe-area-inset-right))
+			calc(1rem + env(safe-area-inset-bottom))
+			calc(1rem + env(safe-area-inset-left));
 	}
 	.auth-card {
 		width: 100%;

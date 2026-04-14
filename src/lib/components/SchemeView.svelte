@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, tick } from 'svelte';
 	import type { SchemaData, SchemaPoint } from '$lib/schema/schema-data.js';
 	import type { NodeV2, ObjectV2, ResultV2, SchemaDataV2 } from '$lib/schema/schema-v2.js';
 	import { normalizeSchemaDataV2 } from '$lib/schema/normalize-v2.js';
@@ -12,7 +12,14 @@
 	}: { schemaData: unknown; title?: string; debug?: boolean } = $props();
 
 	let board: any = null;
+	let wrapperEl: HTMLDivElement | undefined = $state();
+	let boardEl: HTMLDivElement | undefined = $state();
+	let isReady = $state(false);
+	let isFullscreen = $state(false);
+	let initRequested = false;
 	const boardId = `scheme-${Math.random().toString(36).slice(2, 10)}`;
+	let visibilityObserver: IntersectionObserver | null = null;
+	let resizeObserver: ResizeObserver | null = null;
 
 	const COLOR = {
 		base: 'var(--text-primary)',
@@ -743,9 +750,33 @@
 		}
 	}
 
-	onMount(async () => {
+	function requestBoardResize() {
+		if (!board || !boardEl) return;
+		const width = Math.floor(boardEl.clientWidth);
+		const height = Math.floor(boardEl.clientHeight);
+		if (width <= 0 || height <= 0) return;
+		if (typeof board.resizeContainer === 'function') {
+			board.resizeContainer(width, height);
+		}
+		board.fullUpdate?.();
+		board.update?.();
+	}
+
+	async function toggleFullscreen() {
+		isFullscreen = !isFullscreen;
+		await tick();
+		requestBoardResize();
+	}
+
+	function closeFullscreen() {
+		if (!isFullscreen) return;
+		isFullscreen = false;
+		requestAnimationFrame(() => requestBoardResize());
+	}
+
+	async function initializeBoard() {
 		const schema = normalizedSchema;
-		if (!schema || schema.objects.length === 0) return;
+		if (!schema || schema.objects.length === 0 || board) return;
 
 		const JSXGraphModule = await import('jsxgraph');
 		const JXG = JSXGraphModule.default ?? JSXGraphModule;
@@ -793,6 +824,59 @@
 		if (debug) {
 			drawDebugLayer(schema, nodeMap);
 		}
+		isReady = true;
+		requestAnimationFrame(() => requestBoardResize());
+	}
+
+	onMount(() => {
+		const schema = normalizedSchema;
+		if (!schema || schema.objects.length === 0) return;
+
+		const activate = () => {
+			if (initRequested) return;
+			initRequested = true;
+			void initializeBoard();
+		};
+
+		if (typeof IntersectionObserver === 'function' && wrapperEl) {
+			visibilityObserver = new IntersectionObserver(
+				(entries) => {
+					if (entries.some((entry) => entry.isIntersecting || entry.intersectionRatio > 0)) {
+						activate();
+						visibilityObserver?.disconnect();
+						visibilityObserver = null;
+					}
+				},
+				{ threshold: 0.12 }
+			);
+			visibilityObserver.observe(wrapperEl);
+		} else {
+			activate();
+		}
+
+		if (typeof ResizeObserver === 'function' && boardEl) {
+			resizeObserver = new ResizeObserver(() => requestBoardResize());
+			resizeObserver.observe(boardEl);
+		}
+
+		const onViewportChanged = () => requestBoardResize();
+		const onKeydown = (event: KeyboardEvent) => {
+			if (event.key === 'Escape') closeFullscreen();
+		};
+
+		window.addEventListener('resize', onViewportChanged);
+		window.addEventListener('orientationchange', onViewportChanged);
+		window.addEventListener('keydown', onKeydown);
+
+		return () => {
+			window.removeEventListener('resize', onViewportChanged);
+			window.removeEventListener('orientationchange', onViewportChanged);
+			window.removeEventListener('keydown', onKeydown);
+			visibilityObserver?.disconnect();
+			resizeObserver?.disconnect();
+			visibilityObserver = null;
+			resizeObserver = null;
+		};
 	});
 
 	onDestroy(() => {
@@ -806,9 +890,17 @@
 </script>
 
 {#if normalizedSchema?.objects?.length}
-	<div class="scheme-wrapper">
-		<div class="scheme-title">{title}</div>
-		<div class="scheme-board" id={boardId}></div>
+	<div class="scheme-wrapper" bind:this={wrapperEl} class:fullscreen={isFullscreen}>
+		<div class="scheme-title">
+			<span>{title}</span>
+			<button class="scheme-fullscreen-btn" onclick={toggleFullscreen}>
+				{isFullscreen ? 'Close' : 'Full screen'}
+			</button>
+		</div>
+		<div class="scheme-board" id={boardId} bind:this={boardEl}></div>
+		{#if !isReady}
+			<div class="scheme-loading">Preparing scheme...</div>
+		{/if}
 		{#if debug && layoutDiagnostics}
 			<div class="scheme-debug">
 				<div class="scheme-debug-line">
@@ -839,10 +931,11 @@
 		border-radius: var(--radius-md);
 		overflow: hidden;
 		background: var(--bg-elevated);
+		position: relative;
 	}
 
 	.scheme-title {
-		padding: 0.5rem 1rem;
+		padding: 0.5rem 0.75rem;
 		font-size: 0.75rem;
 		font-weight: 600;
 		color: var(--text-secondary);
@@ -850,11 +943,35 @@
 		text-transform: uppercase;
 		border-bottom: 1px solid var(--border-subtle);
 		background: var(--bg-surface);
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+	}
+
+	.scheme-fullscreen-btn {
+		border: 1px solid var(--border-subtle);
+		background: var(--bg-card);
+		color: var(--text-secondary);
+		border-radius: var(--radius-sm);
+		font-size: 0.67rem;
+		padding: 0.2rem 0.45rem;
+		cursor: pointer;
 	}
 
 	.scheme-board {
 		width: 100%;
-		height: 340px;
+		height: clamp(250px, 48vh, 380px);
+	}
+
+	.scheme-loading {
+		position: absolute;
+		inset: auto 0 0 0;
+		padding: 0.4rem 0.65rem;
+		font-size: 0.73rem;
+		color: var(--text-muted);
+		background: color-mix(in srgb, var(--bg-surface) 86%, transparent);
+		border-top: 1px dashed var(--border-subtle);
 	}
 
 	.scheme-debug {
@@ -870,7 +987,43 @@
 		margin-top: 0.22rem;
 	}
 
+	.scheme-wrapper.fullscreen {
+		position: fixed;
+		inset: 0;
+		margin: 0;
+		z-index: 1200;
+		border-radius: 0;
+	}
+
+	.scheme-wrapper.fullscreen .scheme-title {
+		padding-top: calc(0.5rem + env(safe-area-inset-top));
+	}
+
+	.scheme-wrapper.fullscreen .scheme-board {
+		height: calc(100dvh - 46px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+	}
+
 	:global(.jxgtext) {
 		font-family: var(--font-mono);
+	}
+
+	@media (max-width: 768px) {
+		.scheme-title {
+			padding: 0.45rem 0.58rem;
+			font-size: 0.68rem;
+		}
+
+		.scheme-fullscreen-btn {
+			font-size: 0.63rem;
+			padding: 0.18rem 0.42rem;
+		}
+
+		.scheme-board {
+			height: clamp(210px, 37dvh, 290px);
+		}
+
+		.scheme-debug {
+			font-size: 0.69rem;
+		}
 	}
 </style>

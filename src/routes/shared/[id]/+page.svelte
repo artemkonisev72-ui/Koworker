@@ -43,8 +43,12 @@
 	.shared-container {
 		max-width: 900px;
 		margin: 0 auto;
-		padding: 2rem 1rem;
-		min-height: 100vh;
+		padding:
+			calc(2rem + env(safe-area-inset-top))
+			calc(1rem + env(safe-area-inset-right))
+			calc(1.5rem + env(safe-area-inset-bottom))
+			calc(1rem + env(safe-area-inset-left));
+		min-height: 100dvh;
 		display: flex;
 		flex-direction: column;
 	}
