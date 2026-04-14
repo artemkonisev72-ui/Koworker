@@ -658,9 +658,24 @@
 	}
 
 	function autoResize() {
-		if (!inputEl) return;
+		if (!inputEl || typeof window === 'undefined') return;
+		const computed = window.getComputedStyle(inputEl);
+		const lineHeight = Number.parseFloat(computed.lineHeight) || 21;
+		const paddingTop = Number.parseFloat(computed.paddingTop) || 0;
+		const paddingBottom = Number.parseFloat(computed.paddingBottom) || 0;
+		const borderTop = Number.parseFloat(computed.borderTopWidth) || 0;
+		const borderBottom = Number.parseFloat(computed.borderBottomWidth) || 0;
+		const maxRows = 5;
+		const chromeHeight =
+			paddingTop +
+			paddingBottom +
+			(computed.boxSizing === 'border-box' ? borderTop + borderBottom : 0);
+		const maxHeight = Math.round(lineHeight * maxRows + chromeHeight);
+
 		inputEl.style.height = 'auto';
-		inputEl.style.height = Math.min(inputEl.scrollHeight, 200) + 'px';
+		const nextHeight = Math.min(inputEl.scrollHeight, maxHeight);
+		inputEl.style.height = `${nextHeight}px`;
+		inputEl.style.overflowY = inputEl.scrollHeight > maxHeight ? 'auto' : 'hidden';
 	}
 
 	$effect(() => {
@@ -1174,6 +1189,7 @@
 						id="main-input"
 						bind:this={inputEl}
 						bind:value={inputValue}
+						oninput={autoResize}
 						onkeydown={handleKeydown}
 						onpaste={handlePaste}
 						placeholder="Опишите задачу или прикрепите фото..."
@@ -2152,8 +2168,10 @@
 	line-height: 1.5;
 	resize: none;
 	min-height: 24px;
-	max-height: 200px;
+	max-height: none;
 	padding: 0.2rem 0;
+	overflow-y: hidden;
+	scrollbar-gutter: stable;
 }
 .message-input::placeholder { color: var(--text-muted); }
 .message-input:disabled { opacity: 0.5; }
@@ -2460,7 +2478,6 @@
 
 	.message-input {
 		font-size: 0.86rem;
-		max-height: min(32dvh, 170px);
 	}
 
 	.input-hint {
