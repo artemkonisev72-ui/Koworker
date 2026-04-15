@@ -172,7 +172,7 @@
 		}
 	}
 
-	async function createChat() {
+	async function createPersistedChat() {
 		try {
 			const res = await fetch('/api/chats', { method: 'POST' });
 			if (res.ok) {
@@ -183,6 +183,26 @@
 		} catch (e) {
 			console.error('Failed to create chat', e);
 		}
+	}
+
+	async function startNewChat() {
+		activeChatId = null;
+		messages = [];
+		activeDraft = null;
+		showRevisionBox = false;
+		revisionNotes = '';
+		statusMessage = '';
+		isSharing = false;
+		copySuccess = false;
+		editingChatId = null;
+		editingTitle = '';
+
+		if (isMobileView) {
+			sidebarOpen = false;
+		}
+
+		await tick();
+		inputEl?.focus();
 	}
 
 	async function deleteChat(id: string) {
@@ -543,7 +563,7 @@
 			return;
 		}
 
-		if (!activeChatId) await createChat();
+		if (!activeChatId) await createPersistedChat();
 		if (!activeChatId) return;
 
 		const imageData = selectedImage;
@@ -771,7 +791,7 @@
 			</button>
 		</div>
 
-		<button class="new-chat-btn" onclick={createChat}>
+		<button class="new-chat-btn" onclick={startNewChat}>
 			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
 				<path d="M12 5v14M5 12h14"/>
 			</svg>
