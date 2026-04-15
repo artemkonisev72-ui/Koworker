@@ -1,9 +1,9 @@
-пїњ<script lang="ts">
+<script lang="ts">
 	/**
 	 * MessageRenderer.svelte
 	 * Safe Markdown + KaTeX renderer with graph/scheme visual blocks.
 	 */
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import GraphView from './GraphView.svelte';
 	import SchemeView from './SchemeView.svelte';
 	import { isSchemaDataV2 } from '$lib/schema/schema-v2.js';
@@ -32,11 +32,27 @@
 		schemaVersion?: string | null;
 		usedModels?: string[] | string | null;
 		createdAt?: string;
+		isStreaming?: boolean;
 	}
+
+	type ExportActionId = 'pdf';
 
 	let { message, schemeDebug = false }: { message: Message; schemeDebug?: boolean } = $props();
 
 	let renderedHtml = $state('');
+	let exportRootEl: HTMLDivElement | undefined = $state();
+	let exportControlsEl: HTMLDivElement | undefined = $state();
+	let menuOpen = $state(false);
+	let isExporting = $state(false);
+	let exportError = $state('');
+
+	const exportActions: Array<{ id: ExportActionId; label: string }> = [
+		{ id: 'pdf', label: 'Ёкспорт в PDF' }
+	];
+
+	let canExport = $derived(
+		message.role === 'ASSISTANT' && !message.schemaData && !message.isStreaming
+	);
 
 	let usedModels = $derived.by(() => {
 		if (!message.usedModels) return [];
@@ -159,10 +175,159 @@
 	};
 
 	onMount(() => renderContent());
+	onMount(() => {
+		const onPointerDown = (event: PointerEvent) => {
+			if (!menuOpen) return;
+			const target = event.target as Node | null;
+			if (!target) return;
+			if (exportControlsEl?.contains(target)) return;
+			menuOpen = false;
+		};
+		const onKeydown = (event: KeyboardEvent) => {
+			if (event.key === 'Escape' && menuOpen) menuOpen = false;
+		};
+		document.addEventListener('pointerdown', onPointerDown);
+		window.addEventListener('keydown', onKeydown);
+		return () => {
+			document.removeEventListener('pointerdown', onPointerDown);
+			window.removeEventListener('keydown', onKeydown);
+		};
+	});
+
 	$effect(() => {
 		message.content;
 		renderContent();
 	});
+
+	$effect(() => {
+		message.id;
+		menuOpen = false;
+		exportError = '';
+	});
+
+	$effect(() => {
+		if (!canExport) {
+			menuOpen = false;
+			exportError = '';
+		}
+	});
+
+	function toggleExportMenu() {
+		if (isExporting) return;
+		exportError = '';
+		menuOpen = !menuOpen;
+	}
+
+	function makePdfTimestamp(date: Date): string {
+		const pad = (n: number) => String(n).padStart(2, '0');
+		return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(
+			date.getHours()
+		)}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+	}
+
+	async function exportAsPdf() {
+		if (!exportRootEl || isExporting) return;
+		isExporting = true;
+		menuOpen = false;
+		exportError = '';
+
+		await tick();
+
+		try {
+			const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+				import('html2canvas'),
+				import('jspdf')
+			]);
+
+			const computed = getComputedStyle(document.documentElement);
+			const backgroundColor = computed.getPropertyValue('--bg-base').trim() || '#ffffff';
+			const scale = Math.max(2, Math.min(3, window.devicePixelRatio || 1));
+
+			const canvas = await html2canvas(exportRootEl, {
+				scale,
+				useCORS: true,
+				backgroundColor,
+				logging: false
+			});
+
+			if (canvas.width <= 0 || canvas.height <= 0) {
+				throw new Error('Rendered canvas has invalid size');
+			}
+
+			const pdf = new jsPDF({
+				orientation: 'portrait',
+				unit: 'mm',
+				format: 'a4',
+				compress: true
+			});
+
+			const marginMm = 10;
+			const pageWidthMm = pdf.internal.pageSize.getWidth();
+			const pageHeightMm = pdf.internal.pageSize.getHeight();
+			const contentWidthMm = pageWidthMm - marginMm * 2;
+			const contentHeightMm = pageHeightMm - marginMm * 2;
+			const mmPerPx = contentWidthMm / canvas.width;
+			const pageHeightPx = Math.max(1, Math.floor(contentHeightMm / mmPerPx));
+
+			let renderedPx = 0;
+			let pageIndex = 0;
+
+			while (renderedPx < canvas.height) {
+				const sliceHeightPx = Math.min(pageHeightPx, canvas.height - renderedPx);
+				const sliceCanvas = document.createElement('canvas');
+				sliceCanvas.width = canvas.width;
+				sliceCanvas.height = sliceHeightPx;
+				const ctx = sliceCanvas.getContext('2d');
+				if (!ctx) {
+					throw new Error('Failed to get 2D context for PDF slice');
+				}
+
+				ctx.drawImage(
+					canvas,
+					0,
+					renderedPx,
+					canvas.width,
+					sliceHeightPx,
+					0,
+					0,
+					canvas.width,
+					sliceHeightPx
+				);
+
+				const sliceDataUrl = sliceCanvas.toDataURL('image/png');
+				const sliceHeightMm = sliceHeightPx * mmPerPx;
+				if (pageIndex > 0) {
+					pdf.addPage();
+				}
+				pdf.addImage(
+					sliceDataUrl,
+					'PNG',
+					marginMm,
+					marginMm,
+					contentWidthMm,
+					sliceHeightMm,
+					undefined,
+					'FAST'
+				);
+
+				renderedPx += sliceHeightPx;
+				pageIndex += 1;
+			}
+
+			pdf.save(`coworker-solution-${makePdfTimestamp(new Date())}.pdf`);
+		} catch (err) {
+			console.error('[Export] PDF export failed:', err);
+			exportError = 'Ќе удалось сформировать PDF. ѕопробуйте снова.';
+		} finally {
+			isExporting = false;
+		}
+	}
+
+	async function handleExport(actionId: ExportActionId) {
+		if (actionId === 'pdf') {
+			await exportAsPdf();
+		}
+	}
 
 	async function renderContent() {
 		if (!message.content) {
@@ -210,48 +375,85 @@
 	}
 </script>
 
-<div class="message-renderer prose">
-	{#if renderedHtml}
-		<!-- eslint-disable-next-line svelte/no-at-html-tags -->
-		{@html renderedHtml}
-	{/if}
+<div class="message-renderer prose" class:is-exporting={isExporting}>
+	<div class="message-export-root" bind:this={exportRootEl}>
+		{#if renderedHtml}
+			<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+			{@html renderedHtml}
+		{/if}
 
-	{#if schemes.length > 0}
-		<div class="schemes-container">
-			{#each schemes as schema, index}
-				<SchemeView schemaData={schema} title={`Scheme revision #${index + 1}`} debug={schemeDebug} />
-			{/each}
-		</div>
-	{/if}
-
-	{#if graphGroups.length > 0}
-		<div class="graphs-container">
-			{#each graphGroups as group}
-				{#if group.memberId}
-					<div class="graph-group-title">Member: {group.memberId}</div>
-				{/if}
-				{#each group.items as graph}
-					<GraphView
-						points={graph.points}
-						title={
-							graph.title ||
-							(graph.diagramType && group.memberId
-								? `${graph.diagramType} - ${group.memberId}`
-								: group.memberId
-									? `Member ${group.memberId}`
-									: 'Solution graph')
-						}
-						type={graph.type}
-					/>
+		{#if schemes.length > 0}
+			<div class="schemes-container">
+				{#each schemes as schema, index}
+					<SchemeView schemaData={schema} title={`Scheme revision #${index + 1}`} debug={schemeDebug} />
 				{/each}
-			{/each}
-		</div>
-	{/if}
+			</div>
+		{/if}
 
-	{#if usedModels.length > 0}
-		<div class="models-attribution">
-			<span class="attribution-label">Models:</span>
-			{usedModels.join(', ')}
+		{#if graphGroups.length > 0}
+			<div class="graphs-container">
+				{#each graphGroups as group}
+					{#if group.memberId}
+						<div class="graph-group-title">Member: {group.memberId}</div>
+					{/if}
+					{#each group.items as graph}
+						<GraphView
+							points={graph.points}
+							title={
+								graph.title ||
+								(graph.diagramType && group.memberId
+									? `${graph.diagramType} - ${group.memberId}`
+									: group.memberId
+										? `Member ${group.memberId}`
+										: 'Solution graph')
+							}
+							type={graph.type}
+						/>
+					{/each}
+				{/each}
+			</div>
+		{/if}
+
+		{#if usedModels.length > 0}
+			<div class="models-attribution">
+				<span class="attribution-label">Models:</span>
+				{usedModels.join(', ')}
+			</div>
+		{/if}
+	</div>
+
+	{#if canExport}
+		<div class="message-actions" bind:this={exportControlsEl}>
+			<button
+				class="message-action-btn"
+				type="button"
+				onclick={toggleExportMenu}
+				disabled={isExporting}
+				aria-haspopup="menu"
+				aria-expanded={menuOpen}
+			>
+				{isExporting ? 'Ёкспортируетс€...' : 'Ёкспорт'}
+			</button>
+
+			{#if menuOpen}
+				<div class="message-actions-menu" role="menu" aria-label="Ёкспорт сообщени€">
+					{#each exportActions as action}
+						<button
+							class="message-actions-menu-item"
+							type="button"
+							role="menuitem"
+							onclick={() => void handleExport(action.id)}
+							disabled={isExporting}
+						>
+							{action.label}
+						</button>
+					{/each}
+				</div>
+			{/if}
+
+			{#if exportError}
+				<div class="message-actions-error">{exportError}</div>
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -261,6 +463,10 @@
 		width: 100%;
 		overflow-wrap: break-word;
 		word-break: break-word;
+	}
+
+	.message-export-root {
+		position: relative;
 	}
 
 	.schemes-container,
@@ -295,5 +501,99 @@
 		font-weight: 600;
 		color: var(--text-secondary);
 		margin-right: 0.4rem;
+	}
+
+	.message-actions {
+		position: relative;
+		display: inline-flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0.35rem;
+		margin-top: 0.85rem;
+	}
+
+	.message-action-btn {
+		border: 1px solid var(--border-subtle);
+		background: var(--bg-card);
+		color: var(--text-secondary);
+		border-radius: var(--radius-sm);
+		font-size: 0.72rem;
+		font-weight: 600;
+		padding: 0.28rem 0.56rem;
+		cursor: pointer;
+		transition: border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
+	}
+
+	.message-action-btn:hover:not(:disabled) {
+		border-color: var(--accent-primary);
+		color: var(--text-primary);
+	}
+
+	.message-action-btn:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.message-actions-menu {
+		position: absolute;
+		top: calc(100% + 0.35rem);
+		left: 0;
+		min-width: 170px;
+		padding: 0.25rem;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-sm);
+		box-shadow: var(--shadow-md);
+		z-index: 20;
+	}
+
+	.message-actions-menu-item {
+		width: 100%;
+		border: none;
+		background: transparent;
+		color: var(--text-primary);
+		font-size: 0.75rem;
+		text-align: left;
+		padding: 0.42rem 0.5rem;
+		border-radius: 0.35rem;
+		cursor: pointer;
+		transition: background-color var(--transition-fast), color var(--transition-fast);
+	}
+
+	.message-actions-menu-item:hover:not(:disabled) {
+		background: var(--bg-card);
+		color: var(--text-primary);
+	}
+
+	.message-actions-menu-item:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+
+	.message-actions-error {
+		font-size: 0.73rem;
+		line-height: 1.35;
+		color: var(--error);
+		max-width: 280px;
+	}
+
+	.message-renderer.is-exporting .message-actions {
+		visibility: hidden;
+		pointer-events: none;
+	}
+
+	@media (max-width: 768px) {
+		.message-actions {
+			width: 100%;
+		}
+
+		.message-action-btn {
+			font-size: 0.76rem;
+			padding: 0.34rem 0.62rem;
+		}
+
+		.message-actions-menu {
+			min-width: 190px;
+		}
 	}
 </style>
