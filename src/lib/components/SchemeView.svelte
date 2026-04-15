@@ -813,6 +813,11 @@
 
 	function requestBoardResize() {
 		if (!board || !boardEl) return;
+		if (!isFullscreen) {
+			// Drop stale fullscreen inline size before measuring normal chat layout.
+			boardEl.style.width = '';
+			boardEl.style.height = '';
+		}
 		const size = computeBoardSize();
 		if (!size) return;
 		const width = size.width;
@@ -821,9 +826,6 @@
 		if (isFullscreen) {
 			boardEl.style.width = `${width}px`;
 			boardEl.style.height = `${height}px`;
-		} else {
-			boardEl.style.width = '';
-			boardEl.style.height = '';
 		}
 		if (typeof board.resizeContainer === 'function') {
 			board.resizeContainer(width, height);
