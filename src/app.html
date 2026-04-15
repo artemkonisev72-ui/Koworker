@@ -18,6 +18,24 @@
 			href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
 			rel="stylesheet"
 		/>
+		<script>
+			(() => {
+				const STORAGE_KEY = 'coworker-theme';
+				try {
+					const saved = window.localStorage.getItem(STORAGE_KEY);
+					const theme = saved === 'dark' ? 'dark' : 'light';
+					document.documentElement.dataset.theme = theme;
+					document.documentElement.style.colorScheme = theme;
+					const themeMeta = document.querySelector('meta[name="theme-color"]');
+					if (themeMeta) {
+						themeMeta.setAttribute('content', theme === 'dark' ? '#000000' : '#ffffff');
+					}
+				} catch {
+					document.documentElement.dataset.theme = 'light';
+					document.documentElement.style.colorScheme = 'light';
+				}
+			})();
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

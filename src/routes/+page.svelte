@@ -46,6 +46,7 @@
 		modelPreference: string;
 		isPublic: boolean;
 	}
+	type ThemeMode = 'light' | 'dark';
 
 	let { data }: { data: import('./$types').PageData } = $props();
 
@@ -80,9 +81,36 @@
 	let revisionNotes = $state('');
 	let showRevisionBox = $state(false);
 	let isSchemaActionLoading = $state(false);
+	let themeMode = $state<ThemeMode>('light');
+
+	const THEME_STORAGE_KEY = 'coworker-theme';
+
+	function setTheme(theme: ThemeMode, persist = true) {
+		themeMode = theme;
+		if (typeof document !== 'undefined') {
+			document.documentElement.dataset.theme = theme;
+			document.documentElement.style.colorScheme = theme;
+			const themeMeta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+			if (themeMeta) {
+				themeMeta.setAttribute('content', theme === 'dark' ? '#000000' : '#ffffff');
+			}
+		}
+		if (persist && typeof localStorage !== 'undefined') {
+			localStorage.setItem(THEME_STORAGE_KEY, theme);
+		}
+	}
+
+	function toggleTheme() {
+		setTheme(themeMode === 'dark' ? 'light' : 'dark');
+	}
 
 	onMount(() => {
 		const viewportQuery = window.matchMedia('(max-width: 900px)');
+		const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+		const currentDomTheme = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+		const initialTheme: ThemeMode = savedTheme === 'dark' || savedTheme === 'light' ? savedTheme : currentDomTheme;
+		setTheme(initialTheme, false);
+
 		const applyViewportMode = () => {
 			const mobileNow = viewportQuery.matches;
 			if (!hasViewportInit) {
@@ -858,6 +886,24 @@
 				{/if}
 			</div>
 			<div class="model-selector">
+				<button
+					class="icon-btn theme-toggle-btn desktop-only"
+					onclick={toggleTheme}
+					title={themeMode === 'dark' ? 'Включить светлую тему' : 'Включить темную тему'}
+					aria-label={themeMode === 'dark' ? 'Включить светлую тему' : 'Включить темную тему'}
+				>
+					{#if themeMode === 'dark'}
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<circle cx="12" cy="12" r="4"></circle>
+							<path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"></path>
+						</svg>
+					{:else}
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<path d="M12 3a7 7 0 1 0 9 9 9 9 0 1 1-9-9z"></path>
+						</svg>
+					{/if}
+				</button>
+
 				{#if activeChatId}
 					<div class="share-container">
 						<button 
@@ -1115,6 +1161,17 @@
 
 			{#if mobileToolsOpen}
 				<div class="mobile-tools-sheet">
+					<div class="mobile-theme-row">
+						<span class="mobile-theme-label">Тема</span>
+						<button
+							class="toggle-switch"
+							class:on={themeMode === 'dark'}
+							onclick={toggleTheme}
+							title={themeMode === 'dark' ? 'Темная тема' : 'Светлая тема'}
+							aria-label={themeMode === 'dark' ? 'Темная тема' : 'Светлая тема'}
+						></button>
+					</div>
+
 					<div class="mobile-tools-grid">
 						<label class="schema-toggle">
 							<input
@@ -1438,6 +1495,17 @@
 	align-items: center;
 	gap: 0.5rem;
 	min-width: 0;
+}
+
+.theme-toggle-btn {
+	border: 1px solid var(--border-subtle);
+	background: var(--bg-elevated);
+	color: var(--text-secondary);
+}
+
+.theme-toggle-btn:hover {
+	color: var(--text-primary);
+	border-color: var(--accent-primary);
 }
 
 .model-select {
@@ -2045,6 +2113,21 @@
 	gap: 0.6rem;
 }
 
+.mobile-theme-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem;
+	padding-bottom: 0.45rem;
+	border-bottom: 1px dashed var(--border-subtle);
+}
+
+.mobile-theme-label {
+	font-size: 0.76rem;
+	font-weight: 600;
+	color: var(--text-secondary);
+}
+
 .mobile-tools-grid {
 	display: flex;
 	flex-direction: column;
@@ -2272,7 +2355,7 @@
 
 	.toggle-switch.on::after {
 		left: 18px;
-		background: white;
+		background: var(--bg-base);
 	}
 
 	.share-link-box {
