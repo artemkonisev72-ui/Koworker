@@ -232,8 +232,64 @@
 		)}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 	}
 
+	function isCanvasLikelyBlank(canvas: HTMLCanvasElement): boolean {
+		const ctx = canvas.getContext('2d', { willReadFrequently: true });
+		if (!ctx || canvas.width <= 0 || canvas.height <= 0) return true;
+
+		const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+		if (data.length < 4) return true;
+
+		const r0 = data[0];
+		const g0 = data[1];
+		const b0 = data[2];
+		const a0 = data[3];
+
+		const totalPixels = canvas.width * canvas.height;
+		const sampleCount = Math.min(4000, totalPixels);
+		const step = Math.max(1, Math.floor(totalPixels / sampleCount));
+		let diffPixels = 0;
+		let opaquePixels = 0;
+		let minLuminance = Number.POSITIVE_INFINITY;
+		let maxLuminance = Number.NEGATIVE_INFINITY;
+
+		for (let pixel = 0; pixel < totalPixels; pixel += step) {
+			const i = pixel * 4;
+			const alpha = data[i + 3];
+			if (alpha > 2) {
+				opaquePixels += 1;
+				const luminance = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+				if (luminance < minLuminance) minLuminance = luminance;
+				if (luminance > maxLuminance) maxLuminance = luminance;
+			}
+
+			if (
+				Math.abs(data[i] - r0) > 3 ||
+				Math.abs(data[i + 1] - g0) > 3 ||
+				Math.abs(data[i + 2] - b0) > 3 ||
+				Math.abs(alpha - a0) > 3
+			) {
+				diffPixels += 1;
+				if (diffPixels > 20) return false;
+			}
+		}
+
+		// html2canvas sometimes returns almost transparent output in dev + complex SVG/KaTeX.
+		if (opaquePixels === 0) return true;
+
+		// Very low variance + almost no pixel differences usually means "empty sheet".
+		if (Number.isFinite(minLuminance) && Number.isFinite(maxLuminance)) {
+			const luminanceRange = maxLuminance - minLuminance;
+			if (luminanceRange < 2 && diffPixels <= 3) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	async function exportAsPdf() {
 		if (!exportRootEl || isExporting) return;
+		const targetEl = exportRootEl;
 		isExporting = true;
 		menuOpen = false;
 		exportError = '';
@@ -257,20 +313,39 @@
 			const backgroundColor = computed.getPropertyValue('--bg-base').trim() || '#ffffff';
 			const scale = Math.max(2, Math.min(3, window.devicePixelRatio || 1));
 
-			const canvas = await html2canvas(exportRootEl, {
-				scale,
-				useCORS: true,
-				backgroundColor,
-				logging: false,
-				foreignObjectRendering: true,
-				ignoreElements: (element) => {
-					if (element === exportControlsEl) return true;
-					return Boolean(element.classList?.contains('message-actions'));
-				}
-			});
+			const renderToCanvas = async (foreignObjectRendering: boolean) =>
+				html2canvas(targetEl, {
+					scale,
+					useCORS: true,
+					backgroundColor,
+					logging: false,
+					foreignObjectRendering,
+					ignoreElements: (element) => {
+						if (element === exportControlsEl) return true;
+						return Boolean(element.classList?.contains('message-actions'));
+					}
+				});
 
-			if (canvas.width <= 0 || canvas.height <= 0) {
-				throw new Error('Rendered canvas has invalid size');
+			const renderModes = import.meta.env.DEV
+				? [false, true] // In dev, foreignObjectRendering frequently returns blank output.
+				: [true, false];
+
+			let canvas: HTMLCanvasElement | null = null;
+			for (const foreignObjectRendering of renderModes) {
+				const candidate = await renderToCanvas(foreignObjectRendering);
+				if (candidate.width <= 0 || candidate.height <= 0) continue;
+				if (isCanvasLikelyBlank(candidate)) {
+					console.warn(
+						`[Export] Canvas looks blank with foreignObjectRendering=${foreignObjectRendering}`
+					);
+					continue;
+				}
+				canvas = candidate;
+				break;
+			}
+
+			if (!canvas) {
+				throw new Error('Rendered canvas is blank');
 			}
 
 			const pdf = new jsPDF({
