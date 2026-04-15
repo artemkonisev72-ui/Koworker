@@ -46,8 +46,15 @@
 	let isExporting = $state(false);
 	let exportError = $state('');
 
+	const TEXT_EXPORT = '\u042d\u043a\u0441\u043f\u043e\u0440\u0442';
+	const TEXT_EXPORTING = '\u042d\u043a\u0441\u043f\u043e\u0440\u0442\u0438\u0440\u0443\u0435\u0442\u0441\u044f...';
+	const TEXT_EXPORT_TO_PDF = '\u042d\u043a\u0441\u043f\u043e\u0440\u0442 \u0432 PDF';
+	const TEXT_EXPORT_ERROR =
+		'\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u0444\u043e\u0440\u043c\u0438\u0440\u043e\u0432\u0430\u0442\u044c PDF. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0441\u043d\u043e\u0432\u0430.';
+	const TEXT_EXPORT_MENU_ARIA = '\u042d\u043a\u0441\u043f\u043e\u0440\u0442 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f';
+
 	const exportActions: Array<{ id: ExportActionId; label: string }> = [
-		{ id: 'pdf', label: 'Ёкспорт в PDF' }
+		{ id: 'pdf', label: TEXT_EXPORT_TO_PDF }
 	];
 
 	let canExport = $derived(
@@ -239,6 +246,13 @@
 				import('jspdf')
 			]);
 
+			if ('fonts' in document) {
+				await (document as Document & { fonts: FontFaceSet }).fonts.ready;
+			}
+			await new Promise<void>((resolve) => {
+				requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+			});
+
 			const computed = getComputedStyle(document.documentElement);
 			const backgroundColor = computed.getPropertyValue('--bg-base').trim() || '#ffffff';
 			const scale = Math.max(2, Math.min(3, window.devicePixelRatio || 1));
@@ -247,7 +261,12 @@
 				scale,
 				useCORS: true,
 				backgroundColor,
-				logging: false
+				logging: false,
+				foreignObjectRendering: true,
+				ignoreElements: (element) => {
+					if (element === exportControlsEl) return true;
+					return Boolean(element.classList?.contains('message-actions'));
+				}
 			});
 
 			if (canvas.width <= 0 || canvas.height <= 0) {
@@ -317,7 +336,7 @@
 			pdf.save(`coworker-solution-${makePdfTimestamp(new Date())}.pdf`);
 		} catch (err) {
 			console.error('[Export] PDF export failed:', err);
-			exportError = 'Ќе удалось сформировать PDF. ѕопробуйте снова.';
+			exportError = TEXT_EXPORT_ERROR;
 		} finally {
 			isExporting = false;
 		}
@@ -432,11 +451,11 @@
 				aria-haspopup="menu"
 				aria-expanded={menuOpen}
 			>
-				{isExporting ? 'Ёкспортируетс€...' : 'Ёкспорт'}
+				{isExporting ? TEXT_EXPORTING : TEXT_EXPORT}
 			</button>
 
 			{#if menuOpen}
-				<div class="message-actions-menu" role="menu" aria-label="Ёкспорт сообщени€">
+				<div class="message-actions-menu" role="menu" aria-label={TEXT_EXPORT_MENU_ARIA}>
 					{#each exportActions as action}
 						<button
 							class="message-actions-menu-item"
@@ -521,7 +540,10 @@
 		font-weight: 600;
 		padding: 0.28rem 0.56rem;
 		cursor: pointer;
-		transition: border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
+		transition:
+			border-color var(--transition-fast),
+			color var(--transition-fast),
+			opacity var(--transition-fast);
 	}
 
 	.message-action-btn:hover:not(:disabled) {
