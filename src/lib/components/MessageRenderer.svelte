@@ -326,9 +326,9 @@
 					}
 				});
 
-			// Keep KaTeX geometry accurate: fractions/limits are rendered correctly with foreignObjectRendering=true.
-			// Fallback to false only when true yields a blank canvas.
-			const renderModes = [true, false];
+			// In dev, foreignObjectRendering=true is unstable and can produce empty captures.
+			// Keep false first there, while preserving true-first in production for better KaTeX layout fidelity.
+			const renderModes = import.meta.env.DEV ? [false, true] : [true, false];
 
 			let canvas: HTMLCanvasElement | null = null;
 			for (const foreignObjectRendering of renderModes) {
