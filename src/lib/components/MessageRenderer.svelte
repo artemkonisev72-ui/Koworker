@@ -232,59 +232,154 @@
 		)}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 	}
 
-	function isCanvasLikelyBlank(canvas: HTMLCanvasElement): boolean {
+	interface CanvasEvaluation {
+		blank: boolean;
+		score: number;
+		nonBackgroundRatio: number;
+		strongNonBackgroundRatio: number;
+		diffRatio: number;
+		opaqueRatio: number;
+		luminanceRange: number;
+	}
+
+	function parseCssRgb(color: string): { r: number; g: number; b: number } | null {
+		const value = color.trim().toLowerCase();
+		if (!value) return null;
+
+		const hexMatch = value.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+		if (hexMatch) {
+			const hex = hexMatch[1];
+			if (hex.length === 3) {
+				return {
+					r: parseInt(hex[0] + hex[0], 16),
+					g: parseInt(hex[1] + hex[1], 16),
+					b: parseInt(hex[2] + hex[2], 16)
+				};
+			}
+			return {
+				r: parseInt(hex.slice(0, 2), 16),
+				g: parseInt(hex.slice(2, 4), 16),
+				b: parseInt(hex.slice(4, 6), 16)
+			};
+		}
+
+		const rgbMatch = value.match(/^rgba?\((.+)\)$/i);
+		if (!rgbMatch) return null;
+		const parts = rgbMatch[1].split(',').map((part) => part.trim());
+		if (parts.length < 3) return null;
+
+		const toChannel = (part: string): number => {
+			const n = Number.parseFloat(part.endsWith('%') ? String((Number.parseFloat(part) / 100) * 255) : part);
+			if (!Number.isFinite(n)) return 0;
+			return Math.max(0, Math.min(255, Math.round(n)));
+		};
+
+		return {
+			r: toChannel(parts[0]),
+			g: toChannel(parts[1]),
+			b: toChannel(parts[2])
+		};
+	}
+
+	function evaluateCanvas(canvas: HTMLCanvasElement, backgroundColor: string): CanvasEvaluation {
+		const empty: CanvasEvaluation = {
+			blank: true,
+			score: 0,
+			nonBackgroundRatio: 0,
+			strongNonBackgroundRatio: 0,
+			diffRatio: 0,
+			opaqueRatio: 0,
+			luminanceRange: 0
+		};
+
 		const ctx = canvas.getContext('2d', { willReadFrequently: true });
-		if (!ctx || canvas.width <= 0 || canvas.height <= 0) return true;
+		if (!ctx || canvas.width <= 0 || canvas.height <= 0) return empty;
 
 		const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-		if (data.length < 4) return true;
+		if (data.length < 4) return empty;
+
+		const background = parseCssRgb(backgroundColor) ?? { r: data[0], g: data[1], b: data[2] };
+		const totalPixels = canvas.width * canvas.height;
+		const sampleCount = Math.min(12000, totalPixels);
+		const step = Math.max(1, Math.floor(totalPixels / sampleCount));
 
 		const r0 = data[0];
 		const g0 = data[1];
 		const b0 = data[2];
 		const a0 = data[3];
 
-		const totalPixels = canvas.width * canvas.height;
-		const sampleCount = Math.min(4000, totalPixels);
-		const step = Math.max(1, Math.floor(totalPixels / sampleCount));
+		let sampled = 0;
 		let diffPixels = 0;
 		let opaquePixels = 0;
+		let nonBackgroundPixels = 0;
+		let strongNonBackgroundPixels = 0;
 		let minLuminance = Number.POSITIVE_INFINITY;
 		let maxLuminance = Number.NEGATIVE_INFINITY;
 
 		for (let pixel = 0; pixel < totalPixels; pixel += step) {
 			const i = pixel * 4;
+			const r = data[i];
+			const g = data[i + 1];
+			const b = data[i + 2];
 			const alpha = data[i + 3];
-			if (alpha > 2) {
+			sampled += 1;
+
+			if (alpha > 8) {
 				opaquePixels += 1;
-				const luminance = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+				const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
 				if (luminance < minLuminance) minLuminance = luminance;
 				if (luminance > maxLuminance) maxLuminance = luminance;
 			}
 
+			const bgDistance =
+				Math.abs(r - background.r) + Math.abs(g - background.g) + Math.abs(b - background.b);
+
+			if (alpha > 20 && bgDistance > 16) nonBackgroundPixels += 1;
+			if (alpha > 50 && bgDistance > 36) strongNonBackgroundPixels += 1;
+
 			if (
-				Math.abs(data[i] - r0) > 3 ||
-				Math.abs(data[i + 1] - g0) > 3 ||
-				Math.abs(data[i + 2] - b0) > 3 ||
-				Math.abs(alpha - a0) > 3
+				Math.abs(r - r0) > 4 ||
+				Math.abs(g - g0) > 4 ||
+				Math.abs(b - b0) > 4 ||
+				Math.abs(alpha - a0) > 4
 			) {
 				diffPixels += 1;
-				if (diffPixels > 20) return false;
 			}
 		}
 
-		// html2canvas sometimes returns almost transparent output in dev + complex SVG/KaTeX.
-		if (opaquePixels === 0) return true;
+		if (sampled <= 0) return empty;
 
-		// Very low variance + almost no pixel differences usually means "empty sheet".
-		if (Number.isFinite(minLuminance) && Number.isFinite(maxLuminance)) {
-			const luminanceRange = maxLuminance - minLuminance;
-			if (luminanceRange < 2 && diffPixels <= 3) {
-				return true;
-			}
-		}
+		const nonBackgroundRatio = nonBackgroundPixels / sampled;
+		const strongNonBackgroundRatio = strongNonBackgroundPixels / sampled;
+		const diffRatio = diffPixels / sampled;
+		const opaqueRatio = opaquePixels / sampled;
+		const luminanceRange =
+			Number.isFinite(minLuminance) && Number.isFinite(maxLuminance) ? maxLuminance - minLuminance : 0;
 
-		return false;
+		// Higher score means there is more "ink" and contrast versus page background.
+		const score =
+			strongNonBackgroundRatio * 6 +
+			nonBackgroundRatio * 3 +
+			diffRatio * 0.5 +
+			Math.min(1, luminanceRange / 48) * 0.3;
+
+		const blank =
+			opaqueRatio < 0.01 ||
+			(nonBackgroundRatio < 0.0008 &&
+				strongNonBackgroundRatio < 0.0002 &&
+				diffRatio < 0.006 &&
+				luminanceRange < 6) ||
+			(diffRatio < 0.0025 && luminanceRange < 1.6);
+
+		return {
+			blank,
+			score,
+			nonBackgroundRatio,
+			strongNonBackgroundRatio,
+			diffRatio,
+			opaqueRatio,
+			luminanceRange
+		};
 	}
 
 	async function exportAsPdf() {
@@ -326,22 +421,53 @@
 					}
 				});
 
-			// In dev, foreignObjectRendering=true is unstable and can produce empty captures.
-			// Keep false first there, while preserving true-first in production for better KaTeX layout fidelity.
-			const renderModes = import.meta.env.DEV ? [false, true] : [true, false];
+			// Prefer foreignObjectRendering=true for correct KaTeX baseline/fraction layout.
+			// Keep a robust fallback to false only when true looks blank or clearly worse.
+			const renderModes = [true, false];
+			const candidates: Array<{
+				foreignObjectRendering: boolean;
+				canvas: HTMLCanvasElement;
+				evaluation: CanvasEvaluation;
+			}> = [];
 
-			let canvas: HTMLCanvasElement | null = null;
 			for (const foreignObjectRendering of renderModes) {
 				const candidate = await renderToCanvas(foreignObjectRendering);
 				if (candidate.width <= 0 || candidate.height <= 0) continue;
-				if (isCanvasLikelyBlank(candidate)) {
+				const evaluation = evaluateCanvas(candidate, backgroundColor);
+				if (evaluation.blank) {
 					console.warn(
-						`[Export] Canvas looks blank with foreignObjectRendering=${foreignObjectRendering}`
+						`[Export] Canvas looks blank with foreignObjectRendering=${foreignObjectRendering}`,
+						evaluation
 					);
 					continue;
 				}
-				canvas = candidate;
-				break;
+				candidates.push({
+					foreignObjectRendering,
+					canvas: candidate,
+					evaluation
+				});
+			}
+
+			let canvas: HTMLCanvasElement | null = null;
+			const preferred = candidates.find((item) => item.foreignObjectRendering);
+			const fallback = candidates.find((item) => !item.foreignObjectRendering);
+
+			if (preferred && fallback) {
+				const fallbackClearlyBetter = fallback.evaluation.score > preferred.evaluation.score * 2.2;
+				canvas = fallbackClearlyBetter ? fallback.canvas : preferred.canvas;
+				if (fallbackClearlyBetter) {
+					console.warn(
+						'[Export] Falling back to foreignObjectRendering=false because true-mode score is too low',
+						{
+							preferred: preferred.evaluation,
+							fallback: fallback.evaluation
+						}
+					);
+				}
+			} else if (preferred) {
+				canvas = preferred.canvas;
+			} else if (fallback) {
+				canvas = fallback.canvas;
 			}
 
 			if (!canvas) {
