@@ -95,6 +95,9 @@
 				themeMeta.setAttribute('content', theme === 'dark' ? '#000000' : '#ffffff');
 			}
 		}
+		if (typeof window !== 'undefined') {
+			window.dispatchEvent(new CustomEvent('coworker-theme-change', { detail: { theme } }));
+		}
 		if (persist && typeof localStorage !== 'undefined') {
 			localStorage.setItem(THEME_STORAGE_KEY, theme);
 		}
@@ -887,7 +890,7 @@
 			</div>
 			<div class="model-selector">
 				<button
-					class="icon-btn theme-toggle-btn desktop-only"
+					class="icon-btn theme-toggle-btn"
 					onclick={toggleTheme}
 					title={themeMode === 'dark' ? 'Включить светлую тему' : 'Включить темную тему'}
 					aria-label={themeMode === 'dark' ? 'Включить светлую тему' : 'Включить темную тему'}
@@ -1161,17 +1164,6 @@
 
 			{#if mobileToolsOpen}
 				<div class="mobile-tools-sheet">
-					<div class="mobile-theme-row">
-						<span class="mobile-theme-label">Тема</span>
-						<button
-							class="toggle-switch"
-							class:on={themeMode === 'dark'}
-							onclick={toggleTheme}
-							title={themeMode === 'dark' ? 'Темная тема' : 'Светлая тема'}
-							aria-label={themeMode === 'dark' ? 'Темная тема' : 'Светлая тема'}
-						></button>
-					</div>
-
 					<div class="mobile-tools-grid">
 						<label class="schema-toggle">
 							<input
@@ -2067,10 +2059,6 @@
 	accent-color: var(--accent-primary);
 }
 
-.desktop-only {
-	display: initial;
-}
-
 .mobile-tools-row {
 	display: none;
 	margin-bottom: 0.5rem;
@@ -2111,21 +2099,6 @@
 	display: flex;
 	flex-direction: column;
 	gap: 0.6rem;
-}
-
-.mobile-theme-row {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 0.75rem;
-	padding-bottom: 0.45rem;
-	border-bottom: 1px dashed var(--border-subtle);
-}
-
-.mobile-theme-label {
-	font-size: 0.76rem;
-	font-weight: 600;
-	color: var(--text-secondary);
 }
 
 .mobile-tools-grid {

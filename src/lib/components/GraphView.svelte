@@ -25,6 +25,33 @@
 	let visibilityObserver: IntersectionObserver | null = null;
 	let resizeObserver: ResizeObserver | null = null;
 
+	function applyBoardTheme() {
+		if (!board) return;
+		const axisStroke = 'var(--border-medium)';
+		const axisText = 'var(--text-secondary)';
+		board.options.grid.strokeColor = 'var(--border-subtle)';
+		board.options.axis.strokeColor = axisStroke;
+
+		const axes = [board.defaultAxes?.x, board.defaultAxes?.y].filter(Boolean);
+		for (const axis of axes) {
+			axis.setAttribute?.({
+				strokeColor: axisStroke,
+				highlightStrokeColor: axisStroke
+			});
+			axis.defaultTicks?.setAttribute?.({
+				strokeColor: axisText,
+				highlightStrokeColor: axisText,
+				label: {
+					strokeColor: axisText,
+					highlightStrokeColor: axisText
+				}
+			});
+		}
+
+		board.options.text.strokeColor = axisText;
+		board.options.text.highlightStrokeColor = axisText;
+	}
+
 	function getTitleHeight(): number {
 		const titleEl = wrapperEl?.querySelector<HTMLElement>('.graph-title');
 		if (!titleEl) return 0;
@@ -142,8 +169,7 @@
 			showScreenshot: false
 		});
 
-		board.options.grid.strokeColor = 'var(--border-subtle)';
-		board.options.axis.strokeColor = 'var(--border-medium)';
+		applyBoardTheme();
 
 		const curve = board.create(
 			'curve',
@@ -287,6 +313,10 @@
 		const onKeydown = (event: KeyboardEvent) => {
 			if (event.key === 'Escape') closeFullscreen();
 		};
+		const onThemeChanged = () => {
+			applyBoardTheme();
+			requestAnimationFrame(requestBoardResize);
+		};
 		const onFullscreenChanged = () => {
 			const nativeFullscreenActive = document.fullscreenElement === wrapperEl;
 			if (nativeFullscreenActive !== isFullscreen) {
@@ -298,12 +328,14 @@
 		window.addEventListener('resize', onViewportChanged);
 		window.addEventListener('orientationchange', onViewportChanged);
 		window.addEventListener('keydown', onKeydown);
+		window.addEventListener('coworker-theme-change', onThemeChanged as EventListener);
 		document.addEventListener('fullscreenchange', onFullscreenChanged);
 
 		return () => {
 			window.removeEventListener('resize', onViewportChanged);
 			window.removeEventListener('orientationchange', onViewportChanged);
 			window.removeEventListener('keydown', onKeydown);
+			window.removeEventListener('coworker-theme-change', onThemeChanged as EventListener);
 			document.removeEventListener('fullscreenchange', onFullscreenChanged);
 			visibilityObserver?.disconnect();
 			resizeObserver?.disconnect();
@@ -327,6 +359,9 @@
 	<div class="graph-wrapper" bind:this={wrapperEl} class:fullscreen={isFullscreen}>
 		<div class="graph-title">
 			<span>{title}</span>
+			{#if isFullscreen}
+				<span class="graph-fullscreen-hint">Shift + ЛКМ для перемещения</span>
+			{/if}
 			<button class="graph-fullscreen-btn" onclick={toggleFullscreen}>
 				{isFullscreen ? 'Close' : 'Full screen'}
 			</button>
@@ -371,6 +406,16 @@
 		font-size: 0.67rem;
 		padding: 0.2rem 0.45rem;
 		cursor: pointer;
+	}
+
+	.graph-fullscreen-hint {
+		margin-left: auto;
+		font-size: 0.68rem;
+		font-weight: 500;
+		letter-spacing: 0;
+		text-transform: none;
+		color: var(--text-muted);
+		white-space: nowrap;
 	}
 
 	.graph-board {
@@ -441,6 +486,10 @@
 	}
 
 	@media (max-width: 768px) {
+		.graph-fullscreen-hint {
+			display: none;
+		}
+
 		.graph-title {
 			padding: 0.45rem 0.58rem;
 			font-size: 0.68rem;

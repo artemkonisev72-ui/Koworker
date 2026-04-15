@@ -21,6 +21,32 @@
 	let visibilityObserver: IntersectionObserver | null = null;
 	let resizeObserver: ResizeObserver | null = null;
 
+	function applyBoardTheme() {
+		if (!board) return;
+		const axisStroke = 'var(--border-medium)';
+		const axisText = 'var(--text-secondary)';
+		board.options.grid.strokeColor = 'var(--border-subtle)';
+		board.options.axis.strokeColor = axisStroke;
+		board.options.text.strokeColor = axisText;
+		board.options.text.highlightStrokeColor = axisText;
+
+		const axes = [board.defaultAxes?.x, board.defaultAxes?.y].filter(Boolean);
+		for (const axis of axes) {
+			axis.setAttribute?.({
+				strokeColor: axisStroke,
+				highlightStrokeColor: axisStroke
+			});
+			axis.defaultTicks?.setAttribute?.({
+				strokeColor: axisText,
+				highlightStrokeColor: axisText,
+				label: {
+					strokeColor: axisText,
+					highlightStrokeColor: axisText
+				}
+			});
+		}
+	}
+
 	function getTitleHeight(): number {
 		const titleEl = wrapperEl?.querySelector<HTMLElement>('.scheme-title');
 		if (!titleEl) return 0;
@@ -252,10 +278,18 @@
 	}
 
 	function drawArrow(a: SchemaPoint, b: SchemaPoint, options: Record<string, unknown>): void {
+		const stroke =
+			typeof options.strokeColor === 'string' && options.strokeColor.trim().length > 0
+				? options.strokeColor
+				: COLOR.base;
 		board.create('arrow', [[a.x, a.y], [b.x, b.y]], {
 			fixed: true,
 			highlight: false,
 			lastArrow: true,
+			strokeColor: stroke,
+			fillColor: stroke,
+			highlightStrokeColor: stroke,
+			highlightFillColor: stroke,
 			...options
 		});
 	}
@@ -869,8 +903,7 @@
 			keepAspectRatio: true
 		});
 
-		board.options.grid.strokeColor = 'var(--border-subtle)';
-		board.options.axis.strokeColor = 'var(--border-medium)';
+		applyBoardTheme();
 		board.options.point.fixed = true;
 		board.options.point.highlight = false;
 		board.options.point.withLabel = false;
@@ -945,6 +978,10 @@
 		const onKeydown = (event: KeyboardEvent) => {
 			if (event.key === 'Escape') closeFullscreen();
 		};
+		const onThemeChanged = () => {
+			applyBoardTheme();
+			requestAnimationFrame(requestBoardResize);
+		};
 		const onFullscreenChanged = () => {
 			const nativeFullscreenActive = document.fullscreenElement === wrapperEl;
 			if (nativeFullscreenActive !== isFullscreen) {
@@ -956,12 +993,14 @@
 		window.addEventListener('resize', onViewportChanged);
 		window.addEventListener('orientationchange', onViewportChanged);
 		window.addEventListener('keydown', onKeydown);
+		window.addEventListener('coworker-theme-change', onThemeChanged as EventListener);
 		document.addEventListener('fullscreenchange', onFullscreenChanged);
 
 		return () => {
 			window.removeEventListener('resize', onViewportChanged);
 			window.removeEventListener('orientationchange', onViewportChanged);
 			window.removeEventListener('keydown', onKeydown);
+			window.removeEventListener('coworker-theme-change', onThemeChanged as EventListener);
 			document.removeEventListener('fullscreenchange', onFullscreenChanged);
 			visibilityObserver?.disconnect();
 			resizeObserver?.disconnect();
