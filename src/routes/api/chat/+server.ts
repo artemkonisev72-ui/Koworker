@@ -178,7 +178,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 							return;
 						}
 						try {
-							await prisma.message.create({
+							await (prisma as any).message.create({
 								data: {
 									chatId,
 									role: 'ASSISTANT',
@@ -186,6 +186,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 									generatedCode: event.generatedCode ?? null,
 									executionLogs: event.executionLogs ?? null,
 									graphData: event.graphData ? JSON.stringify(event.graphData) : undefined,
+									schemaData: event.schemaData ? JSON.stringify(event.schemaData) : undefined,
+									schemaVersion: event.schemaVersion ?? undefined,
 									usedModels: event.usedModels ? JSON.stringify(event.usedModels) : undefined
 								}
 							});

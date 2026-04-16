@@ -17,12 +17,22 @@ import {
 	type GeminiHistory
 } from './gemini.js';
 import { workerPool, SandboxError } from '../sandbox/worker-pool.js';
-import type { SchemaAny } from '$lib/schema/schema-any.js';
+import { validateSchemaAny, type SchemaAny, type SchemaVersionTag } from '$lib/schema/schema-any.js';
+import { applySchemaPatchToApprovedSchema, extractSchemaPatchFromOutput } from './schema-patch.js';
 
 export type PipelineStatus =
 	| { type: 'ping' }
 	| { type: 'status'; message: string }
-	| { type: 'result'; content: string; generatedCode?: string; executionLogs?: string; graphData?: GraphData[]; usedModels?: string[] }
+	| {
+			type: 'result';
+			content: string;
+			generatedCode?: string;
+			executionLogs?: string;
+			graphData?: GraphData[];
+			schemaData?: SchemaAny;
+			schemaVersion?: SchemaVersionTag;
+			usedModels?: string[];
+	  }
 	| { type: 'error'; message: string };
 
 export interface GraphPoint {
@@ -42,11 +52,20 @@ interface SandboxOutput {
 	result?: unknown;
 	graph_points?: GraphPoint[]; // Для обратной совместимости
 	graphs?: GraphData[];        // Массив нескольких графиков
+	schemaData?: unknown;
+	schemaPatch?: unknown;
+	schemaVersion?: unknown;
 	[key: string]: unknown;
 }
 
 interface GraphNormalizationResult {
 	graphs: GraphData[];
+	issues: string[];
+}
+
+interface SchemaNormalizationResult {
+	schemaData?: SchemaAny;
+	schemaVersion?: SchemaVersionTag;
 	issues: string[];
 }
 
@@ -278,6 +297,97 @@ function normalizeAndValidateGraphs(output: SandboxOutput | null): GraphNormaliz
 	return { graphs: normalizedGraphs, issues };
 }
 
+function extractSchemaCandidate(output: SandboxOutput | null): unknown {
+	if (!output || !isRecord(output)) return null;
+	return (
+		output.schemaData ??
+		output.schema ??
+		output.scheme ??
+		output.diagram ??
+		output.jsxgraphSchema ??
+		null
+	);
+}
+
+function normalizeSchemaFromOutput(output: SandboxOutput | null): SchemaNormalizationResult {
+	const candidate = extractSchemaCandidate(output);
+	if (!candidate) return { issues: [] };
+
+	const validation = validateSchemaAny(candidate);
+	if (!validation.ok || !validation.value) {
+		return { issues: validation.errors };
+	}
+
+	return {
+		issues: [],
+		schemaData: validation.value,
+		schemaVersion: validation.version ?? '2.0'
+	};
+}
+
+function normalizeSchemaForApprovedContext(
+	output: SandboxOutput | null,
+	approvedSchema: SchemaAny
+): SchemaNormalizationResult {
+	const patchExtraction = extractSchemaPatchFromOutput(output);
+	if (patchExtraction.hasPatch) {
+		if (!patchExtraction.patch || patchExtraction.issues.length > 0) {
+			return {
+				issues:
+					patchExtraction.issues.length > 0
+						? patchExtraction.issues
+						: ['schemaPatch payload is missing']
+			};
+		}
+
+		const patchApplied = applySchemaPatchToApprovedSchema(approvedSchema, patchExtraction.patch);
+		if (!patchApplied.ok || !patchApplied.value) {
+			return { issues: patchApplied.issues };
+		}
+
+		return {
+			issues: [],
+			schemaData: patchApplied.value,
+			schemaVersion: patchApplied.version ?? '2.0'
+		};
+	}
+
+	const candidate = extractSchemaCandidate(output);
+	if (candidate) {
+		return {
+			issues: [
+				'schema_check solve must return schemaPatch (delete+add) for schema visuals; full schemaData is not allowed'
+			]
+		};
+	}
+
+	return { issues: [] };
+}
+
+function summarizeSchemaCandidate(output: SandboxOutput | null): Record<string, unknown> | null {
+	const candidate = extractSchemaCandidate(output);
+	if (!isRecord(candidate)) return null;
+	return {
+		version: typeof candidate.version === 'string' ? candidate.version : undefined,
+		nodes: Array.isArray(candidate.nodes) ? candidate.nodes.length : undefined,
+		objects: Array.isArray(candidate.objects) ? candidate.objects.length : undefined,
+		results: Array.isArray(candidate.results) ? candidate.results.length : undefined
+	};
+}
+
+function summarizeSchemaPatch(output: SandboxOutput | null): Record<string, unknown> | null {
+	if (!output || !isRecord(output)) return null;
+	const candidate = output.schemaPatch ?? output.schema_patch;
+	if (!isRecord(candidate)) return null;
+	return {
+		deleteObjectIds: Array.isArray(candidate.deleteObjectIds) ? candidate.deleteObjectIds.length : 0,
+		deleteResultIds: Array.isArray(candidate.deleteResultIds) ? candidate.deleteResultIds.length : 0,
+		addNodes: Array.isArray(candidate.addNodes) ? candidate.addNodes.length : 0,
+		addObjects: Array.isArray(candidate.addObjects) ? candidate.addObjects.length : 0,
+		addResults: Array.isArray(candidate.addResults) ? candidate.addResults.length : 0
+	};
+}
+
 function isFiniteGraphPoint(value: unknown): value is GraphPoint {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
 	const maybe = value as Record<string, unknown>;
@@ -447,10 +557,34 @@ function buildFinalizerExecutionPayload(
 			);
 		}
 
+		const schemaSummary = summarizeSchemaCandidate(output);
+		if (schemaSummary) {
+			payload.schema = schemaSummary;
+		}
+
+		const schemaPatchSummary = summarizeSchemaPatch(output);
+		if (schemaPatchSummary) {
+			payload.schemaPatch = schemaPatchSummary;
+		}
+
 		if (cfg.includeExtras) {
 			let extrasAdded = 0;
 			for (const [key, value] of Object.entries(output)) {
-				if (key === 'result' || key === 'graphs' || key === 'graph_points') continue;
+				if (
+					key === 'result' ||
+					key === 'graphs' ||
+					key === 'graph_points' ||
+					key === 'schemaData' ||
+					key === 'schema' ||
+					key === 'scheme' ||
+					key === 'diagram' ||
+					key === 'jsxgraphSchema' ||
+					key === 'schemaPatch' ||
+					key === 'schema_patch' ||
+					key === 'schemaVersion'
+				) {
+					continue;
+				}
 				payload[key] = compactUnknownValue(value, cfg);
 				extrasAdded += 1;
 				if (extrasAdded >= 6) break;
@@ -491,7 +625,9 @@ export async function runPipelineWithApprovedSchema(
 			: '';
 	const messageWithSchemaContext = `${params.userMessage}\n\n[APPROVED_SCHEMA_JSON]\n${schemaJson}${notesBlock}\n\nUse approved schema as source of truth.`;
 
-	return runPipeline(messageWithSchemaContext, history, onStatus, imageData, forcedModel)
+	return runPipeline(messageWithSchemaContext, history, onStatus, imageData, forcedModel, {
+		approvedSchema: params.approvedSchema
+	})
 		.finally(() => {
 			console.log('[SchemaCheck] pipeline.finished');
 		});
@@ -502,11 +638,15 @@ export async function runPipeline(
 	history: GeminiHistory[],
 	onStatus: (event: PipelineStatus) => void,
 	imageData?: { base64: string; mimeType: string },
-	forcedModel?: string | null
+	forcedModel?: string | null,
+	options?: {
+		approvedSchema?: SchemaAny | null;
+	}
 ): Promise<void> {
 	console.log('[Pipeline] START message:', userMessage.slice(0, 80), '| forcedModel:', forcedModel);
 	let currentContext = userMessage;
 	const usedModelsList: string[] = [];
+	const approvedSchema = options?.approvedSchema ?? null;
 
 	try {
 		// ── Шаг 0: Анализ изображения (Vision) ──────────────────────────────
@@ -548,6 +688,8 @@ export async function runPipeline(
 		let lastError: string | null = null;
 		let sandboxOutput: SandboxOutput | null = null;
 		let rawStdout = '';
+		let solvedSchemaData: SchemaAny | undefined;
+		let solvedSchemaVersion: SchemaVersionTag | undefined;
 
 		for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
 			if (attempt > 0) {
@@ -601,6 +743,32 @@ export async function runPipeline(
 					continue;
 				}
 				sandboxOutput = { ...sandboxOutput, graphs: graphNormalization.graphs };
+
+				const schemaNormalization = approvedSchema
+					? normalizeSchemaForApprovedContext(sandboxOutput, approvedSchema)
+					: normalizeSchemaFromOutput(sandboxOutput);
+
+				if (approvedSchema && schemaNormalization.issues.length > 0) {
+					lastError = `Schema patch contract violation: ${schemaNormalization.issues.join('; ')}`;
+					console.warn('[Pipeline] Schema patch contract violation:', schemaNormalization.issues);
+					if (attempt >= MAX_RETRIES) {
+						onStatus({
+							type: 'error',
+							message:
+								`Не удалось получить корректный schemaPatch после ${MAX_RETRIES + 1} попыток:\n` +
+								schemaNormalization.issues.join('\n')
+						});
+						return;
+					}
+					continue;
+				}
+
+				if (!approvedSchema && schemaNormalization.issues.length > 0) {
+					console.warn('[Pipeline] Ignoring invalid schemaData from solver output:', schemaNormalization.issues);
+				}
+
+				solvedSchemaData = schemaNormalization.schemaData;
+				solvedSchemaVersion = schemaNormalization.schemaVersion;
 
 				lastError = null;
 				break;
@@ -686,6 +854,8 @@ export async function runPipeline(
 			generatedCode: pythonCode,
 			executionLogs: rawStdout,
 			graphData,
+			schemaData: solvedSchemaData,
+			schemaVersion: solvedSchemaVersion,
 			usedModels: usedModelsList
 		});
 		console.log('[Pipeline] DONE');

@@ -149,7 +149,8 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 					generatedCode: resultEvent.generatedCode ?? null,
 					executionLogs: resultEvent.executionLogs ?? null,
 					graphData: resultEvent.graphData ? JSON.stringify(resultEvent.graphData) : undefined,
-					schemaVersion: schemaValidation.version ?? '2.0',
+					schemaData: resultEvent.schemaData ? JSON.stringify(resultEvent.schemaData) : undefined,
+					schemaVersion: resultEvent.schemaVersion ?? schemaValidation.version ?? '2.0',
 					usedModels: resultEvent.usedModels ? JSON.stringify(resultEvent.usedModels) : undefined
 				}
 			});
@@ -162,6 +163,8 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 				id: assistantMessage.id,
 				content: assistantMessage.content,
 				graphData: resultEvent.graphData ?? null,
+				schemaData: resultEvent.schemaData ?? null,
+				schemaVersion: resultEvent.schemaVersion ?? schemaValidation.version ?? '2.0',
 				usedModels: resultEvent.usedModels ?? null,
 				createdAt: assistantMessage.createdAt
 			}

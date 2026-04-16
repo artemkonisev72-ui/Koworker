@@ -125,6 +125,11 @@
 		return [] as unknown[];
 	});
 
+	let visibleGraphGroups = $derived.by(() => {
+		if (schemes.length > 0) return [] as GraphGroup[];
+		return graphGroups;
+	});
+
 	const SAFE_CLASS_TOKEN = /^[A-Za-z0-9_-]+$/;
 
 	const DOMPURIFY_CONFIG = {
@@ -610,9 +615,9 @@
 			</div>
 		{/if}
 
-		{#if graphGroups.length > 0}
+		{#if visibleGraphGroups.length > 0}
 			<div class="graphs-container">
-				{#each graphGroups as group}
+				{#each visibleGraphGroups as group}
 					{#if group.memberId}
 						<div class="graph-group-title">Member: {group.memberId}</div>
 					{/if}

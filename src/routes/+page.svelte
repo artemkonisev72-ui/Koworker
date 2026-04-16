@@ -645,6 +645,8 @@
 							message?: string;
 							content?: string;
 							graphData?: GraphData[];
+							schemaData?: unknown;
+							schemaVersion?: string;
 							usedModels?: string[];
 						};
 
@@ -657,6 +659,8 @@
 											...m,
 											content: event.content ?? '',
 											graphData: event.graphData ?? null,
+											schemaData: event.schemaData ?? null,
+											schemaVersion: event.schemaVersion ?? null,
 											usedModels: event.usedModels ?? null,
 											isStreaming: false
 									  }

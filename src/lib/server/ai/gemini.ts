@@ -372,6 +372,21 @@ export async function generatePythonCode(
 	retryContext?: string,
 	forcedModel?: string | null
 ): Promise<{ code: string; model: GeminiModel; tokens: number }> {
+	const isSchemaCheckSolve = userMessage.includes('[APPROVED_SCHEMA_JSON]');
+	const visualContract = isSchemaCheckSolve
+		? `9. When approved schema context is present, choose ONE visual mode:
+   - Graph mode: return "graphs" as described above.
+   - Schema mode: return ONLY "schemaPatch" with keys:
+     {"deleteObjectIds":[],"deleteResultIds":[],"addNodes":[],"addObjects":[],"addResults":[]}
+10. For schemaPatch mode use delete+add operations only:
+   - Never mutate existing objects/results inline.
+   - Reusing an existing object/result id is allowed only if that id is listed in deleteObjectIds/deleteResultIds in the same output.
+   - Do not output full schemaData in schema_check solve mode.`
+		: `9. Choose visual output format by task:
+   - For classic numeric plots/curves return "graphs".
+   - For object-based engineering schemes/epures return "schemaData" (v2).
+10. If "schemaData" is used, keep version "2.0" and use finite numbers only.`;
+
 	const systemPrompt = `You generate Python code for exact scientific computation.
 Rules:
 1. Use only: math, sympy, numpy, json.
@@ -383,7 +398,8 @@ Rules:
 6. For type="diagram", always provide non-empty memberId.
 7. Put primary numeric/text result in key "result".
 8. Prefer sympy for exact math and numpy arrays for sampling points.
-9. ${languagePolicy(userMessage)}`;
+${visualContract}
+11. ${languagePolicy(userMessage)}`;
 
 	let userContent = `Task: ${userMessage}`;
 	if (retryContext) userContent += `\n\nFix this error context:\n${retryContext}`;

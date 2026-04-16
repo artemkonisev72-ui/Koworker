@@ -1025,6 +1025,9 @@
 	<div class="scheme-wrapper" bind:this={wrapperEl} class:fullscreen={isFullscreen}>
 		<div class="scheme-title">
 			<span>{title}</span>
+			{#if isFullscreen}
+				<span class="scheme-fullscreen-hint">Shift + ЛКМ для перемещения</span>
+			{/if}
 			<button class="scheme-fullscreen-btn" onclick={toggleFullscreen}>
 				{isFullscreen ? 'Close' : 'Full screen'}
 			</button>
@@ -1089,6 +1092,16 @@
 		font-size: 0.67rem;
 		padding: 0.2rem 0.45rem;
 		cursor: pointer;
+	}
+
+	.scheme-fullscreen-hint {
+		margin-left: auto;
+		font-size: 0.68rem;
+		font-weight: 500;
+		letter-spacing: 0;
+		text-transform: none;
+		color: var(--text-muted);
+		white-space: nowrap;
 	}
 
 	.scheme-board {
