@@ -4,26 +4,27 @@
 :root {
 	/* Warm minimalism: light mode */
 	--bg-base: #f9f8f6;
-	--bg-surface: #f3eee5;
-	--bg-elevated: #ece4d9;
-	--bg-card: #fffdf8;
-	--bg-input: #f4eee4;
+	--bg-surface: #f9f8f6;
+	--bg-elevated: #f4f2ef;
+	--bg-card: #ffffff;
+	--bg-input: #ffffff;
+	--user-bubble: #ffffff;
 
-	--border-subtle: rgba(110, 95, 80, 0.18);
-	--border-medium: rgba(110, 95, 80, 0.3);
+	--border-subtle: #e7e5e4;
+	--border-medium: #d5d1cf;
 
-	--accent-primary: #c56247;
-	--accent-secondary: #9e4d37;
-	--accent-soft: rgba(197, 98, 71, 0.16);
-	--accent-gradient: #c56247;
+	--accent-primary: #455e4e;
+	--accent-secondary: #3a5042;
+	--accent-soft: rgba(69, 94, 78, 0.16);
+	--accent-gradient: #455e4e;
 
 	--text-primary: #2d2b2a;
-	--text-secondary: #57514c;
-	--text-muted: #7c7369;
-	--text-code: #2f2924;
+	--text-secondary: #4e4844;
+	--text-muted: #78716c;
+	--text-code: #2d2b2a;
 
-	--success: #5f7c60;
-	--warning: #9a7a42;
+	--success: #557360;
+	--warning: #8c877f;
 	--error: #b04c34;
 
 	/* Typography */
@@ -57,27 +58,28 @@
 
 :root[data-theme='dark'] {
 	/* Cozy dark mode */
-	--bg-base: #1e1c1a;
-	--bg-surface: #252220;
-	--bg-elevated: #2c2926;
-	--bg-card: #2a2724;
-	--bg-input: #22201d;
+	--bg-base: #1c1a19;
+	--bg-surface: #1c1a19;
+	--bg-elevated: #252321;
+	--bg-card: #252321;
+	--bg-input: #1a1817;
+	--user-bubble: #2e2a27;
 
-	--border-subtle: rgba(190, 178, 164, 0.26);
-	--border-medium: rgba(190, 178, 164, 0.36);
+	--border-subtle: #3a3633;
+	--border-medium: #4a4542;
 
-	--accent-primary: #d27454;
-	--accent-secondary: #e09577;
-	--accent-soft: rgba(210, 116, 84, 0.22);
-	--accent-gradient: #d27454;
+	--accent-primary: #557360;
+	--accent-secondary: #6f8e79;
+	--accent-soft: rgba(85, 115, 96, 0.22);
+	--accent-gradient: #557360;
 
-	--text-primary: #ebe8e3;
-	--text-secondary: #c8c0b7;
-	--text-muted: #9f978e;
-	--text-code: #f2ece3;
+	--text-primary: #e8e6e3;
+	--text-secondary: #c6c0ba;
+	--text-muted: #9e9a95;
+	--text-code: #e8e6e3;
 
-	--success: #8fb28d;
-	--warning: #cfb178;
+	--success: #557360;
+	--warning: #9e9a95;
 	--error: #df886f;
 
 	/* Avoid heavy dark shadows */

@@ -92,7 +92,7 @@
 			document.documentElement.style.colorScheme = theme;
 			const themeMeta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
 			if (themeMeta) {
-				themeMeta.setAttribute('content', theme === 'dark' ? '#1e1c1a' : '#f9f8f6');
+				themeMeta.setAttribute('content', theme === 'dark' ? '#1c1a19' : '#f9f8f6');
 			}
 		}
 		if (typeof window !== 'undefined') {
@@ -2179,15 +2179,16 @@
 	}
 
 	.user-bubble {
-		background: var(--accent-gradient);
-		color: #fff8f1;
+		background: var(--user-bubble);
+		color: var(--text-primary);
+		border: 1px solid var(--border-subtle);
 		border-bottom-right-radius: var(--radius-xs);
 		box-shadow: var(--shadow-sm);
 	}
 
 	.user-bubble ::selection {
-		background: rgba(255, 255, 255, 0.28);
-		color: #ffffff;
+		background: var(--accent-soft);
+		color: var(--text-primary);
 	}
 
 	.assistant-bubble {
