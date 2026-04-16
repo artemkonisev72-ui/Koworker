@@ -6,8 +6,7 @@
 	<div class="auth-card">
 		<header class="auth-header">
 			<img src="/favicon.svg" alt="Auth Logo" class="auth-logo" />
-			<h1>Вход в Koworker</h1>
-			<p>С возвращением! Войдите в свою учетную запись.</p>
+			<h1>Koworker</h1>
 		</header>
 
 		<form method="POST" class="auth-form">
@@ -17,7 +16,14 @@
 
 			<div class="form-group">
 				<label for="email">Email</label>
-				<input type="email" id="email" name="email" value={form?.email ?? ''} placeholder="name@example.com" required />
+				<input
+					type="email"
+					id="email"
+					name="email"
+					value={form?.email ?? ''}
+					placeholder="name@example.com"
+					required
+				/>
 			</div>
 
 			<div class="form-group">
@@ -41,11 +47,8 @@
 		justify-content: center;
 		min-height: 100dvh;
 		background: var(--bg-base);
-		padding:
-			calc(1rem + env(safe-area-inset-top))
-			calc(1rem + env(safe-area-inset-right))
-			calc(1rem + env(safe-area-inset-bottom))
-			calc(1rem + env(safe-area-inset-left));
+		padding: calc(1rem + env(safe-area-inset-top)) calc(1rem + env(safe-area-inset-right))
+			calc(1rem + env(safe-area-inset-bottom)) calc(1rem + env(safe-area-inset-left));
 	}
 	.auth-card {
 		width: 100%;
@@ -53,30 +56,28 @@
 		background: var(--bg-card);
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-lg);
-		padding: 2.5rem;
+		padding: 2.7rem 2.5rem 2.5rem;
 		box-shadow: var(--shadow-lg);
 		animation: fadeInUp 0.4s ease;
 	}
 	.auth-header {
 		text-align: center;
-		margin-bottom: 2rem;
+		margin-bottom: 2.15rem;
 	}
 	.auth-logo {
-		width: 48px;
-		height: 48px;
+		width: 52px;
+		height: 52px;
 		object-fit: contain;
-		margin: 0 auto 0.5rem;
+		margin: 0 auto 0.7rem;
 		display: block;
 	}
 	.auth-header h1 {
-		font-size: 1.5rem;
-		font-weight: 700;
+		font-family: var(--font-serif);
+		font-size: 2.15rem;
+		font-weight: 600;
+		letter-spacing: 0;
 		color: var(--text-primary);
-		margin-bottom: 0.5rem;
-	}
-	.auth-header p {
-		color: var(--text-secondary);
-		font-size: 0.88rem;
+		margin: 0;
 	}
 	.auth-form {
 		display: flex;
@@ -145,7 +146,13 @@
 	}
 
 	@keyframes fadeInUp {
-		from { opacity: 0; transform: translateY(10px); }
-		to { opacity: 1; transform: translateY(0); }
+		from {
+			opacity: 0;
+			transform: translateY(10px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
 	}
 </style>
