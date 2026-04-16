@@ -503,10 +503,47 @@
 	async function parseErrorMessage(res: Response): Promise<string> {
 		try {
 			const text = await res.text();
+			if (text && /<html[\s>]/i.test(text)) {
+				return `HTTP ${res.status}: upstream timeout or proxy error`;
+			}
 			return text || `HTTP ${res.status}`;
 		} catch {
 			return `HTTP ${res.status}`;
 		}
+	}
+
+	function sleep(ms: number): Promise<void> {
+		return new Promise((resolve) => {
+			setTimeout(resolve, ms);
+		});
+	}
+
+	async function waitForSchemaSolveResult(draftId: string, chatId: string): Promise<void> {
+		const startedAt = Date.now();
+		const timeoutMs = 8 * 60_000;
+
+		while (Date.now() - startedAt < timeoutMs) {
+			const res = await fetch(`/api/schema/${draftId}`);
+			if (res.ok) {
+				const payload = await res.json();
+				const status = typeof payload.status === 'string' ? payload.status : '';
+
+				if (status === 'SOLVED') {
+					await loadMessages(chatId);
+					await loadChats();
+					return;
+				}
+				if (status === 'FAILED' || status === 'CANCELED') {
+					await loadMessages(chatId);
+					await loadChats();
+					throw new Error(`Solve finished with status: ${status}`);
+				}
+			}
+
+			await sleep(1500);
+		}
+
+		throw new Error('Solve is taking too long. Please wait a bit and refresh chat messages.');
 	}
 
 	async function startSchemaCheckFlow(
@@ -589,16 +626,27 @@
 		if (!activeDraft || !activeChatId || isSchemaActionLoading || isLoading) return;
 		statusMessage = 'Solving using approved scheme...';
 		isSchemaActionLoading = true;
+		const draftId = activeDraft.draftId;
+		const chatId = activeChatId;
 		try {
-			const res = await fetch(`/api/schema/${activeDraft.draftId}/confirm`, { method: 'POST' });
+			const res = await fetch(`/api/schema/${draftId}/confirm`, { method: 'POST' });
 			if (!res.ok) {
 				throw new Error(await parseErrorMessage(res));
+			}
+			const payload = await res.json();
+			if (payload.status === 'SOLVED') {
+				activeDraft = null;
+				showRevisionBox = false;
+				revisionNotes = '';
+				await loadMessages(chatId);
+				await loadChats();
+				return;
 			}
 			activeDraft = null;
 			showRevisionBox = false;
 			revisionNotes = '';
-			await loadMessages(activeChatId);
-			await loadChats();
+			statusMessage = 'Solve started. Waiting for result...';
+			await waitForSchemaSolveResult(draftId, chatId);
 		} catch (err) {
 			console.error('Schema confirm failed:', err);
 			alert(err instanceof Error ? err.message : String(err));
