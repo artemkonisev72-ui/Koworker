@@ -14,6 +14,7 @@
  */
 import type { RequestHandler } from './$types';
 import { runPipeline, type PipelineStatus } from '$lib/server/ai/pipeline.js';
+import { toForcedModel } from '$lib/server/ai/model-preference.js';
 import { prisma } from '$lib/server/db.js';
 import { json, error } from '@sveltejs/kit';
 
@@ -87,7 +88,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		return error(403, 'Forbidden');
 	}
 
-	const forcedModel = chat.modelPreference === 'auto' ? null : chat.modelPreference;
+	const forcedModel = toForcedModel(chat.modelPreference);
 
 	// Извлекаем историю сообщений для контекста (последние 20 сообщений)
 	const rawHistory = await prisma.message.findMany({

@@ -2,6 +2,7 @@ import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
 import { repairSchemaByIssues, reviseSchema } from '$lib/server/ai/gemini.js';
+import { toForcedModel } from '$lib/server/ai/model-preference.js';
 import type { SchemaAny } from '$lib/schema/schema-any.js';
 import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import {
@@ -64,7 +65,7 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 		modelPreference: draft.chat.modelPreference
 	});
 
-	const forcedModel = draft.chat.modelPreference === 'auto' ? null : draft.chat.modelPreference;
+	const forcedModel = toForcedModel(draft.chat.modelPreference);
 	const history = await loadGeminiHistory(draft.chatId);
 
 	await db.message.create({

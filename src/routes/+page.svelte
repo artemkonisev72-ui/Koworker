@@ -890,7 +890,7 @@
 	>
 		<div class="sidebar-header">
 			<div class="logo">
-				<img src="/favicon.svg" alt="Koworker Logo" class="logo-icon" />
+				<img src="/pwa-192x192.png" alt="Koworker Logo" class="logo-icon" />
 				<span class="logo-text">Koworker</span>
 			</div>
 			<button class="icon-btn" onclick={() => (sidebarOpen = !sidebarOpen)} title="Свернуть">

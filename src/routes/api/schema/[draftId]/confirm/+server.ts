@@ -2,6 +2,7 @@ import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
 import { runPipelineWithApprovedSchema, type PipelineStatus } from '$lib/server/ai/pipeline.js';
+import { toForcedModel } from '$lib/server/ai/model-preference.js';
 import type { SchemaAny } from '$lib/schema/schema-any.js';
 import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import { canConfirmStatus, loadGeminiHistory, logSchemaCheck, parseImageData } from '$lib/server/schema/flow.js';
@@ -194,7 +195,7 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 		return error(422, `Approved schema validation failed: ${schemaValidation.errors.join('; ')}`);
 	}
 
-	const forcedModel = draft.chat.modelPreference === 'auto' ? null : draft.chat.modelPreference;
+	const forcedModel = toForcedModel(draft.chat.modelPreference);
 	const revisionNotes = draft.revisions
 		.map((revision: { userNotes?: string | null }) => revision.userNotes?.trim())
 		.filter((note: string | undefined): note is string => Boolean(note));

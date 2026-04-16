@@ -5,7 +5,7 @@
 <div class="auth-container">
 	<div class="auth-card">
 		<header class="auth-header">
-			<img src="/favicon.svg" alt="Auth Logo" class="auth-logo" />
+			<img src="/pwa-192x192.png" alt="Auth Logo" class="auth-logo" />
 			<h1>Koworker</h1>
 		</header>
 

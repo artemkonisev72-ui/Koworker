@@ -19,6 +19,17 @@ export type GeminiModel =
 	| 'gemini-2.5-flash'
 	| 'gemini-2.5-flash-lite';
 
+const GEMINI_MODEL_SET = new Set<GeminiModel>([
+	'gemini-3.1-flash-preview',
+	'gemini-3.1-pro-preview',
+	'gemini-3-pro-preview',
+	'gemini-3-flash-preview',
+	'gemini-3.1-flash-lite-preview',
+	'gemini-2.5-pro',
+	'gemini-2.5-flash',
+	'gemini-2.5-flash-lite'
+]);
+
 const FLASH_CHAIN: GeminiModel[] = [
 	'gemini-3.1-flash-preview',
 	'gemini-3-flash-preview',
@@ -145,9 +156,14 @@ async function generateWithFallback(
 	messages: GeminiMessage[],
 	forcedModel?: string | null
 ): Promise<{ text: string; model: GeminiModel; tokens: number }> {
+	const normalizedForcedModel =
+		typeof forcedModel === 'string' && GEMINI_MODEL_SET.has(forcedModel as GeminiModel)
+			? (forcedModel as GeminiModel)
+			: null;
+
 	const effectiveChain =
-		forcedModel && forcedModel !== 'auto'
-			? [forcedModel as GeminiModel]
+		normalizedForcedModel
+			? [normalizedForcedModel]
 			: chain.indexOf(startModel) >= 0
 				? chain.slice(chain.indexOf(startModel))
 				: chain;
@@ -156,7 +172,7 @@ async function generateWithFallback(
 		const model = effectiveChain[i];
 		try {
 			const { text, tokens } = await generate(model, messages);
-			console.log(`[Gemini] Using: ${model}${forcedModel && forcedModel !== 'auto' ? ' (FORCED)' : ''}`);
+			console.log(`[Gemini] Using: ${model}${normalizedForcedModel ? ' (FORCED)' : ''}`);
 			return { text, model, tokens };
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);

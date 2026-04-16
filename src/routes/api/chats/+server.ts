@@ -5,6 +5,7 @@
  */
 import type { RequestHandler } from './$types';
 import { prisma } from '$lib/server/db.js';
+import { normalizeModelPreference } from '$lib/server/ai/model-preference.js';
 import { json, error } from '@sveltejs/kit';
 
 export const POST: RequestHandler = async ({ locals, request }) => {
@@ -44,5 +45,10 @@ export const GET: RequestHandler = async ({ locals }) => {
 		}
 	});
 
-	return json(chats);
+	return json(
+		chats.map((chat) => ({
+			...chat,
+			modelPreference: normalizeModelPreference(chat.modelPreference)
+		}))
+	);
 };

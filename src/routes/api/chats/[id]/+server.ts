@@ -1,6 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { prisma } from '$lib/server/db';
+import { isModelPreference, normalizeModelPreference } from '$lib/server/ai/model-preference.js';
 
 // PATCH /api/chats/[id] — rename or pin chat
 export const PATCH: RequestHandler = async ({ params, locals, request }) => {
@@ -14,17 +15,27 @@ export const PATCH: RequestHandler = async ({ params, locals, request }) => {
 	if (!chat) return error(404, 'Chat not found');
 	if (chat.userId !== locals.user.id) return error(403, 'Forbidden');
 
+	if (body.modelPreference !== undefined && !isModelPreference(body.modelPreference)) {
+		return error(400, `Unsupported modelPreference: ${String(body.modelPreference)}`);
+	}
+
 	const updated = await prisma.chat.update({
 		where: { id },
 		data: {
 			title: body.title !== undefined ? body.title : undefined,
 			isPinned: body.isPinned !== undefined ? body.isPinned : undefined,
-			modelPreference: body.modelPreference !== undefined ? body.modelPreference : undefined,
+			modelPreference:
+				body.modelPreference !== undefined
+					? normalizeModelPreference(body.modelPreference)
+					: undefined,
 			isPublic: body.isPublic !== undefined ? body.isPublic : undefined
 		}
 	});
 
-	return json(updated);
+	return json({
+		...updated,
+		modelPreference: normalizeModelPreference(updated.modelPreference)
+	});
 };
 
 // DELETE /api/chats/[id] — delete chat

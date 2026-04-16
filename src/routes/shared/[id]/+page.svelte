@@ -14,7 +14,7 @@
 		<div class="header-content">
 			<div class="logo">
 				<img
-					src="/favicon.svg"
+					src="/pwa-192x192.png"
 					alt="Koworker Logo"
 					width="24"
 					height="24"
