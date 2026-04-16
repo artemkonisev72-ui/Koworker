@@ -13,7 +13,13 @@
 	<header class="shared-header">
 		<div class="header-content">
 			<div class="logo">
-				<img src="/favicon.svg" alt="Koworker Logo" width="24" height="24" style="object-fit: contain;" />
+				<img
+					src="/favicon.svg"
+					alt="Koworker Logo"
+					width="24"
+					height="24"
+					style="object-fit: contain;"
+				/>
 				<span class="logo-text">Koworker</span>
 				<span class="badge">SHARED</span>
 			</div>
@@ -31,23 +37,23 @@
 	</main>
 
 	<footer class="shared-footer">
-		<p>Это публичная копия чата. Чтобы создать свой проект, <a href="/login">войдите в систему</a>.</p>
+		<p>
+			Это публичная копия чата. Чтобы создать свой проект, <a href="/login">войдите в систему</a>.
+		</p>
 	</footer>
 </div>
 
 <style>
-	:global(html), :global(body) {
+	:global(html),
+	:global(body) {
 		overflow: auto !important;
 	}
 
 	.shared-container {
 		max-width: 900px;
 		margin: 0 auto;
-		padding:
-			calc(2rem + env(safe-area-inset-top))
-			calc(1rem + env(safe-area-inset-right))
-			calc(1.5rem + env(safe-area-inset-bottom))
-			calc(1rem + env(safe-area-inset-left));
+		padding: calc(2rem + env(safe-area-inset-top)) calc(1rem + env(safe-area-inset-right))
+			calc(1.5rem + env(safe-area-inset-bottom)) calc(1rem + env(safe-area-inset-left));
 		min-height: 100dvh;
 		display: flex;
 		flex-direction: column;
@@ -73,8 +79,9 @@
 	}
 
 	.logo-text {
-		font-weight: 800;
-		letter-spacing: -0.02em;
+		font-family: var(--font-serif);
+		font-weight: 600;
+		letter-spacing: -0.015em;
 		font-size: 1.25rem;
 	}
 

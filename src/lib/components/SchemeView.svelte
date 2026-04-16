@@ -76,10 +76,10 @@
 
 	const COLOR = {
 		base: 'var(--text-primary)',
-		support: 'var(--accent-primary)',
-		load: 'var(--error)',
-		kinematic: 'var(--accent-secondary)',
-		result: 'var(--warning)',
+		support: 'var(--text-secondary)',
+		load: 'var(--text-secondary)',
+		kinematic: 'var(--text-secondary)',
+		result: 'var(--text-muted)',
 		muted: 'var(--text-muted)',
 		text: 'var(--text-secondary)'
 	} as const;
@@ -98,7 +98,12 @@
 
 	function toPoint(value: unknown): SchemaPoint | null {
 		if (isPoint(value)) return { x: value.x, y: value.y };
-		if (Array.isArray(value) && value.length === 2 && isFiniteNumber(value[0]) && isFiniteNumber(value[1])) {
+		if (
+			Array.isArray(value) &&
+			value.length === 2 &&
+			isFiniteNumber(value[0]) &&
+			isFiniteNumber(value[1])
+		) {
 			return { x: value[0], y: value[1] };
 		}
 		return null;
@@ -134,9 +139,15 @@
 
 	function metricSnapshot(metrics: Record<string, unknown> | null): string | null {
 		if (!metrics) return null;
-		const collapse = isFiniteNumber(metrics.coordCollapseRate) ? metrics.coordCollapseRate.toFixed(3) : '-';
-		const minSep = isFiniteNumber(metrics.minElementSeparation) ? metrics.minElementSeparation.toFixed(3) : '-';
-		const aspect = isFiniteNumber(metrics.aspectDistortion) ? metrics.aspectDistortion.toFixed(3) : '-';
+		const collapse = isFiniteNumber(metrics.coordCollapseRate)
+			? metrics.coordCollapseRate.toFixed(3)
+			: '-';
+		const minSep = isFiniteNumber(metrics.minElementSeparation)
+			? metrics.minElementSeparation.toFixed(3)
+			: '-';
+		const aspect = isFiniteNumber(metrics.aspectDistortion)
+			? metrics.aspectDistortion.toFixed(3)
+			: '-';
 		return `collapse=${collapse} | minSep=${minSep} | aspect=${aspect}`;
 	}
 
@@ -163,12 +174,29 @@
 	}
 
 	function directionFromKeyword(value: string): SchemaPoint | null {
-		const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, '');
+		const normalized = value
+			.trim()
+			.toLowerCase()
+			.replace(/[\s_-]+/g, '');
 		if (!normalized) return null;
-		if (normalized === 'up' || normalized === 'u' || normalized === 'north' || normalized === '+y') return { x: 0, y: 1 };
-		if (normalized === 'down' || normalized === 'd' || normalized === 'south' || normalized === '-y') return { x: 0, y: -1 };
-		if (normalized === 'left' || normalized === 'l' || normalized === 'west' || normalized === '-x') return { x: -1, y: 0 };
-		if (normalized === 'right' || normalized === 'r' || normalized === 'east' || normalized === '+x') return { x: 1, y: 0 };
+		if (normalized === 'up' || normalized === 'u' || normalized === 'north' || normalized === '+y')
+			return { x: 0, y: 1 };
+		if (
+			normalized === 'down' ||
+			normalized === 'd' ||
+			normalized === 'south' ||
+			normalized === '-y'
+		)
+			return { x: 0, y: -1 };
+		if (normalized === 'left' || normalized === 'l' || normalized === 'west' || normalized === '-x')
+			return { x: -1, y: 0 };
+		if (
+			normalized === 'right' ||
+			normalized === 'r' ||
+			normalized === 'east' ||
+			normalized === '+x'
+		)
+			return { x: 1, y: 0 };
 		if (normalized === 'upright' || normalized === 'northeast') return { x: 1, y: 1 };
 		if (normalized === 'upleft' || normalized === 'northwest') return { x: -1, y: 1 };
 		if (normalized === 'downright' || normalized === 'southeast') return { x: 1, y: -1 };
@@ -196,13 +224,17 @@
 			if (Number.isFinite(angleFromString)) return vectorFromAngleDegrees(angleFromString);
 		}
 
-		const angle =
-			isFiniteNumber(geometry.directionAngle) ? geometry.directionAngle :
-			isFiniteNumber(geometry.angleDeg) ? geometry.angleDeg :
-			isFiniteNumber(geometry.angle) ? geometry.angle :
-			isFiniteNumber(geometry.thetaDeg) ? geometry.thetaDeg :
-			isFiniteNumber(geometry.theta) ? geometry.theta :
-			null;
+		const angle = isFiniteNumber(geometry.directionAngle)
+			? geometry.directionAngle
+			: isFiniteNumber(geometry.angleDeg)
+				? geometry.angleDeg
+				: isFiniteNumber(geometry.angle)
+					? geometry.angle
+					: isFiniteNumber(geometry.thetaDeg)
+						? geometry.thetaDeg
+						: isFiniteNumber(geometry.theta)
+							? geometry.theta
+							: null;
 		if (angle !== null) return vectorFromAngleDegrees(angle);
 
 		const cardinals = [geometry.cardinal, geometry.orientation, geometry.bearing, geometry.dir];
@@ -254,7 +286,10 @@
 		return nodeMap.get(id) ?? null;
 	}
 
-	function getPair(nodeMap: Map<string, NodeV2>, refs: string[] | undefined): [NodeV2, NodeV2] | null {
+	function getPair(
+		nodeMap: Map<string, NodeV2>,
+		refs: string[] | undefined
+	): [NodeV2, NodeV2] | null {
 		if (!refs || refs.length < 2) return null;
 		const a = getNode(nodeMap, refs[0]);
 		const b = getNode(nodeMap, refs[1]);
@@ -264,17 +299,26 @@
 
 	function labelText(object: ObjectV2 | ResultV2, fallback = ''): string {
 		if (typeof object.label === 'string' && object.label.trim()) return object.label.trim();
-		if (typeof object.geometry.label === 'string' && object.geometry.label.trim()) return object.geometry.label.trim();
-		if (typeof object.geometry.text === 'string' && object.geometry.text.trim()) return object.geometry.text.trim();
+		if (typeof object.geometry.label === 'string' && object.geometry.label.trim())
+			return object.geometry.label.trim();
+		if (typeof object.geometry.text === 'string' && object.geometry.text.trim())
+			return object.geometry.text.trim();
 		return fallback;
 	}
 
 	function drawSegment(a: SchemaPoint, b: SchemaPoint, options: Record<string, unknown>): void {
-		board.create('segment', [[a.x, a.y], [b.x, b.y]], {
-			fixed: true,
-			highlight: false,
-			...options
-		});
+		board.create(
+			'segment',
+			[
+				[a.x, a.y],
+				[b.x, b.y]
+			],
+			{
+				fixed: true,
+				highlight: false,
+				...options
+			}
+		);
 	}
 
 	function drawArrow(a: SchemaPoint, b: SchemaPoint, options: Record<string, unknown>): void {
@@ -282,16 +326,23 @@
 			typeof options.strokeColor === 'string' && options.strokeColor.trim().length > 0
 				? options.strokeColor
 				: COLOR.base;
-		board.create('arrow', [[a.x, a.y], [b.x, b.y]], {
-			fixed: true,
-			highlight: false,
-			lastArrow: true,
-			strokeColor: stroke,
-			fillColor: stroke,
-			highlightStrokeColor: stroke,
-			highlightFillColor: stroke,
-			...options
-		});
+		board.create(
+			'arrow',
+			[
+				[a.x, a.y],
+				[b.x, b.y]
+			],
+			{
+				fixed: true,
+				highlight: false,
+				lastArrow: true,
+				strokeColor: stroke,
+				fillColor: stroke,
+				highlightStrokeColor: stroke,
+				highlightFillColor: stroke,
+				...options
+			}
+		);
 	}
 
 	function drawText(point: SchemaPoint, text: string, options: Record<string, unknown> = {}): void {
@@ -310,7 +361,9 @@
 		if (!pair) return;
 		drawSegment(pair[0], pair[1], {
 			strokeColor: COLOR.base,
-			strokeWidth: isFiniteNumber(object.geometry.thickness) ? Math.max(1, object.geometry.thickness) : 4,
+			strokeWidth: isFiniteNumber(object.geometry.thickness)
+				? Math.max(1, object.geometry.thickness)
+				: 4,
 			dash: object.geometry.lineType === 'dashed' ? 2 : 0
 		});
 	}
@@ -321,20 +374,31 @@
 		const [a, b] = pair;
 		const sag = isFiniteNumber(object.geometry.sag) ? Math.max(0, object.geometry.sag) : 0.1;
 		const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - sag };
-		board.create('curve', [[a.x, mid.x, b.x], [a.y, mid.y, b.y]], {
-			fixed: true,
-			highlight: false,
-			strokeColor: COLOR.base,
-			strokeWidth: 2
-		});
+		board.create(
+			'curve',
+			[
+				[a.x, mid.x, b.x],
+				[a.y, mid.y, b.y]
+			],
+			{
+				fixed: true,
+				highlight: false,
+				strokeColor: COLOR.base,
+				strokeWidth: 2
+			}
+		);
 	}
 
 	function drawSpring(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
 		const pair = getPair(nodeMap, object.nodeRefs);
 		if (!pair) return;
 		const [a, b] = pair;
-		const turns = isFiniteNumber(object.geometry.turns) ? Math.max(3, Math.round(object.geometry.turns)) : 6;
-		const amplitude = isFiniteNumber(object.geometry.amplitude) ? Math.max(0.05, object.geometry.amplitude) : 0.12;
+		const turns = isFiniteNumber(object.geometry.turns)
+			? Math.max(3, Math.round(object.geometry.turns))
+			: 6;
+		const amplitude = isFiniteNumber(object.geometry.amplitude)
+			? Math.max(0.05, object.geometry.amplitude)
+			: 0.12;
 		const dx = b.x - a.x;
 		const dy = b.y - a.y;
 		const len = Math.hypot(dx, dy) || 1;
@@ -374,7 +438,9 @@
 		const nx = -ty;
 		const ny = tx;
 
-		const bodyL = isFiniteNumber(object.geometry.bodyLength) ? Math.min(0.6, Math.max(0.15, object.geometry.bodyLength)) : 0.35;
+		const bodyL = isFiniteNumber(object.geometry.bodyLength)
+			? Math.min(0.6, Math.max(0.15, object.geometry.bodyLength))
+			: 0.35;
 		const halfW = 0.09;
 		const center = { x: a.x + dx * 0.45, y: a.y + dy * 0.45 };
 		const p1 = { x: center.x - tx * bodyL + nx * halfW, y: center.y - ty * bodyL + ny * halfW };
@@ -382,22 +448,40 @@
 		const p3 = { x: center.x + tx * bodyL - nx * halfW, y: center.y + ty * bodyL - ny * halfW };
 		const p4 = { x: center.x - tx * bodyL - nx * halfW, y: center.y - ty * bodyL - ny * halfW };
 
-		drawSegment(a, { x: center.x - tx * bodyL, y: center.y - ty * bodyL }, { strokeColor: COLOR.base, strokeWidth: 2 });
-		drawSegment({ x: center.x + tx * bodyL, y: center.y + ty * bodyL }, b, { strokeColor: COLOR.base, strokeWidth: 2 });
-		board.create('polygon', [[p1.x, p1.y], [p2.x, p2.y], [p3.x, p3.y], [p4.x, p4.y]], {
-			fixed: true,
-			highlight: false,
-			vertices: { visible: false, fixed: true, highlight: false, withLabel: false },
-			fillColor: 'transparent',
+		drawSegment(
+			a,
+			{ x: center.x - tx * bodyL, y: center.y - ty * bodyL },
+			{ strokeColor: COLOR.base, strokeWidth: 2 }
+		);
+		drawSegment({ x: center.x + tx * bodyL, y: center.y + ty * bodyL }, b, {
 			strokeColor: COLOR.base,
-			strokeWidth: 1.5
+			strokeWidth: 2
 		});
+		board.create(
+			'polygon',
+			[
+				[p1.x, p1.y],
+				[p2.x, p2.y],
+				[p3.x, p3.y],
+				[p4.x, p4.y]
+			],
+			{
+				fixed: true,
+				highlight: false,
+				vertices: { visible: false, fixed: true, highlight: false, withLabel: false },
+				fillColor: 'transparent',
+				strokeColor: COLOR.base,
+				strokeWidth: 1.5
+			}
+		);
 	}
 
 	function drawDisk(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
 		const center = getNode(nodeMap, object.nodeRefs?.[0]);
 		if (!center) return;
-		const radius = isFiniteNumber(object.geometry.radius) ? Math.max(0.1, object.geometry.radius) : 0.5;
+		const radius = isFiniteNumber(object.geometry.radius)
+			? Math.max(0.1, object.geometry.radius)
+			: 0.5;
 		board.create('circle', [[center.x, center.y], radius], {
 			fixed: true,
 			highlight: false,
@@ -416,7 +500,10 @@
 		if (!schema) return null;
 		const member = schema.objects.find(
 			(object) =>
-				(object.type === 'bar' || object.type === 'cable' || object.type === 'spring' || object.type === 'damper') &&
+				(object.type === 'bar' ||
+					object.type === 'cable' ||
+					object.type === 'spring' ||
+					object.type === 'damper') &&
 				Array.isArray(object.nodeRefs) &&
 				object.nodeRefs.length >= 2 &&
 				(object.nodeRefs[0] === anchorNodeId || object.nodeRefs[1] === anchorNodeId)
@@ -438,7 +525,9 @@
 		if (!node) return;
 		let angleDeg = isFiniteNumber(object.geometry.angle) ? object.geometry.angle : 90;
 		const wallSide =
-			typeof object.geometry.wallSide === 'string' ? object.geometry.wallSide.trim().toLowerCase() : '';
+			typeof object.geometry.wallSide === 'string'
+				? object.geometry.wallSide.trim().toLowerCase()
+				: '';
 		if (!isFiniteNumber(object.geometry.angle) && wallSide) {
 			const tangent = resolveMemberTangentAtNode(object.nodeRefs?.[0], nodeMap) ?? { x: 1, y: 0 };
 			const normal = { x: -tangent.y, y: tangent.x };
@@ -471,16 +560,28 @@
 	function drawHingeFixed(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
 		const node = getNode(nodeMap, object.nodeRefs?.[0]);
 		if (!node) return;
-		board.create('polygon', [[node.x - 0.3, node.y - 0.25], [node.x + 0.3, node.y - 0.25], [node.x, node.y]], {
-			fixed: true,
-			highlight: false,
-			vertices: { visible: false, fixed: true, highlight: false, withLabel: false },
-			fillColor: 'var(--bg-surface)',
-			fillOpacity: 0.85,
-			strokeColor: COLOR.support,
-			strokeWidth: 1.5
-		});
-		drawSegment({ x: node.x - 0.36, y: node.y - 0.28 }, { x: node.x + 0.36, y: node.y - 0.28 }, { strokeColor: COLOR.support, strokeWidth: 1.2 });
+		board.create(
+			'polygon',
+			[
+				[node.x - 0.3, node.y - 0.25],
+				[node.x + 0.3, node.y - 0.25],
+				[node.x, node.y]
+			],
+			{
+				fixed: true,
+				highlight: false,
+				vertices: { visible: false, fixed: true, highlight: false, withLabel: false },
+				fillColor: 'var(--bg-surface)',
+				fillOpacity: 0.85,
+				strokeColor: COLOR.support,
+				strokeWidth: 1.5
+			}
+		);
+		drawSegment(
+			{ x: node.x - 0.36, y: node.y - 0.28 },
+			{ x: node.x + 0.36, y: node.y - 0.28 },
+			{ strokeColor: COLOR.support, strokeWidth: 1.2 }
+		);
 	}
 
 	function drawHingeRoller(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
@@ -499,7 +600,11 @@
 			strokeColor: COLOR.support,
 			fillColor: 'transparent'
 		});
-		drawSegment({ x: node.x - 0.5, y: node.y - 0.56 }, { x: node.x + 0.5, y: node.y - 0.56 }, { strokeColor: COLOR.support, strokeWidth: 1.2 });
+		drawSegment(
+			{ x: node.x - 0.5, y: node.y - 0.56 },
+			{ x: node.x + 0.5, y: node.y - 0.56 },
+			{ strokeColor: COLOR.support, strokeWidth: 1.2 }
+		);
 	}
 
 	function drawInternalHinge(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
@@ -521,17 +626,31 @@
 		const guideEnd = getNode(nodeMap, object.nodeRefs?.[2]);
 		if (!node || !guideStart || !guideEnd) return;
 		drawSegment(guideStart, guideEnd, { strokeColor: COLOR.muted, strokeWidth: 1.2, dash: 2 });
-		board.create('polygon', [[node.x - 0.16, node.y - 0.12], [node.x + 0.16, node.y - 0.12], [node.x + 0.16, node.y + 0.12], [node.x - 0.16, node.y + 0.12]], {
-			fixed: true,
-			highlight: false,
-			vertices: { visible: false, fixed: true, highlight: false, withLabel: false },
-			fillColor: 'var(--bg-elevated)',
-			strokeColor: COLOR.base,
-			strokeWidth: 1.2
-		});
+		board.create(
+			'polygon',
+			[
+				[node.x - 0.16, node.y - 0.12],
+				[node.x + 0.16, node.y - 0.12],
+				[node.x + 0.16, node.y + 0.12],
+				[node.x - 0.16, node.y + 0.12]
+			],
+			{
+				fixed: true,
+				highlight: false,
+				vertices: { visible: false, fixed: true, highlight: false, withLabel: false },
+				fillColor: 'var(--bg-elevated)',
+				strokeColor: COLOR.base,
+				strokeWidth: 1.2
+			}
+		);
 	}
 
-	function drawVectorLike(object: ObjectV2, nodeMap: Map<string, NodeV2>, color: string, prefix: string): void {
+	function drawVectorLike(
+		object: ObjectV2,
+		nodeMap: Map<string, NodeV2>,
+		color: string,
+		prefix: string
+	): void {
 		const node = getNode(nodeMap, object.nodeRefs?.[0]);
 		if (!node) return;
 		const direction = normalizeDirection(object.geometry);
@@ -544,18 +663,23 @@
 			object,
 			isFiniteNumber(object.geometry.magnitude) ? `${prefix}=${object.geometry.magnitude}` : prefix
 		);
-		drawText(
-			{ x: start.x - direction.x * 0.12, y: start.y - direction.y * 0.12 },
-			label,
-			{ strokeColor: COLOR.text }
-		);
+		drawText({ x: start.x - direction.x * 0.12, y: start.y - direction.y * 0.12 }, label, {
+			strokeColor: COLOR.text
+		});
 	}
 
-	function drawMomentLike(object: ObjectV2, nodeMap: Map<string, NodeV2>, color: string, defaultLabel: string): void {
+	function drawMomentLike(
+		object: ObjectV2,
+		nodeMap: Map<string, NodeV2>,
+		color: string,
+		defaultLabel: string
+	): void {
 		const node = getNode(nodeMap, object.nodeRefs?.[0]);
 		if (!node) return;
 		const direction = object.geometry.direction === 'cw' ? 'cw' : 'ccw';
-		const radius = isFiniteNumber(object.geometry.radius) ? Math.max(0.2, Math.min(1.2, Math.abs(object.geometry.radius))) : 0.45;
+		const radius = isFiniteNumber(object.geometry.radius)
+			? Math.max(0.2, Math.min(1.2, Math.abs(object.geometry.radius)))
+			: 0.45;
 		board.create('circle', [[node.x, node.y], radius], {
 			fixed: true,
 			highlight: false,
@@ -564,19 +688,32 @@
 			dash: 2,
 			fillColor: 'transparent'
 		});
-		const arrowFrom = direction === 'cw' ? { x: node.x + radius, y: node.y + 0.05 } : { x: node.x - radius, y: node.y + 0.05 };
-		const arrowTo = direction === 'cw' ? { x: node.x + radius - 0.15, y: node.y - 0.16 } : { x: node.x - radius + 0.15, y: node.y - 0.16 };
+		const arrowFrom =
+			direction === 'cw'
+				? { x: node.x + radius, y: node.y + 0.05 }
+				: { x: node.x - radius, y: node.y + 0.05 };
+		const arrowTo =
+			direction === 'cw'
+				? { x: node.x + radius - 0.15, y: node.y - 0.16 }
+				: { x: node.x - radius + 0.15, y: node.y - 0.16 };
 		drawArrow(arrowFrom, arrowTo, { strokeColor: color, strokeWidth: 1.8 });
 		const label = labelText(object, defaultLabel);
-		drawText({ x: node.x + radius + 0.14, y: node.y + radius + 0.1 }, label, { strokeColor: COLOR.text });
+		drawText({ x: node.x + radius + 0.14, y: node.y + radius + 0.1 }, label, {
+			strokeColor: COLOR.text
+		});
 	}
 
 	function drawDistributed(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
 		const pair = getPair(nodeMap, object.nodeRefs);
 		if (!pair) return;
 		const [start, end] = pair;
-		const direction = normalizeDirection(object.geometry, isFiniteNumber(object.geometry.directionAngle) ? object.geometry.directionAngle : -90);
-		const count = isFiniteNumber(object.geometry.arrowCount) ? Math.max(3, Math.min(16, Math.round(object.geometry.arrowCount))) : 7;
+		const direction = normalizeDirection(
+			object.geometry,
+			isFiniteNumber(object.geometry.directionAngle) ? object.geometry.directionAngle : -90
+		);
+		const count = isFiniteNumber(object.geometry.arrowCount)
+			? Math.max(3, Math.min(16, Math.round(object.geometry.arrowCount)))
+			: 7;
 		const length = 0.75;
 
 		for (let i = 0; i < count; i++) {
@@ -610,7 +747,9 @@
 
 	function drawTrajectory(object: ObjectV2 | ResultV2): void {
 		if (!Array.isArray(object.geometry.points)) return;
-		const points = object.geometry.points.map((entry) => toPoint(entry)).filter((entry): entry is SchemaPoint => Boolean(entry));
+		const points = object.geometry.points
+			.map((entry) => toPoint(entry))
+			.filter((entry): entry is SchemaPoint => Boolean(entry));
 		if (points.length < 2) return;
 		const xs = points.map((p) => p.x);
 		const ys = points.map((p) => p.y);
@@ -631,8 +770,16 @@
 		const p1 = { x: a.x, y: a.y + offset };
 		const p2 = { x: b.x, y: b.y + offset };
 		drawSegment(p1, p2, { strokeColor: COLOR.muted, strokeWidth: 1, dash: 1 });
-		drawArrow({ x: p1.x + 0.001, y: p1.y }, { x: p1.x + 0.15, y: p1.y }, { strokeColor: COLOR.muted, strokeWidth: 1 });
-		drawArrow({ x: p2.x - 0.001, y: p2.y }, { x: p2.x - 0.15, y: p2.y }, { strokeColor: COLOR.muted, strokeWidth: 1 });
+		drawArrow(
+			{ x: p1.x + 0.001, y: p1.y },
+			{ x: p1.x + 0.15, y: p1.y },
+			{ strokeColor: COLOR.muted, strokeWidth: 1 }
+		);
+		drawArrow(
+			{ x: p2.x - 0.001, y: p2.y },
+			{ x: p2.x - 0.15, y: p2.y },
+			{ strokeColor: COLOR.muted, strokeWidth: 1 }
+		);
 		drawText({ x: (p1.x + p2.x) / 2, y: p1.y + 0.1 }, labelText(object, ''), { anchorX: 'middle' });
 	}
 
@@ -640,7 +787,9 @@
 		const pair = getPair(nodeMap, object.nodeRefs);
 		if (!pair) return;
 		drawArrow(pair[0], pair[1], { strokeColor: COLOR.muted, strokeWidth: 1.2, dash: 2 });
-		drawText({ x: pair[1].x, y: pair[1].y }, labelText(object, 'axis'), { strokeColor: COLOR.muted });
+		drawText({ x: pair[1].x, y: pair[1].y }, labelText(object, 'axis'), {
+			strokeColor: COLOR.muted
+		});
 	}
 
 	function drawGround(object: ObjectV2 | ResultV2, nodeMap: Map<string, NodeV2>): void {
@@ -652,7 +801,11 @@
 			const t = i / count;
 			const x = pair[0].x + (pair[1].x - pair[0].x) * t;
 			const y = pair[0].y + (pair[1].y - pair[0].y) * t;
-			drawSegment({ x, y }, { x: x + 0.1, y: y - 0.12 }, { strokeColor: COLOR.muted, strokeWidth: 0.8 });
+			drawSegment(
+				{ x, y },
+				{ x: x + 0.1, y: y - 0.12 },
+				{ strokeColor: COLOR.muted, strokeWidth: 0.8 }
+			);
 		}
 	}
 
@@ -673,13 +826,13 @@
 				withLabel: true,
 				size: 2,
 				face: 'o',
-				strokeColor: '#16a34a',
-				fillColor: '#16a34a',
+				strokeColor: COLOR.muted,
+				fillColor: COLOR.muted,
 				fixed: true,
 				highlight: false,
 				label: {
 					offset: [5, 5],
-					strokeColor: '#16a34a',
+					strokeColor: COLOR.muted,
 					fontSize: 10
 				}
 			});
@@ -689,11 +842,13 @@
 			const pair = getPair(nodeMap, object.nodeRefs);
 			if (!pair) continue;
 			if (!isFiniteNumber(object.geometry.length) && !isFiniteNumber(object.geometry.L)) continue;
-			const hintedLength = isFiniteNumber(object.geometry.length) ? object.geometry.length : object.geometry.L;
+			const hintedLength = isFiniteNumber(object.geometry.length)
+				? object.geometry.length
+				: object.geometry.L;
 			drawText(
 				{ x: (pair[0].x + pair[1].x) / 2, y: (pair[0].y + pair[1].y) / 2 + 0.12 },
 				`L=${hintedLength}`,
-				{ strokeColor: '#16a34a', fontSize: 10, anchorX: 'middle' }
+				{ strokeColor: COLOR.muted, fontSize: 10, anchorX: 'middle' }
 			);
 		}
 	}
@@ -713,7 +868,8 @@
 
 		const values = result.geometry.values
 			.map((entry) => {
-				if (!isRecord(entry) || !isFiniteNumber(entry.s) || !isFiniteNumber(entry.value)) return null;
+				if (!isRecord(entry) || !isFiniteNumber(entry.s) || !isFiniteNumber(entry.value))
+					return null;
 				return { s: entry.s, value: entry.value };
 			})
 			.filter((entry): entry is { s: number; value: number } => Boolean(entry));
@@ -744,13 +900,17 @@
 			fixed: true,
 			highlight: false,
 			vertices: { visible: false, fixed: true, highlight: false, withLabel: false },
-			fillColor: 'rgba(245, 158, 11, 0.15)',
+			fillColor: COLOR.muted,
+			fillOpacity: 0.16,
 			strokeColor: COLOR.result,
 			strokeWidth: 1.3
 		});
 
 		const kind = typeof result.geometry.kind === 'string' ? result.geometry.kind : 'epure';
-		drawText({ x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 + 0.2 }, kind, { strokeColor: COLOR.result, anchorX: 'middle' });
+		drawText({ x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 + 0.2 }, kind, {
+			strokeColor: COLOR.result,
+			anchorX: 'middle'
+		});
 	}
 
 	type DrawFn = (object: ObjectV2, nodeMap: Map<string, NodeV2>) => void;
@@ -769,9 +929,9 @@
 		moment: (o, m) => drawMomentLike(o, m, COLOR.load, 'M'),
 		distributed: drawDistributed,
 		velocity: (o, m) => drawVectorLike(o, m, COLOR.kinematic, 'v'),
-		acceleration: (o, m) => drawVectorLike(o, m, '#ef4444', 'a'),
+		acceleration: (o, m) => drawVectorLike(o, m, COLOR.kinematic, 'a'),
 		angular_velocity: (o, m) => drawMomentLike(o, m, COLOR.kinematic, '?'),
-		angular_acceleration: (o, m) => drawMomentLike(o, m, '#ef4444', '?'),
+		angular_acceleration: (o, m) => drawMomentLike(o, m, COLOR.kinematic, '?'),
 		trajectory: (o) => drawTrajectory(o),
 		label: drawLabelObject,
 		dimension: drawDimension,
@@ -1039,7 +1199,8 @@
 		{#if debug && layoutDiagnostics}
 			<div class="scheme-debug">
 				<div class="scheme-debug-line">
-					Auto corrected: {layoutDiagnostics.autoCorrected ? 'yes' : 'no'} | Corrections: {layoutDiagnostics.corrections.length}
+					Auto corrected: {layoutDiagnostics.autoCorrected ? 'yes' : 'no'} | Corrections: {layoutDiagnostics
+						.corrections.length}
 				</div>
 				{#if layoutDiagnostics.afterSnapshot}
 					<div class="scheme-debug-line">

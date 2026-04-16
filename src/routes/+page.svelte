@@ -1016,8 +1016,7 @@
 				</button>
 			{/if}
 			<div class="header-title">
-				<h1>Точные науки</h1>
-				<span class="header-subtitle">Термех · Сопромат · Матанализ</span>
+				<h1>{activeChat?.title || 'Новый диалог'}</h1>
 			</div>
 			<div class="header-status" class:active={isLoading || isSchemaActionLoading}>
 				{#if isLoading || isSchemaActionLoading}
@@ -1955,12 +1954,9 @@
 		font-weight: 600;
 		line-height: 1.12;
 		color: var(--text-primary);
-	}
-
-	.header-subtitle {
-		font-size: 0.78rem;
-		color: var(--text-muted);
-		letter-spacing: 0.02em;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 
 	.header-status {
@@ -2813,10 +2809,6 @@
 
 		.chat-header {
 			gap: 0.5rem;
-		}
-
-		.header-subtitle {
-			display: none;
 		}
 
 		.share-menu {
