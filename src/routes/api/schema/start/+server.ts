@@ -2,7 +2,11 @@ import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
 import { generateInitialSchema, repairSchemaByIssues } from '$lib/server/ai/gemini.js';
-import { toForcedModel } from '$lib/server/ai/model-preference.js';
+import {
+	isModelPreference,
+	normalizeModelPreference,
+	toForcedModel
+} from '$lib/server/ai/model-preference.js';
 import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import {
 	detectPromptLanguage,
@@ -20,6 +24,7 @@ interface StartSchemaBody {
 	message?: string;
 	imageData?: InputImageData;
 	mode?: string;
+	modelPreference?: string;
 }
 
 export const POST: RequestHandler = async ({ locals, request }) => {
@@ -48,6 +53,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 	if (!chatId) return error(400, 'chatId is required');
 	if (body.mode && body.mode !== 'schema_check') return error(400, 'Unsupported mode');
+	if (body.modelPreference !== undefined && !isModelPreference(body.modelPreference)) {
+		return error(400, `Unsupported modelPreference: ${String(body.modelPreference)}`);
+	}
 
 	const promptError = validateUserPrompt(message);
 	if (promptError) {
@@ -73,11 +81,17 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		modelPreference: chat.modelPreference
 	});
 
-	const forcedModel = toForcedModel(chat.modelPreference);
+	const effectiveModelPreference =
+		body.modelPreference !== undefined
+			? normalizeModelPreference(body.modelPreference)
+			: normalizeModelPreference(chat.modelPreference);
+	const forcedModel = toForcedModel(effectiveModelPreference);
 	logSchemaCheck('start.model_resolved', {
 		userId: locals.user.id,
 		chatId,
 		modelPreference: chat.modelPreference,
+		requestModelPreference: body.modelPreference ?? null,
+		effectiveModelPreference,
 		forcedModel
 	});
 	const history = await loadGeminiHistory(chatId, 4);

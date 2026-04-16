@@ -1,26 +1,34 @@
 /**
- * +server.ts — Chat management
- * POST /api/chats  → create new chat
- * GET  /api/chats  → list user's chats
+ * +server.ts - Chat management
+ * POST /api/chats -> create new chat
+ * GET /api/chats -> list user's chats
  */
 import type { RequestHandler } from './$types';
 import { prisma } from '$lib/server/db.js';
-import { normalizeModelPreference } from '$lib/server/ai/model-preference.js';
+import { isModelPreference, normalizeModelPreference } from '$lib/server/ai/model-preference.js';
 import { json, error } from '@sveltejs/kit';
 
 export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!locals.user) return error(401, 'Unauthorized');
 
-	let title = 'Новый чат';
+	let title = '\u041d\u043e\u0432\u044b\u0439 \u0447\u0430\u0442';
+	let modelPreference = 'auto';
+	let body: { title?: string; modelPreference?: string } = {};
 	try {
-		const body = (await request.json()) as { title?: string };
-		if (body.title) title = body.title;
+		body = (await request.json()) as typeof body;
 	} catch {
-		// title remains default
+		// title/modelPreference remain defaults for empty body
+	}
+	if (body.title) title = body.title;
+	if (body.modelPreference !== undefined) {
+		if (!isModelPreference(body.modelPreference)) {
+			return error(400, `Unsupported modelPreference: ${String(body.modelPreference)}`);
+		}
+		modelPreference = normalizeModelPreference(body.modelPreference);
 	}
 
 	const chat = await prisma.chat.create({
-		data: { userId: locals.user.id, title }
+		data: { userId: locals.user.id, title, modelPreference }
 	});
 	console.log('[ModelPreference:API] chat created', {
 		chatId: chat.id,
@@ -28,7 +36,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		modelPreference: normalizeModelPreference(chat.modelPreference)
 	});
 
-	return json(chat, { status: 201 });
+	return json({ ...chat, modelPreference: normalizeModelPreference(chat.modelPreference) }, { status: 201 });
 };
 
 export const GET: RequestHandler = async ({ locals }) => {

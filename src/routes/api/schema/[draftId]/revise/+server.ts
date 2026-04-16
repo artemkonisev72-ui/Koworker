@@ -2,7 +2,11 @@ import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
 import { repairSchemaByIssues, reviseSchema } from '$lib/server/ai/gemini.js';
-import { toForcedModel } from '$lib/server/ai/model-preference.js';
+import {
+	isModelPreference,
+	normalizeModelPreference,
+	toForcedModel
+} from '$lib/server/ai/model-preference.js';
 import type { SchemaAny } from '$lib/schema/schema-any.js';
 import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import {
@@ -17,6 +21,7 @@ import {
 
 interface ReviseBody {
 	notes?: string;
+	modelPreference?: string;
 }
 
 export const POST: RequestHandler = async ({ locals, request, params }) => {
@@ -33,6 +38,9 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 	}
 
 	const notes = body.notes ?? '';
+	if (body.modelPreference !== undefined && !isModelPreference(body.modelPreference)) {
+		return error(400, `Unsupported modelPreference: ${String(body.modelPreference)}`);
+	}
 	logSchemaCheck('revise.request', {
 		userId: locals.user.id,
 		draftId: params.draftId,
@@ -65,11 +73,17 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 		modelPreference: draft.chat.modelPreference
 	});
 
-	const forcedModel = toForcedModel(draft.chat.modelPreference);
+	const effectiveModelPreference =
+		body.modelPreference !== undefined
+			? normalizeModelPreference(body.modelPreference)
+			: normalizeModelPreference(draft.chat.modelPreference);
+	const forcedModel = toForcedModel(effectiveModelPreference);
 	logSchemaCheck('revise.model_resolved', {
 		draftId: draft.id,
 		chatId: draft.chatId,
 		modelPreference: draft.chat.modelPreference,
+		requestModelPreference: body.modelPreference ?? null,
+		effectiveModelPreference,
 		forcedModel
 	});
 	const history = await loadGeminiHistory(draft.chatId);

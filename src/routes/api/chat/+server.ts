@@ -14,7 +14,11 @@
  */
 import type { RequestHandler } from './$types';
 import { runPipeline, type PipelineStatus } from '$lib/server/ai/pipeline.js';
-import { toForcedModel } from '$lib/server/ai/model-preference.js';
+import {
+	isModelPreference,
+	normalizeModelPreference,
+	toForcedModel
+} from '$lib/server/ai/model-preference.js';
 import { prisma } from '$lib/server/db.js';
 import { json, error } from '@sveltejs/kit';
 
@@ -39,7 +43,12 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	console.log('[SSE] POST /api/chat received');
 	if (!locals.user) return error(401, 'Unauthorized');
 	
-	let body: { chatId?: string; message?: string; imageData?: { base64: string; mimeType: string } };
+	let body: {
+		chatId?: string;
+		message?: string;
+		imageData?: { base64: string; mimeType: string };
+		modelPreference?: string;
+	};
 
 	try {
 		body = (await request.json()) as typeof body;
@@ -57,6 +66,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	}
 
 	const { chatId, message, imageData } = body;
+	if (body.modelPreference !== undefined && !isModelPreference(body.modelPreference)) {
+		return error(400, `Unsupported modelPreference: ${String(body.modelPreference)}`);
+	}
 
 	if (!chatId || !message?.trim()) {
 		console.error('[SSE] Missing chatId or message');
@@ -88,11 +100,17 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		return error(403, 'Forbidden');
 	}
 
-	const forcedModel = toForcedModel(chat.modelPreference);
+	const effectiveModelPreference =
+		body.modelPreference !== undefined
+			? normalizeModelPreference(body.modelPreference)
+			: normalizeModelPreference(chat.modelPreference);
+	const forcedModel = toForcedModel(effectiveModelPreference);
 	console.log('[ModelPreference:API] chat model resolved', {
 		chatId,
 		userId: locals.user.id,
 		modelPreference: chat.modelPreference,
+		requestModelPreference: body.modelPreference ?? null,
+		effectiveModelPreference,
 		forcedModel
 	});
 

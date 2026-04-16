@@ -2,7 +2,11 @@ import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
 import { runPipelineWithApprovedSchema, type PipelineStatus } from '$lib/server/ai/pipeline.js';
-import { toForcedModel } from '$lib/server/ai/model-preference.js';
+import {
+	isModelPreference,
+	normalizeModelPreference,
+	toForcedModel
+} from '$lib/server/ai/model-preference.js';
 import type { SchemaAny } from '$lib/schema/schema-any.js';
 import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import { canConfirmStatus, loadGeminiHistory, logSchemaCheck, parseImageData } from '$lib/server/schema/flow.js';
@@ -143,11 +147,21 @@ function launchSchemaSolveInBackground(params: {
 	});
 }
 
-export const POST: RequestHandler = async ({ locals, params }) => {
+export const POST: RequestHandler = async ({ locals, params, request }) => {
 	if (!locals.user) return error(401, 'Unauthorized');
 	const db = prisma as any;
 	const startedAt = Date.now();
 	logSchemaCheck('confirm.request', { userId: locals.user.id, draftId: params.draftId });
+	let requestedModelPreference: string | undefined;
+	try {
+		const body = (await request.json()) as { modelPreference?: string };
+		requestedModelPreference = body.modelPreference;
+	} catch {
+		// Backwards-compatible empty body.
+	}
+	if (requestedModelPreference !== undefined && !isModelPreference(requestedModelPreference)) {
+		return error(400, `Unsupported modelPreference: ${String(requestedModelPreference)}`);
+	}
 
 	const draft = await db.taskDraft.findUnique({
 		where: { id: params.draftId },
@@ -195,11 +209,17 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 		return error(422, `Approved schema validation failed: ${schemaValidation.errors.join('; ')}`);
 	}
 
-	const forcedModel = toForcedModel(draft.chat.modelPreference);
+	const effectiveModelPreference =
+		requestedModelPreference !== undefined
+			? normalizeModelPreference(requestedModelPreference)
+			: normalizeModelPreference(draft.chat.modelPreference);
+	const forcedModel = toForcedModel(effectiveModelPreference);
 	logSchemaCheck('confirm.model_resolved', {
 		draftId: draft.id,
 		chatId: draft.chatId,
 		modelPreference: draft.chat.modelPreference,
+		requestModelPreference: requestedModelPreference ?? null,
+		effectiveModelPreference,
 		forcedModel
 	});
 	const revisionNotes = draft.revisions

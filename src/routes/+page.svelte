@@ -83,6 +83,7 @@
 	let revisionNotes = $state('');
 	let showRevisionBox = $state(false);
 	let isSchemaActionLoading = $state(false);
+	let selectedModelPreference = $state('auto');
 	let themeMode = $state<ThemeMode>('light');
 	let welcomeGreeting = $state('Над чем работаем сегодня?');
 
@@ -217,7 +218,11 @@
 
 	async function createPersistedChat() {
 		try {
-			const res = await fetch('/api/chats', { method: 'POST' });
+			const res = await fetch('/api/chats', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ modelPreference: currentModelPreference() })
+			});
 			if (res.ok) {
 				const chat = await res.json();
 				chats = [chat, ...chats];
@@ -339,19 +344,21 @@
 	}
 
 	function currentModelPreference(): string {
-		return activeChat?.modelPreference || 'auto';
+		return selectedModelPreference;
 	}
 
 	async function updateModelPreference(preference: string) {
+		selectedModelPreference = preference;
 		console.log('[ModelPreference:UI] update requested', {
 			chatId: activeChatId,
 			currentPreference: currentModelPreference(),
 			nextPreference: preference
 		});
 		if (!activeChatId) {
-			console.log('[ModelPreference:UI] update skipped: no active chat');
+			console.log('[ModelPreference:UI] update stored locally: no active chat yet');
 			return;
 		}
+		chats = chats.map((c) => (c.id === activeChatId ? { ...c, modelPreference: preference } : c));
 		try {
 			const res = await fetch(`/api/chats/${activeChatId}`, {
 				method: 'PATCH',
@@ -361,6 +368,7 @@
 			if (res.ok) {
 				const updated = await res.json();
 				chats = chats.map((c) => (c.id === activeChatId ? updated : c));
+				selectedModelPreference = updated.modelPreference;
 				console.log('[ModelPreference:UI] update saved', {
 					chatId: activeChatId,
 					requestedPreference: preference,
@@ -372,14 +380,18 @@
 					requestedPreference: preference,
 					status: res.status
 				});
+				await loadChats();
 			}
 		} catch (e) {
 			console.error('Failed to update model preference', e);
+			await loadChats();
 		}
 	}
 
 	async function selectChat(chatId: string) {
 		if (activeChatId === chatId) return;
+		const selectedChat = chats.find((c) => c.id === chatId);
+		selectedModelPreference = selectedChat?.modelPreference || 'auto';
 		activeChatId = chatId;
 		messages = [];
 		activeDraft = null;
@@ -574,9 +586,10 @@
 		imageData: { base64: string; mimeType: string } | null
 	) {
 		if (!activeChatId) return;
+		const modelPreference = currentModelPreference();
 		console.log('[ModelPreference:UI] schema start submit', {
 			chatId: activeChatId,
-			modelPreference: currentModelPreference(),
+			modelPreference,
 			messageLength: text.length,
 			hasImage: Boolean(imageData)
 		});
@@ -590,6 +603,7 @@
 					chatId: activeChatId,
 					message: text,
 					imageData,
+					modelPreference,
 					mode: 'schema_check'
 				})
 			});
@@ -625,7 +639,7 @@
 			const res = await fetch(`/api/schema/${activeDraft.draftId}/revise`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ notes })
+				body: JSON.stringify({ notes, modelPreference: currentModelPreference() })
 			});
 			if (!res.ok) {
 				throw new Error(await parseErrorMessage(res));
@@ -658,7 +672,11 @@
 		const draftId = activeDraft.draftId;
 		const chatId = activeChatId;
 		try {
-			const res = await fetch(`/api/schema/${draftId}/confirm`, { method: 'POST' });
+			const res = await fetch(`/api/schema/${draftId}/confirm`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ modelPreference: currentModelPreference() })
+			});
 			if (!res.ok) {
 				throw new Error(await parseErrorMessage(res));
 			}
@@ -688,6 +706,7 @@
 	async function sendMessage() {
 		const text = inputValue.trim();
 		if (!text || isLoading || isSchemaActionLoading) return;
+		const modelPreference = currentModelPreference();
 
 		if (activeDraft && activeDraft.status === 'AWAITING_REVIEW') {
 			statusMessage = 'Confirm or revise the current scheme before sending a new task.';
@@ -698,7 +717,7 @@
 		if (!activeChatId) return;
 		console.log('[ModelPreference:UI] send submit', {
 			chatId: activeChatId,
-			modelPreference: currentModelPreference(),
+			modelPreference,
 			schemaCheckEnabled,
 			messageLength: text.length,
 			hasImage: Boolean(selectedImage)
@@ -751,7 +770,8 @@
 				body: JSON.stringify({
 					chatId: activeChatId,
 					message: text,
-					imageData
+					imageData,
+					modelPreference
 				}),
 				signal: abortController.signal
 			});
@@ -1223,7 +1243,7 @@
 				{/if}
 
 				<select
-					value={activeChat?.modelPreference || 'auto'}
+					value={currentModelPreference()}
 					onchange={(e) => updateModelPreference(e.currentTarget.value)}
 					class="model-select desktop-only"
 					disabled={isLoading || isSchemaActionLoading}
@@ -1491,7 +1511,7 @@
 					<label class="mobile-model-label" for="mobile-model-select">Модель</label>
 					<select
 						id="mobile-model-select"
-						value={activeChat?.modelPreference || 'auto'}
+						value={currentModelPreference()}
 						onchange={(e) => updateModelPreference(e.currentTarget.value)}
 						class="model-select mobile-model-select"
 						disabled={isLoading || isSchemaActionLoading}
