@@ -89,6 +89,12 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	}
 
 	const forcedModel = toForcedModel(chat.modelPreference);
+	console.log('[ModelPreference:API] chat model resolved', {
+		chatId,
+		userId: locals.user.id,
+		modelPreference: chat.modelPreference,
+		forcedModel
+	});
 
 	// Извлекаем историю сообщений для контекста (последние 20 сообщений)
 	const rawHistory = await prisma.message.findMany({

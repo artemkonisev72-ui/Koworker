@@ -74,6 +74,12 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	});
 
 	const forcedModel = toForcedModel(chat.modelPreference);
+	logSchemaCheck('start.model_resolved', {
+		userId: locals.user.id,
+		chatId,
+		modelPreference: chat.modelPreference,
+		forcedModel
+	});
 	const history = await loadGeminiHistory(chatId, 4);
 
 	await db.message.create({

@@ -22,6 +22,11 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const chat = await prisma.chat.create({
 		data: { userId: locals.user.id, title }
 	});
+	console.log('[ModelPreference:API] chat created', {
+		chatId: chat.id,
+		userId: locals.user.id,
+		modelPreference: normalizeModelPreference(chat.modelPreference)
+	});
 
 	return json(chat, { status: 201 });
 };

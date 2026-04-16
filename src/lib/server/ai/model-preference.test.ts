@@ -11,6 +11,7 @@ describe('model preference normalization', () => {
 	it('accepts supported values', () => {
 		expect(isModelPreference('auto')).toBe(true);
 		expect(isModelPreference('gemini-2.5-flash')).toBe(true);
+		expect(isModelPreference('gemini-3.1-flash-lite-preview')).toBe(true);
 		expect(isModelPreference('gemini-3.1-pro-preview')).toBe(true);
 	});
 
@@ -18,12 +19,17 @@ describe('model preference normalization', () => {
 		expect(normalizeModelPreference('')).toBe('auto');
 		expect(normalizeModelPreference('gemini-unknown')).toBe('auto');
 		expect(normalizeModelPreference('gemini-2.5-flash ')).toBe('gemini-2.5-flash');
+		expect(normalizeModelPreference('gemini-3.1-flash-lite-preview')).toBe(
+			'gemini-3.1-flash-lite-preview'
+		);
 	});
 
 	it('converts preference to forced model safely', () => {
 		expect(toForcedModel('auto')).toBeNull();
 		expect(toForcedModel('gemini-2.5-flash')).toBe('gemini-2.5-flash');
+		expect(toForcedModel('gemini-3.1-flash-lite-preview')).toBe(
+			'gemini-3.1-flash-lite-preview'
+		);
 		expect(toForcedModel('unsupported')).toBeNull();
 	});
 });
-

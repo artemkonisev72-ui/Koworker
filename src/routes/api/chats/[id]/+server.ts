@@ -15,6 +15,15 @@ export const PATCH: RequestHandler = async ({ params, locals, request }) => {
 	if (!chat) return error(404, 'Chat not found');
 	if (chat.userId !== locals.user.id) return error(403, 'Forbidden');
 
+	if (body.modelPreference !== undefined) {
+		console.log('[ModelPreference:API] chat patch requested', {
+			chatId: id,
+			userId: locals.user.id,
+			previousPreference: normalizeModelPreference(chat.modelPreference),
+			requestedPreference: body.modelPreference
+		});
+	}
+
 	if (body.modelPreference !== undefined && !isModelPreference(body.modelPreference)) {
 		return error(400, `Unsupported modelPreference: ${String(body.modelPreference)}`);
 	}
@@ -31,6 +40,14 @@ export const PATCH: RequestHandler = async ({ params, locals, request }) => {
 			isPublic: body.isPublic !== undefined ? body.isPublic : undefined
 		}
 	});
+	if (body.modelPreference !== undefined) {
+		console.log('[ModelPreference:API] chat patch saved', {
+			chatId: id,
+			userId: locals.user.id,
+			requestedPreference: body.modelPreference,
+			savedPreference: normalizeModelPreference(updated.modelPreference)
+		});
+	}
 
 	return json({
 		...updated,

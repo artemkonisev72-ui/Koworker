@@ -338,8 +338,20 @@
 		});
 	}
 
+	function currentModelPreference(): string {
+		return activeChat?.modelPreference || 'auto';
+	}
+
 	async function updateModelPreference(preference: string) {
-		if (!activeChatId) return;
+		console.log('[ModelPreference:UI] update requested', {
+			chatId: activeChatId,
+			currentPreference: currentModelPreference(),
+			nextPreference: preference
+		});
+		if (!activeChatId) {
+			console.log('[ModelPreference:UI] update skipped: no active chat');
+			return;
+		}
 		try {
 			const res = await fetch(`/api/chats/${activeChatId}`, {
 				method: 'PATCH',
@@ -349,6 +361,17 @@
 			if (res.ok) {
 				const updated = await res.json();
 				chats = chats.map((c) => (c.id === activeChatId ? updated : c));
+				console.log('[ModelPreference:UI] update saved', {
+					chatId: activeChatId,
+					requestedPreference: preference,
+					savedPreference: updated.modelPreference
+				});
+			} else {
+				console.warn('[ModelPreference:UI] update failed', {
+					chatId: activeChatId,
+					requestedPreference: preference,
+					status: res.status
+				});
 			}
 		} catch (e) {
 			console.error('Failed to update model preference', e);
@@ -551,6 +574,12 @@
 		imageData: { base64: string; mimeType: string } | null
 	) {
 		if (!activeChatId) return;
+		console.log('[ModelPreference:UI] schema start submit', {
+			chatId: activeChatId,
+			modelPreference: currentModelPreference(),
+			messageLength: text.length,
+			hasImage: Boolean(imageData)
+		});
 		statusMessage = 'Building initial scheme...';
 		isSchemaActionLoading = true;
 		try {
@@ -667,6 +696,13 @@
 
 		if (!activeChatId) await createPersistedChat();
 		if (!activeChatId) return;
+		console.log('[ModelPreference:UI] send submit', {
+			chatId: activeChatId,
+			modelPreference: currentModelPreference(),
+			schemaCheckEnabled,
+			messageLength: text.length,
+			hasImage: Boolean(selectedImage)
+		});
 
 		const imageData = selectedImage;
 		selectedImage = null;

@@ -66,6 +66,12 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 	});
 
 	const forcedModel = toForcedModel(draft.chat.modelPreference);
+	logSchemaCheck('revise.model_resolved', {
+		draftId: draft.id,
+		chatId: draft.chatId,
+		modelPreference: draft.chat.modelPreference,
+		forcedModel
+	});
 	const history = await loadGeminiHistory(draft.chatId);
 
 	await db.message.create({

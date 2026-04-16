@@ -167,6 +167,12 @@ async function generateWithFallback(
 			: chain.indexOf(startModel) >= 0
 				? chain.slice(chain.indexOf(startModel))
 				: chain;
+	console.log('[ModelPreference:Gemini] fallback chain resolved', {
+		startModel,
+		forcedModel,
+		normalizedForcedModel,
+		effectiveChain
+	});
 
 	for (let i = 0; i < effectiveChain.length; i++) {
 		const model = effectiveChain[i];

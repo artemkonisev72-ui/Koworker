@@ -196,6 +196,12 @@ export const POST: RequestHandler = async ({ locals, params }) => {
 	}
 
 	const forcedModel = toForcedModel(draft.chat.modelPreference);
+	logSchemaCheck('confirm.model_resolved', {
+		draftId: draft.id,
+		chatId: draft.chatId,
+		modelPreference: draft.chat.modelPreference,
+		forcedModel
+	});
 	const revisionNotes = draft.revisions
 		.map((revision: { userNotes?: string | null }) => revision.userNotes?.trim())
 		.filter((note: string | undefined): note is string => Boolean(note));
