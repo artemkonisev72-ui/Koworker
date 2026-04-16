@@ -59,10 +59,12 @@
 	let sidebarOpen = $state(true);
 	let isMobileView = $state(false);
 	let mobileToolsOpen = $state(false);
+	let inputSettingsOpen = $state(false);
 	let hasViewportInit = false;
 	let messagesEnd: HTMLDivElement | undefined = $state();
 	let inputEl: HTMLTextAreaElement | undefined = $state();
 	let fileInputEl: HTMLInputElement | undefined = $state();
+	let inputSettingsMenuEl: HTMLDivElement | undefined = $state();
 
 	let editingChatId = $state<string | null>(null);
 	let editingTitle = $state('');
@@ -82,8 +84,31 @@
 	let showRevisionBox = $state(false);
 	let isSchemaActionLoading = $state(false);
 	let themeMode = $state<ThemeMode>('light');
+	let welcomeGreeting = $state('Над чем работаем сегодня?');
 
 	const THEME_STORAGE_KEY = 'coworker-theme';
+
+	function resolveDisplayName(): string | null {
+		const rawName = data.user?.name?.trim();
+		if (rawName) {
+			return rawName.split(/\s+/)[0];
+		}
+		const rawEmail = data.user?.email?.trim();
+		if (!rawEmail) return null;
+		const localPart = rawEmail.split('@')[0]?.trim();
+		return localPart || null;
+	}
+
+	function pickWelcomeGreeting() {
+		const name = resolveDisplayName();
+		const withName = name
+			? [`С возвращением, ${name}`, `Что разберем сегодня, ${name}?`, `Готовы продолжить, ${name}?`]
+			: [];
+		const generic = ['Над чем работаем сегодня?', 'Какую задачу решаем сегодня?'];
+		const variants = [...withName, ...generic];
+		const randomIndex = Math.floor(Math.random() * variants.length);
+		welcomeGreeting = variants[randomIndex];
+	}
 
 	function setTheme(theme: ThemeMode, persist = true) {
 		themeMode = theme;
@@ -108,6 +133,7 @@
 	}
 
 	onMount(() => {
+		pickWelcomeGreeting();
 		const viewportQuery = window.matchMedia('(max-width: 900px)');
 		const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
 		const currentDomTheme = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
@@ -128,6 +154,7 @@
 			if (mobileNow) {
 				sidebarOpen = false;
 				isSharing = false;
+				inputSettingsOpen = false;
 			} else {
 				sidebarOpen = true;
 				mobileToolsOpen = false;
@@ -135,6 +162,17 @@
 		};
 
 		const onViewportChange = () => applyViewportMode();
+		const onDocumentPointerDown = (event: PointerEvent) => {
+			if (!inputSettingsOpen) return;
+			const target = event.target as Node | null;
+			if (target && inputSettingsMenuEl?.contains(target)) return;
+			inputSettingsOpen = false;
+		};
+		const onWindowKeyDown = (event: KeyboardEvent) => {
+			if (event.key === 'Escape') {
+				inputSettingsOpen = false;
+			}
+		};
 
 		applyViewportMode();
 
@@ -145,6 +183,8 @@
 		}
 		window.addEventListener('orientationchange', onViewportChange);
 		window.addEventListener('resize', onViewportChange);
+		document.addEventListener('pointerdown', onDocumentPointerDown);
+		window.addEventListener('keydown', onWindowKeyDown);
 
 		void (async () => {
 			await loadChats();
@@ -161,6 +201,8 @@
 			}
 			window.removeEventListener('orientationchange', onViewportChange);
 			window.removeEventListener('resize', onViewportChange);
+			document.removeEventListener('pointerdown', onDocumentPointerDown);
+			window.removeEventListener('keydown', onWindowKeyDown);
 		};
 	});
 
@@ -197,6 +239,9 @@
 		copySuccess = false;
 		editingChatId = null;
 		editingTitle = '';
+		inputSettingsOpen = false;
+		mobileToolsOpen = false;
+		pickWelcomeGreeting();
 
 		if (isMobileView) {
 			sidebarOpen = false;
@@ -216,6 +261,7 @@
 					activeChatId = null;
 					messages = [];
 					activeDraft = null;
+					pickWelcomeGreeting();
 				}
 			}
 		} catch (e) {
@@ -316,7 +362,11 @@
 		activeDraft = null;
 		showRevisionBox = false;
 		revisionNotes = '';
+		inputSettingsOpen = false;
 		await loadMessages(chatId);
+		if (messages.length === 0) {
+			pickWelcomeGreeting();
+		}
 		if (isMobileView) {
 			sidebarOpen = false;
 			isSharing = false;
@@ -765,14 +815,10 @@
 
 	function toggleMobileTools() {
 		mobileToolsOpen = !mobileToolsOpen;
+		if (mobileToolsOpen) {
+			inputSettingsOpen = false;
+		}
 	}
-
-	const EXAMPLES = [
-		'Найди реакции опор балки длиной 4 м с равномерной нагрузкой q=10 кН/м',
-		'Вычисли интеграл ∫ x²·sin(x) dx',
-		'Построй эпюры M и Q для консольной балки с сосредоточенной силой P=5 кН',
-		'Найди собственные значения матрицы [[2,1],[1,2]]'
-	];
 </script>
 
 <div class="app-shell">
@@ -797,7 +843,7 @@
 		<div class="sidebar-header">
 			<div class="logo">
 				<img src="/favicon.svg" alt="Koworker Logo" class="logo-icon" />
-				<span class="logo-text">Koworker AI</span>
+				<span class="logo-text">Koworker</span>
 			</div>
 			<button class="icon-btn" onclick={() => (sidebarOpen = !sidebarOpen)} title="Свернуть">
 				<svg
@@ -948,10 +994,6 @@
 					</button>
 				</div>
 			{/if}
-			<div class="model-badge">
-				<span class="model-dot"></span>
-				Gemini Flash + Pro
-			</div>
 		</div>
 	</aside>
 
@@ -1129,26 +1171,7 @@
 			{#if messages.length === 0}
 				<div class="welcome-screen">
 					<div class="welcome-hero">
-						<div class="hero-icon">∑</div>
-						<h2>Задайте инженерную задачу</h2>
-						<p>
-							AI анализирует условие, генерирует Python-код и выполняет точные вычисления в
-							Wasm-песочнице
-						</p>
-					</div>
-
-					<div class="examples-grid">
-						{#each EXAMPLES as ex}
-							<button
-								class="example-card"
-								onclick={() => {
-									inputValue = ex;
-									inputEl?.focus();
-								}}
-							>
-								{ex}
-							</button>
-						{/each}
+						<h2>{welcomeGreeting}</h2>
 					</div>
 				</div>
 			{:else}
@@ -1314,24 +1337,38 @@
 			{/if}
 
 			<div class="input-options desktop-options">
-				<label class="schema-toggle">
-					<input
-						type="checkbox"
-						bind:checked={schemaCheckEnabled}
-						disabled={isLoading ||
-							isSchemaActionLoading ||
-							(!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
-					/>
-					<span>Schema check mode</span>
-				</label>
-				<label class="schema-toggle">
-					<input
-						type="checkbox"
-						bind:checked={schemeDebugEnabled}
+				<div class="input-settings" bind:this={inputSettingsMenuEl}>
+					<button
+						class="input-settings-btn"
+						onclick={() => (inputSettingsOpen = !inputSettingsOpen)}
 						disabled={isLoading || isSchemaActionLoading}
-					/>
-					<span>Scheme debug</span>
-				</label>
+					>
+						<span>Режимы</span>
+						<span class="input-settings-chevron" class:open={inputSettingsOpen}>⌄</span>
+					</button>
+					{#if inputSettingsOpen}
+						<div class="input-settings-panel">
+							<label class="schema-toggle">
+								<input
+									type="checkbox"
+									bind:checked={schemaCheckEnabled}
+									disabled={isLoading ||
+										isSchemaActionLoading ||
+										(!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
+								/>
+								<span>Проверка схемы</span>
+							</label>
+							<label class="schema-toggle">
+								<input
+									type="checkbox"
+									bind:checked={schemeDebugEnabled}
+									disabled={isLoading || isSchemaActionLoading}
+								/>
+								<span>Scheme debug</span>
+							</label>
+						</div>
+					{/if}
+				</div>
 			</div>
 
 			<div class="mobile-tools-row">
@@ -1340,7 +1377,7 @@
 					onclick={toggleMobileTools}
 					disabled={isLoading || isSchemaActionLoading}
 				>
-					<span>Доп. параметры</span>
+					<span>Режимы и модель</span>
 					<span class="mobile-tools-chevron" class:open={mobileToolsOpen}>⌄</span>
 				</button>
 			</div>
@@ -1356,7 +1393,7 @@
 									isSchemaActionLoading ||
 									(!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
 							/>
-							<span>Schema check mode</span>
+							<span>Проверка схемы</span>
 						</label>
 						<label class="schema-toggle">
 							<input
@@ -1477,11 +1514,6 @@
 					</button>
 				{/if}
 			</div>
-
-			<div class="input-hint">
-				Числа берутся из Python · sympy · numpy. Gemini не вычисляет — только анализирует и
-				объясняет.
-			</div>
 		</div>
 	</main>
 </div>
@@ -1489,7 +1521,7 @@
 <style>
 	.app-shell {
 		display: flex;
-		gap: clamp(0.75rem, 1.8vw, 1.25rem);
+		gap: 0;
 		height: 100dvh;
 		min-height: 100svh;
 		padding: calc(0.72rem + env(safe-area-inset-top)) calc(0.72rem + env(safe-area-inset-right))
@@ -1532,11 +1564,12 @@
 		min-width: var(--sidebar-width);
 		background: var(--bg-surface);
 		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-2xl);
+		border-right: 0;
+		border-radius: var(--radius-2xl) 0 0 var(--radius-2xl);
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
-		box-shadow: var(--shadow-md);
+		box-shadow: none;
 		transition:
 			width var(--transition-base),
 			min-width var(--transition-base),
@@ -1566,9 +1599,13 @@
 		left: calc(0.65rem + env(safe-area-inset-left));
 		width: min(86vw, 330px);
 		min-width: min(86vw, 330px);
+		border: 1px solid var(--border-subtle);
+		border-right: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xl);
 		z-index: 115;
 		transform: translateX(-112%);
 		pointer-events: none;
+		box-shadow: var(--shadow-md);
 	}
 
 	.sidebar.mobile-drawer.open {
@@ -1604,7 +1641,7 @@
 
 	.logo-text {
 		font-family: var(--font-serif);
-		font-size: 1.04rem;
+		font-size: 1.18rem;
 		font-weight: 600;
 		letter-spacing: -0.015em;
 		color: var(--text-primary);
@@ -1648,22 +1685,28 @@
 		gap: 0.5rem;
 		margin: 1rem 1rem 0.72rem;
 		padding: 0.72rem 1rem;
-		background: var(--accent-gradient);
-		border: 1px solid color-mix(in srgb, var(--accent-primary) 58%, transparent);
+		background: var(--bg-card);
+		border: 1px solid var(--border-subtle);
 		border-radius: 999px;
-		color: #fff8f1;
+		color: var(--text-secondary);
 		font-size: 0.84rem;
 		font-weight: 600;
 		letter-spacing: 0.01em;
 		cursor: pointer;
 		transition:
+			background-color var(--transition-fast),
+			border-color var(--transition-fast),
+			color var(--transition-fast),
 			transform var(--transition-fast),
 			opacity var(--transition-fast);
-		box-shadow: var(--shadow-glow);
+		box-shadow: none;
 	}
 
 	.new-chat-btn:hover {
-		opacity: 0.94;
+		background: var(--bg-elevated);
+		border-color: color-mix(in srgb, var(--accent-primary) 40%, var(--border-subtle));
+		color: var(--text-primary);
+		opacity: 1;
 		transform: translateY(-1px);
 	}
 
@@ -1804,7 +1847,7 @@
 	.sidebar-footer {
 		padding: 0.85rem;
 		border-top: 1px solid var(--border-subtle);
-		background: color-mix(in srgb, var(--bg-card) 74%, transparent);
+		background: transparent;
 	}
 
 	.user-info {
@@ -1872,22 +1915,6 @@
 		color: var(--text-primary);
 	}
 
-	.model-badge {
-		display: flex;
-		align-items: center;
-		gap: 0.42rem;
-		font-size: 0.72rem;
-		color: var(--text-muted);
-	}
-
-	.model-dot {
-		width: 0.38rem;
-		height: 0.38rem;
-		background: var(--success);
-		border-radius: 999px;
-		animation: pulse-soft 2.4s infinite;
-	}
-
 	.chat-main {
 		flex: 1;
 		min-width: 0;
@@ -1896,8 +1923,12 @@
 		overflow: hidden;
 		background: var(--bg-surface);
 		border: 1px solid var(--border-subtle);
+		border-radius: 0 var(--radius-2xl) var(--radius-2xl) 0;
+		box-shadow: none;
+	}
+
+	.sidebar:not(.mobile-drawer).collapsed + .chat-main {
 		border-radius: var(--radius-2xl);
-		box-shadow: var(--shadow-lg);
 	}
 
 	.chat-header {
@@ -2013,92 +2044,25 @@
 
 	.welcome-screen {
 		display: flex;
-		flex-direction: column;
 		align-items: center;
-		gap: clamp(2rem, 3vw, 2.7rem);
-		padding: clamp(2.6rem, 6vw, 4.4rem) 0.85rem;
+		justify-content: center;
+		min-height: min(56vh, 420px);
+		padding: clamp(2.2rem, 5vw, 3.4rem) 0.85rem;
 		animation: fadeInUp 0.44s ease;
 	}
 
 	.welcome-hero {
 		text-align: center;
-		max-width: 760px;
-	}
-
-	.hero-icon {
-		width: 3.3rem;
-		height: 3.3rem;
-		margin: 0 auto 1rem;
-		border-radius: 999px;
-		display: grid;
-		place-items: center;
-		font-family: var(--font-serif);
-		font-size: 1.8rem;
-		color: var(--accent-primary);
-		border: 1px solid color-mix(in srgb, var(--accent-primary) 38%, transparent);
-		background: color-mix(in srgb, var(--accent-primary) 10%, var(--bg-card));
+		max-width: 900px;
 	}
 
 	.welcome-hero h2 {
-		font-size: clamp(2rem, 4vw, 3rem);
+		font-size: clamp(2.1rem, 4.2vw, 3.15rem);
 		font-weight: 500;
 		line-height: 1.12;
-		margin-bottom: 0.9rem;
+		margin: 0;
 		color: var(--text-primary);
-	}
-
-	.welcome-hero p {
-		color: var(--text-secondary);
-		font-size: clamp(0.98rem, 1vw + 0.5rem, 1.14rem);
-		line-height: 1.82;
-		max-width: 660px;
-		margin: 0 auto;
-	}
-
-	.examples-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-		gap: 0.8rem;
-		width: min(100%, 860px);
-	}
-
-	.example-card {
-		padding: 1rem 1.05rem;
-		background: var(--bg-card);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-lg);
-		color: var(--text-secondary);
-		font-size: 0.84rem;
-		text-align: left;
-		cursor: pointer;
-		transition:
-			transform var(--transition-fast),
-			border-color var(--transition-fast),
-			color var(--transition-fast),
-			background-color var(--transition-fast),
-			box-shadow var(--transition-fast);
-		line-height: 1.55;
-		animation: fadeInUp 0.35s ease both;
-	}
-
-	.example-card:nth-child(2) {
-		animation-delay: 40ms;
-	}
-
-	.example-card:nth-child(3) {
-		animation-delay: 80ms;
-	}
-
-	.example-card:nth-child(4) {
-		animation-delay: 120ms;
-	}
-
-	.example-card:hover {
-		border-color: color-mix(in srgb, var(--accent-primary) 48%, transparent);
-		color: var(--text-primary);
-		background: color-mix(in srgb, var(--bg-card) 86%, var(--accent-soft));
-		transform: translateY(-2px);
-		box-shadow: var(--shadow-sm);
+		text-wrap: balance;
 	}
 
 	.messages-list {
@@ -2389,10 +2353,69 @@
 	.input-options {
 		display: flex;
 		justify-content: flex-start;
-		gap: 0.76rem;
+		gap: 0.5rem;
 		margin-bottom: 0.55rem;
 		padding: 0 0.12rem;
 		flex-wrap: wrap;
+	}
+
+	.input-settings {
+		position: relative;
+	}
+
+	.input-settings-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.55rem;
+		padding: 0.36rem 0.62rem;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-sm);
+		background: var(--bg-card);
+		color: var(--text-secondary);
+		font-size: 0.76rem;
+		font-weight: 600;
+		cursor: pointer;
+		transition:
+			border-color var(--transition-fast),
+			background-color var(--transition-fast),
+			color var(--transition-fast);
+	}
+
+	.input-settings-btn:hover:not(:disabled) {
+		border-color: color-mix(in srgb, var(--accent-primary) 45%, transparent);
+		color: var(--text-primary);
+		background: var(--bg-elevated);
+	}
+
+	.input-settings-btn:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+
+	.input-settings-chevron {
+		font-size: 0.93rem;
+		line-height: 1;
+		transition: transform var(--transition-fast);
+	}
+
+	.input-settings-chevron.open {
+		transform: rotate(180deg);
+	}
+
+	.input-settings-panel {
+		position: absolute;
+		left: 0;
+		bottom: calc(100% + 0.5rem);
+		min-width: 220px;
+		padding: 0.64rem;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		background: var(--bg-card);
+		box-shadow: var(--shadow-sm);
+		display: flex;
+		flex-direction: column;
+		gap: 0.45rem;
+		z-index: 50;
 	}
 
 	.schema-toggle {
@@ -2648,14 +2671,6 @@
 		display: inline-block;
 	}
 
-	.input-hint {
-		margin-top: 0.52rem;
-		font-size: 0.69rem;
-		color: var(--text-muted);
-		text-align: center;
-		letter-spacing: 0.015em;
-	}
-
 	.share-container {
 		position: relative;
 	}
@@ -2789,7 +2804,7 @@
 		.app-shell {
 			padding: calc(0.58rem + env(safe-area-inset-top)) calc(0.58rem + env(safe-area-inset-right))
 				calc(0.58rem + env(safe-area-inset-bottom)) calc(0.58rem + env(safe-area-inset-left));
-			gap: 0.6rem;
+			gap: 0;
 		}
 
 		.chat-main {
@@ -2851,33 +2866,12 @@
 		}
 
 		.welcome-screen {
-			padding: 1.22rem 0.35rem;
-			gap: 1.25rem;
+			min-height: 46vh;
+			padding: 1.24rem 0.35rem;
 		}
 
 		.welcome-hero h2 {
-			font-size: 1.6rem;
-		}
-
-		.welcome-hero p {
-			font-size: 0.9rem;
-		}
-
-		.hero-icon {
-			width: 2.7rem;
-			height: 2.7rem;
-			font-size: 1.42rem;
-			margin-bottom: 0.72rem;
-		}
-
-		.examples-grid {
-			grid-template-columns: minmax(0, 1fr);
-			gap: 0.56rem;
-		}
-
-		.example-card {
-			padding: 0.76rem 0.82rem;
-			font-size: 0.79rem;
+			font-size: 1.72rem;
 		}
 
 		.messages-list {
@@ -2952,11 +2946,6 @@
 			font-size: 0.87rem;
 		}
 
-		.input-hint {
-			font-size: 0.66rem;
-			line-height: 1.3;
-		}
-
 		.share-menu {
 			width: min(312px, calc(100vw - 1rem));
 		}
@@ -2970,10 +2959,6 @@
 
 		.header-title h1 {
 			font-size: 0.94rem;
-		}
-
-		.input-hint {
-			display: none;
 		}
 
 		.schema-toggle {
