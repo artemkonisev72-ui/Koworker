@@ -24,6 +24,7 @@ import {
 	type GraphData,
 	type GraphPoint
 } from '$lib/graphs/types.js';
+import type { SolverModelV1 } from '$lib/solver/model.js';
 
 export type PipelineStatus =
 	| { type: 'ping' }
@@ -64,6 +65,7 @@ interface SchemaNormalizationResult {
 
 const MAX_RETRIES = 2;
 const APPROVED_SCHEMA_MARKER = '\n\n[APPROVED_SCHEMA_JSON]\n';
+const SOLVER_MODEL_MARKER = '\n\n[SOLVER_MODEL_JSON]\n';
 
 type FinalizerPayloadMode = 'normal' | 'compact' | 'minimal';
 
@@ -623,6 +625,7 @@ export async function runPipelineWithApprovedSchema(
 		userMessage: string;
 		approvedSchema: SchemaAny;
 		revisionNotes?: string[];
+		solverModel?: SolverModelV1;
 	},
 	history: GeminiHistory[],
 	onStatus: (event: PipelineStatus) => void,
@@ -638,11 +641,13 @@ export async function runPipelineWithApprovedSchema(
 	});
 
 	const schemaJson = JSON.stringify(params.approvedSchema, null, 2);
+	const solverModelJson = params.solverModel ? JSON.stringify(params.solverModel, null, 2) : null;
 	const notesBlock =
 		params.revisionNotes && params.revisionNotes.length > 0
 			? `\n\n[ACCEPTED_SCHEMA_REVISIONS]\n${params.revisionNotes.map((note, i) => `${i + 1}. ${note}`).join('\n')}`
 			: '';
-	const messageWithSchemaContext = `${params.userMessage}\n\n[APPROVED_SCHEMA_JSON]\n${schemaJson}${notesBlock}\n\nUse approved schema as source of truth.`;
+	const solverBlock = solverModelJson ? `${SOLVER_MODEL_MARKER}${solverModelJson}` : '';
+	const messageWithSchemaContext = `${params.userMessage}${APPROVED_SCHEMA_MARKER}${schemaJson}${notesBlock}${solverBlock}\n\nUse approved schema as source of truth.${solverModelJson ? ' Use solver model as canonical semantics for member local axes, signs, and axis origins.' : ''}`;
 
 	return runPipeline(messageWithSchemaContext, history, onStatus, imageData, forcedModel, {
 		approvedSchema: params.approvedSchema

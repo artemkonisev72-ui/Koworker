@@ -6,6 +6,8 @@ import { GEMINI_API_KEY } from '$env/static/private';
 import { GoogleGenAI } from '@google/genai';
 import type { SchemaData } from '$lib/schema/schema-data.js';
 import type { SchemaDataV2 } from '$lib/schema/schema-v2.js';
+import type { SchemeIntentV1 } from '$lib/schema/intent.js';
+import { parseSchemeIntentResponse } from '$lib/schema/intent.js';
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -85,6 +87,15 @@ interface GeminiMessage {
 
 export interface SchemaGenerationResult {
 	schemaData: SchemaData | SchemaDataV2;
+	assumptions: string[];
+	ambiguities: string[];
+	model: GeminiModel;
+	tokens: number;
+	usedModels: string[];
+}
+
+export interface IntentGenerationResult {
+	intent: SchemeIntentV1;
 	assumptions: string[];
 	ambiguities: string[];
 	model: GeminiModel;
@@ -326,6 +337,19 @@ function parseSchemaResult(rawText: string): {
 	};
 }
 
+function parseIntentResult(rawText: string): {
+	intent: SchemeIntentV1;
+	assumptions: string[];
+	ambiguities: string[];
+} {
+	const parsed = parseSchemeIntentResponse(rawText);
+	return {
+		intent: parsed.intent,
+		assumptions: parsed.assumptions,
+		ambiguities: parsed.ambiguities
+	};
+}
+
 async function generateSchemaStage(
 	history: GeminiHistory[],
 	systemPrompt: string,
@@ -337,6 +361,27 @@ async function generateSchemaStage(
 	const chain = options?.useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
 	const generation = await generateWithFallback(chain[0], chain, messages, forcedModel);
 	return { parsed: parseSchemaResult(generation.text), model: generation.model, tokens: generation.tokens };
+}
+
+async function generateIntentStage(
+	history: GeminiHistory[],
+	systemPrompt: string,
+	question: string,
+	forcedModel?: string | null,
+	options?: { useFlashChain?: boolean }
+): Promise<{
+	parsed: { intent: SchemeIntentV1; assumptions: string[]; ambiguities: string[] };
+	model: GeminiModel;
+	tokens: number;
+}> {
+	const messages = buildContext(history, systemPrompt, question);
+	const chain = options?.useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
+	const generation = await generateWithFallback(chain[0], chain, messages, forcedModel);
+	return {
+		parsed: parseIntentResult(generation.text),
+		model: generation.model,
+		tokens: generation.tokens
+	};
 }
 
 function formatTokenAttribution(model: GeminiModel, stage: string, tokens: number): string {
@@ -395,6 +440,7 @@ export async function generatePythonCode(
 	forcedModel?: string | null
 ): Promise<{ code: string; model: GeminiModel; tokens: number }> {
 	const isSchemaCheckSolve = userMessage.includes('[APPROVED_SCHEMA_JSON]');
+	const hasSolverModelContext = userMessage.includes('[SOLVER_MODEL_JSON]');
 	const visualContract = isSchemaCheckSolve
 		? `9. When approved schema context is present, choose ONE visual mode:
    - Graph mode: return "graphs" as described above.
@@ -408,6 +454,13 @@ export async function generatePythonCode(
    - For classic numeric plots/curves return "graphs".
    - For object-based engineering schemes/epures return "schemaData" (v2).
 10. If "schemaData" is used, keep version "2.0" and use finite numbers only.`;
+	const solverModelContract = hasSolverModelContext
+		? `When [SOLVER_MODEL_JSON] is present, treat it as canonical mechanics semantics:
+- member local axes/signs must come from solverModel, not inferred from screen projection.
+- for cantilever beam members with axisOrigin="free_end", use x=0 at free end and increase toward fixed support.
+- for frame tasks use requested component semantics (N,Vy,Vz,T,My,Mz) from solverModel.`
+		: '';
+	const solverModelSection = solverModelContract ? `${solverModelContract}\n` : '';
 
 	const systemPrompt = `You generate Python code for exact scientific computation.
 Rules:
@@ -426,7 +479,7 @@ Rules:
 12. Put primary numeric/text result in key "result".
 13. Prefer sympy for exact math and numpy arrays for sampling points.
 ${visualContract}
-14. ${languagePolicy(userMessage)}`;
+${solverModelSection}${languagePolicy(userMessage)}`;
 
 	let userContent = `Task: ${userMessage}`;
 	if (retryContext) userContent += `\n\nFix this error context:\n${retryContext}`;
@@ -475,6 +528,230 @@ export async function analyzeImage(
 	messages[messages.length - 1].parts.push({ inlineData: { mimeType, data: base64Data } });
 	const chain = options?.fastMode ? FAST_VISION_CHAIN : VISION_CHAIN;
 	return generateWithFallback(chain[0], chain, messages, forcedModel);
+}
+
+export async function generateInitialIntent(
+	history: GeminiHistory[],
+	userMessage: string,
+	params?: {
+		imageData?: { base64: string; mimeType: string };
+		forcedModel?: string | null;
+		fastMode?: boolean;
+	}
+): Promise<IntentGenerationResult> {
+	let contextMessage = userMessage;
+	const usedModels: string[] = [];
+	const useFastMode = params?.fastMode === true;
+
+	if (params?.imageData) {
+		const vision = await analyzeImage(
+			history,
+			params.imageData.base64,
+			params.imageData.mimeType,
+			params.forcedModel,
+			{ fastMode: useFastMode }
+		);
+		usedModels.push(formatTokenAttribution(vision.model, 'Vision', vision.tokens));
+		contextMessage = `[IMAGE_DESCRIPTION]\n${vision.text}\n\n[USER_TASK]\n${userMessage}`;
+	}
+
+	const basePrompt = `You extract semantic intent for an engineering mechanics scheme.
+Return STRICT JSON with keys: intent, assumptions, ambiguities.
+Do NOT return schemaData.
+Do NOT return nodeRefs, node ids, render coordinates, geometry.baseLine.startNodeId/endNodeId, JSXGraph data, or final object ids.
+intent contract:
+{
+  "version": "intent-1.0",
+  "taskDomain": "mechanics",
+  "structureKind": "beam|planar_frame|spatial_frame",
+  "modelSpace": "planar|spatial",
+  "confidence": "high|medium|low",
+  "source": { "hasImage": boolean, "language": "ru|en" },
+  "joints": [{ "key": "...", "role": "start|end|corner|free_end|fixed_end|generic", "label": "..." }],
+  "members": [{ "key": "...", "kind": "bar|cable|spring|damper", "startJoint": "...", "endJoint": "...", "relation": "horizontal|vertical|inclined|collinear_with_prev", "lengthHint": 3.5, "angleHintDeg": 30 }],
+  "supports": [{ "key": "...", "kind": "fixed_wall|hinge_fixed|hinge_roller|internal_hinge|slider", "jointKey": "...", "memberKey": "...", "s": 0.5, "sideHint": "left|right|top|bottom", "guideHint": "horizontal|vertical|member_local" }],
+  "loads": [{ "key": "...", "kind": "force|moment|distributed", "target": {"jointKey":"..."} | {"memberKey":"...","s":0.5} | {"memberKey":"...","fromS":0.2,"toS":0.8}, "directionHint": "up|down|left|right|+x|-x|+y|-y|cw|ccw|member_local_positive|member_local_negative", "magnitudeHint": 10, "distributionKind": "uniform|linear|trapezoid" }],
+  "requestedResults": [{ "targetMemberKey": "...", "kind": "N|Q|M|Vy|Vz|T|My|Mz" }],
+  "assumptions": [],
+  "ambiguities": []
+}
+Rules:
+1) Keep joint/member/support/load keys stable and semantic.
+2) If uncertain, put uncertainty into ambiguities instead of guessing.
+3) Keep assumptions/ambiguities concise and language-consistent with the user.
+4) Beam default result set is N/Q/M, planar frame N/Vy/Mz, spatial frame N/Vy/Vz/T/My/Mz.
+5) Spatial frame must set modelSpace="spatial"; beam/planar frame must set modelSpace="planar".
+${languagePolicy(userMessage)}`;
+
+	if (useFastMode) {
+		const question = `Extract initial scheme intent for this task:\n${contextMessage}`;
+		const messages = buildContext(history, `${basePrompt}\nFast mode: answer in one pass.`, question);
+		const generation = await generateWithFallback(
+			FAST_SCHEMA_CHAIN[0],
+			FAST_SCHEMA_CHAIN,
+			messages,
+			params?.forcedModel
+		);
+		const parsed = parseIntentResult(generation.text);
+		usedModels.push(formatTokenAttribution(generation.model, 'IntentGen-Fast', generation.tokens));
+		return {
+			...parsed,
+			model: generation.model,
+			tokens: generation.tokens,
+			usedModels
+		};
+	}
+
+	const stageA = await generateIntentStage(
+		history,
+		`${basePrompt}\nStage A objective: extract only semantic structure and topology assumptions.`,
+		`Task:\n${contextMessage}`,
+		params?.forcedModel
+	);
+	usedModels.push(formatTokenAttribution(stageA.model, 'IntentGen-A', stageA.tokens));
+
+	const stageB = await generateIntentStage(
+		history,
+		`${basePrompt}\nStage B objective: self-check and correct only contract violations in intent.`,
+		`Task:\n${contextMessage}\n\nCandidate intent:\n${JSON.stringify(stageA.parsed.intent, null, 2)}`,
+		params?.forcedModel
+	);
+	usedModels.push(formatTokenAttribution(stageB.model, 'IntentGen-B', stageB.tokens));
+
+	return {
+		...stageB.parsed,
+		model: stageB.model,
+		tokens: stageA.tokens + stageB.tokens,
+		usedModels
+	};
+}
+
+export async function reviseIntent(
+	history: GeminiHistory[],
+	params: {
+		originalPrompt: string;
+		currentIntent: SchemeIntentV1;
+		revisionNotes: string;
+		forcedModel?: string | null;
+		fastMode?: boolean;
+	}
+): Promise<IntentGenerationResult> {
+	const languageSeed = `${params.originalPrompt}\n${params.revisionNotes}`;
+	const useFlashChain = params.fastMode === true;
+
+	const prompt = `You revise semantic SchemeIntent only.
+Return STRICT JSON with keys: intent, assumptions, ambiguities.
+Do NOT generate schemaData, nodeRefs, ids for render objects, or coordinates.
+Keep valid semantic keys and structure where possible.
+Apply revision notes precisely.
+If a revision note is ambiguous, keep previous intent and add ambiguity entry.
+${languagePolicy(languageSeed)}`;
+
+	const question = `Original task:\n${params.originalPrompt}\n\nCurrent intent JSON:\n${JSON.stringify(
+		params.currentIntent,
+		null,
+		2
+	)}\n\nUser revision notes:\n${params.revisionNotes}`;
+	const messages = buildContext(history, prompt, question);
+	const chain = useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
+	const generation = await generateWithFallback(chain[0], chain, messages, params.forcedModel);
+	const parsedRevision = parseIntentResult(generation.text);
+
+	if (params.fastMode) {
+		return {
+			...parsedRevision,
+			model: generation.model,
+			tokens: generation.tokens,
+			usedModels: [formatTokenAttribution(generation.model, 'IntentRevision-Fast', generation.tokens)]
+		};
+	}
+
+	const stage2 = await generateIntentStage(
+		history,
+		`You perform final intent self-check.
+Return STRICT JSON with keys: intent, assumptions, ambiguities.
+Fix only intent-contract violations and keep semantics stable.
+${languagePolicy(languageSeed)}`,
+		`Original task:\n${params.originalPrompt}\n\nRevision notes:\n${params.revisionNotes}\n\nCandidate revised intent:\n${JSON.stringify(
+			parsedRevision.intent,
+			null,
+			2
+		)}`,
+		params.forcedModel,
+		{ useFlashChain }
+	);
+
+	return {
+		...stage2.parsed,
+		model: stage2.model,
+		tokens: generation.tokens + stage2.tokens,
+		usedModels: [
+			formatTokenAttribution(generation.model, 'IntentRevision', generation.tokens),
+			formatTokenAttribution(stage2.model, 'IntentRevision-SelfCheck', stage2.tokens)
+		]
+	};
+}
+
+export async function repairIntentByIssues(
+	history: GeminiHistory[],
+	params: {
+		originalPrompt: string;
+		currentIntent: SchemeIntentV1;
+		issues: string[];
+		forcedModel?: string | null;
+		fastMode?: boolean;
+		skipSelfCheck?: boolean;
+	}
+): Promise<IntentGenerationResult> {
+	const issuesText = params.issues.map((issue, index) => `${index + 1}. ${issue}`).join('\n');
+	const languageSeed = `${params.originalPrompt}\n${issuesText}`;
+	const useFlashChain = params.fastMode === true;
+
+	const prompt = `You are a SchemeIntent repair worker.
+Return STRICT JSON with keys: intent, assumptions, ambiguities.
+Repair ONLY the listed issues, preserve valid semantic intent, do not invent unrelated changes.
+Never output schemaData or render-level fields.
+${languagePolicy(languageSeed)}`;
+
+	const question = `Original task:\n${params.originalPrompt}\n\nIssues to fix:\n${issuesText}\n\nCurrent intent JSON:\n${JSON.stringify(
+		params.currentIntent,
+		null,
+		2
+	)}`;
+	const messages = buildContext(history, prompt, question);
+	const chain = useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
+	const stage1 = await generateWithFallback(chain[0], chain, messages, params.forcedModel);
+	const parsedStage1 = parseIntentResult(stage1.text);
+
+	if (params.skipSelfCheck) {
+		return {
+			...parsedStage1,
+			model: stage1.model,
+			tokens: stage1.tokens,
+			usedModels: [formatTokenAttribution(stage1.model, 'IntentRepair-Fast', stage1.tokens)]
+		};
+	}
+
+	const stage2 = await generateIntentStage(
+		history,
+		`You perform final targeted self-check for SchemeIntent.
+Return STRICT JSON with keys: intent, assumptions, ambiguities.
+Keep only issue-driven changes.
+${languagePolicy(languageSeed)}`,
+		`Issues:\n${issuesText}\n\nCandidate intent:\n${JSON.stringify(parsedStage1.intent, null, 2)}`,
+		params.forcedModel,
+		{ useFlashChain }
+	);
+
+	return {
+		...stage2.parsed,
+		model: stage2.model,
+		tokens: stage1.tokens + stage2.tokens,
+		usedModels: [
+			formatTokenAttribution(stage1.model, 'IntentRepair', stage1.tokens),
+			formatTokenAttribution(stage2.model, 'IntentRepair-SelfCheck', stage2.tokens)
+		]
+	};
 }
 
 export async function generateInitialSchema(

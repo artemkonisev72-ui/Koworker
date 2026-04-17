@@ -90,8 +90,11 @@ model TaskDraft {
   schemaVersion     String              @default("1.0")
   originalPrompt    String              @db.Text
   originalImageData String?             @db.Text
+  currentIntent     Json?
+  approvedIntent    Json?
   currentSchema     Json?
   approvedSchema    Json?
+  solverModel       Json?
   revisionCount     Int                 @default(0)
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
@@ -110,8 +113,10 @@ model TaskDraftRevision {
   revisionIndex Int
   schemaVersion String    @default("1.0")
   userNotes     String?   @db.Text
+  intent        Json?
   schema        Json
   assumptions   Json?
+  ambiguities   Json?
   createdAt     DateTime  @default(now())
   draft         TaskDraft @relation(fields: [draftId], references: [id], onDelete: Cascade)
 

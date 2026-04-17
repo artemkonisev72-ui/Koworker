@@ -1,13 +1,14 @@
 import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
-import { generateInitialSchema, repairSchemaByIssues } from '$lib/server/ai/gemini.js';
+import { generateInitialIntent, repairIntentByIssues } from '$lib/server/ai/gemini.js';
 import {
 	isModelPreference,
 	normalizeModelPreference,
 	toForcedModel
 } from '$lib/server/ai/model-preference.js';
 import { validateSchemaAny } from '$lib/schema/schema-any.js';
+import { compileSchemeIntent, SchemeIntentCompileError } from '$lib/schema/compiler.js';
 import {
 	detectPromptLanguage,
 	formatSchemaAssistantContent,
@@ -124,12 +125,12 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	});
 
 	try {
-		const generated = await generateInitialSchema(history, message, {
+		const generated = await generateInitialIntent(history, message, {
 			imageData,
 			forcedModel,
 			fastMode: true
 		});
-		logSchemaCheck('start.llm_generated', {
+		logSchemaCheck('start.intent_generated', {
 			draftId: draft.id,
 			model: generated.model,
 			tokens: generated.tokens,
@@ -137,28 +138,30 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			ambiguities: generated.ambiguities.length
 		});
 		let finalGenerated = generated;
-		let finalValidation = validateSchemaAny(generated.schemaData);
+		let compiledSchema: ReturnType<typeof compileSchemeIntent> | null = null;
 
-		if (!finalValidation.ok || !finalValidation.value) {
-			const repairIssues = finalValidation.errors.slice(0, 6);
-			logSchemaCheck('start.repair_requested', {
+		try {
+			compiledSchema = compileSchemeIntent(generated.intent);
+		} catch (compileErr) {
+			if (!(compileErr instanceof SchemeIntentCompileError)) throw compileErr;
+			const repairIssues = compileErr.issues.slice(0, 6);
+			logSchemaCheck('start.intent_repair_requested', {
 				draftId: draft.id,
-				reason: 'initial_validation_failed',
-				errorCount: finalValidation.errors.length,
+				errorCount: compileErr.issues.length,
 				issues: repairIssues
 			});
-			try {
-				const repaired = await repairSchemaByIssues(history, {
-					originalPrompt: message,
-					currentSchema: generated.schemaData,
-					issues: repairIssues,
-					forcedModel,
-					fastMode: true,
-					skipSelfCheck: true
-				});
-				const repairedValidation = validateSchemaAny(repaired.schemaData);
-				if (repairedValidation.ok && repairedValidation.value) {
-					finalValidation = repairedValidation;
+			if (repairIssues.length > 0) {
+				try {
+					const repaired = await repairIntentByIssues(history, {
+						originalPrompt: message,
+						currentIntent: generated.intent,
+						issues: repairIssues,
+						forcedModel,
+						fastMode: true,
+						skipSelfCheck: true
+					});
+					const repairedCompiled = compileSchemeIntent(repaired.intent);
+					compiledSchema = repairedCompiled;
 					finalGenerated = {
 						...repaired,
 						tokens: generated.tokens + repaired.tokens,
@@ -166,24 +169,26 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 						assumptions: repaired.assumptions.length > 0 ? repaired.assumptions : generated.assumptions,
 						ambiguities: repaired.ambiguities.length > 0 ? repaired.ambiguities : generated.ambiguities
 					};
-					logSchemaCheck('start.repair_applied', {
+					logSchemaCheck('start.intent_repair_applied', {
 						draftId: draft.id,
-						fixed: true
+						fixed: true,
+						compileWarnings: repairedCompiled.warnings.length
 					});
-				} else {
-					logSchemaCheck('start.repair_invalid', {
+				} catch (repairErr) {
+					logSchemaCheck('start.intent_repair_failed', {
 						draftId: draft.id,
-						errors: repairedValidation.errors
+						error: repairErr instanceof Error ? repairErr.message : String(repairErr)
 					});
 				}
-			} catch (repairErr) {
-				logSchemaCheck('start.repair_failed', {
-					draftId: draft.id,
-					error: repairErr instanceof Error ? repairErr.message : String(repairErr)
-				});
 			}
 		}
 
+		if (!compiledSchema) {
+			await db.taskDraft.update({ where: { id: draft.id }, data: { status: 'FAILED' } });
+			return error(422, 'Intent compilation failed');
+		}
+
+		const finalValidation = validateSchemaAny(compiledSchema.schemaData);
 		if (!finalValidation.ok || !finalValidation.value) {
 			await db.taskDraft.update({ where: { id: draft.id }, data: { status: 'FAILED' } });
 			logSchemaCheck('start.schema_invalid', {
@@ -219,6 +224,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				where: { id: draft.id },
 				data: {
 					status: 'AWAITING_REVIEW',
+					currentIntent: finalGenerated.intent,
 					currentSchema: finalValidation.value,
 					schemaVersion: finalValidation.version ?? '2.0',
 					revisionCount: 0
@@ -230,8 +236,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 					draftId: draft.id,
 					revisionIndex: 0,
 					schemaVersion: finalValidation.version ?? '2.0',
+					intent: finalGenerated.intent,
 					schema: finalValidation.value,
-					assumptions: finalGenerated.assumptions
+					assumptions: finalGenerated.assumptions,
+					ambiguities: finalGenerated.ambiguities
 				}
 			});
 

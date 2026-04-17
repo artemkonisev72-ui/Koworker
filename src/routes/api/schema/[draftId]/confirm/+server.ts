@@ -9,6 +9,9 @@ import {
 } from '$lib/server/ai/model-preference.js';
 import type { SchemaAny } from '$lib/schema/schema-any.js';
 import { validateSchemaAny } from '$lib/schema/schema-any.js';
+import { compileSchemeIntent } from '$lib/schema/compiler.js';
+import { validateSchemeIntent } from '$lib/schema/intent.js';
+import { buildSolverModelFromSchema, type SolverModelV1 } from '$lib/solver/model.js';
 import { canConfirmStatus, loadGeminiHistory, logSchemaCheck, parseImageData } from '$lib/server/schema/flow.js';
 
 function isResultEvent(event: PipelineStatus): event is Extract<PipelineStatus, { type: 'result' }> {
@@ -18,6 +21,7 @@ function isResultEvent(event: PipelineStatus): event is Extract<PipelineStatus, 
 async function runSolveWithGate(params: {
 	userMessage: string;
 	approvedSchema: SchemaAny;
+	solverModel?: SolverModelV1;
 	revisionNotes: string[];
 	history: Awaited<ReturnType<typeof loadGeminiHistory>>;
 	imageData?: { base64: string; mimeType: string };
@@ -30,6 +34,7 @@ async function runSolveWithGate(params: {
 		{
 			userMessage: params.userMessage,
 			approvedSchema: params.approvedSchema,
+			solverModel: params.solverModel,
 			revisionNotes: params.revisionNotes
 		},
 		params.history,
@@ -62,6 +67,7 @@ function launchSchemaSolveInBackground(params: {
 	userMessage: string;
 	originalImageData?: string | null;
 	approvedSchema: SchemaAny;
+	solverModel?: SolverModelV1;
 	schemaVersion: string;
 	revisionNotes: string[];
 	forcedModel?: string | null;
@@ -80,6 +86,7 @@ function launchSchemaSolveInBackground(params: {
 			const resultEvent = await runSolveWithGate({
 				userMessage: params.userMessage,
 				approvedSchema: params.approvedSchema,
+				solverModel: params.solverModel,
 				revisionNotes: params.revisionNotes,
 				history,
 				imageData,
@@ -203,10 +210,66 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 		return error(409, 'No current schema to approve');
 	}
 
-	const schemaValidation = validateSchemaAny(draft.currentSchema);
-	if (!schemaValidation.ok || !schemaValidation.value) {
-		logSchemaCheck('confirm.schema_invalid', { draftId: draft.id, errors: schemaValidation.errors });
-		return error(422, `Approved schema validation failed: ${schemaValidation.errors.join('; ')}`);
+	let approvedIntent: unknown = null;
+	let approvedSchemaValue: SchemaAny | null = null;
+	let approvedSchemaVersion: string = '2.0';
+
+	if (draft.currentIntent) {
+		const intentValidation = validateSchemeIntent(draft.currentIntent);
+		if (intentValidation.ok && intentValidation.value) {
+			try {
+				const compiled = compileSchemeIntent(intentValidation.value);
+				approvedIntent = intentValidation.value;
+				approvedSchemaValue = compiled.schemaData;
+				approvedSchemaVersion = '2.0';
+				logSchemaCheck('confirm.intent_compiled', {
+					draftId: draft.id,
+					compileWarnings: compiled.warnings.length
+				});
+			} catch (compileErr) {
+				logSchemaCheck('confirm.intent_compile_failed', {
+					draftId: draft.id,
+					error: compileErr instanceof Error ? compileErr.message : String(compileErr)
+				});
+			}
+		} else {
+			logSchemaCheck('confirm.intent_invalid', {
+				draftId: draft.id,
+				errors: intentValidation.errors
+			});
+		}
+	}
+
+	if (!approvedSchemaValue) {
+		const schemaValidation = validateSchemaAny(draft.currentSchema);
+		if (!schemaValidation.ok || !schemaValidation.value) {
+			logSchemaCheck('confirm.schema_invalid', { draftId: draft.id, errors: schemaValidation.errors });
+			return error(422, `Approved schema validation failed: ${schemaValidation.errors.join('; ')}`);
+		}
+		approvedSchemaValue = schemaValidation.value;
+		approvedSchemaVersion = schemaValidation.version ?? '2.0';
+	}
+	if (!approvedSchemaValue) {
+		return error(422, 'Approved schema is missing after confirmation checks');
+	}
+
+	let solverModel: SolverModelV1;
+	try {
+		const built = buildSolverModelFromSchema(approvedSchemaValue);
+		solverModel = built.solverModel;
+		if (built.warnings.length > 0) {
+			logSchemaCheck('confirm.solver_model_warnings', {
+				draftId: draft.id,
+				warnings: built.warnings.slice(0, 6)
+			});
+		}
+	} catch (buildErr) {
+		const messageText = buildErr instanceof Error ? buildErr.message : String(buildErr);
+		logSchemaCheck('confirm.solver_model_failed', {
+			draftId: draft.id,
+			error: messageText
+		});
+		return error(422, `Solver model build failed: ${messageText}`);
 	}
 
 	const effectiveModelPreference =
@@ -229,15 +292,17 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	await db.taskDraft.update({
 		where: { id: draft.id },
 		data: {
-			approvedSchema: schemaValidation.value,
+			approvedIntent,
+			approvedSchema: approvedSchemaValue,
+			solverModel,
 			status: 'SOLVING',
-			schemaVersion: schemaValidation.version ?? '2.0'
+			schemaVersion: approvedSchemaVersion
 		}
 	});
 	logSchemaCheck('confirm.approved_and_solving', {
 		draftId: draft.id,
 		revisionNotes: revisionNotes.length,
-		schemaVersion: schemaValidation.version ?? '2.0'
+		schemaVersion: approvedSchemaVersion
 	});
 
 	launchSchemaSolveInBackground({
@@ -245,8 +310,9 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 		chatId: draft.chatId,
 		userMessage: draft.originalPrompt,
 		originalImageData: draft.originalImageData,
-		approvedSchema: schemaValidation.value,
-		schemaVersion: schemaValidation.version ?? '2.0',
+		approvedSchema: approvedSchemaValue,
+		solverModel,
+		schemaVersion: approvedSchemaVersion,
 		revisionNotes,
 		forcedModel,
 		startedAt

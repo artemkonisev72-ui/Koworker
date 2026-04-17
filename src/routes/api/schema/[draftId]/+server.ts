@@ -36,15 +36,20 @@ export const GET: RequestHandler = async ({ locals, params }) => {
 		status: draft.status,
 		schemaVersion: draft.schemaVersion ?? '1.0',
 		revisionCount: draft.revisionCount,
+		currentIntent: draft.currentIntent,
+		approvedIntent: draft.approvedIntent,
 		currentSchema: draft.currentSchema,
 		approvedSchema: draft.approvedSchema,
+		solverModel: draft.solverModel,
 		latestRevision: latestRevision
 			? {
 				revisionIndex: latestRevision.revisionIndex,
 				schemaVersion: latestRevision.schemaVersion ?? draft.schemaVersion ?? '1.0',
 				userNotes: latestRevision.userNotes,
+				intent: latestRevision.intent,
 				schema: latestRevision.schema,
 				assumptions: latestRevision.assumptions,
+				ambiguities: latestRevision.ambiguities,
 				createdAt: latestRevision.createdAt
 			}
 			: null,
