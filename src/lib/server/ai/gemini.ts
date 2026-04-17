@@ -337,12 +337,17 @@ function parseSchemaResult(rawText: string): {
 	};
 }
 
-function parseIntentResult(rawText: string): {
+function parseIntentResult(
+	rawText: string,
+	options?: { baseIntent?: SchemeIntentV1 }
+): {
 	intent: SchemeIntentV1;
 	assumptions: string[];
 	ambiguities: string[];
 } {
-	const parsed = parseSchemeIntentResponse(rawText);
+	const parsed = parseSchemeIntentResponse(rawText, {
+		baseIntent: options?.baseIntent
+	});
 	return {
 		intent: parsed.intent,
 		assumptions: parsed.assumptions,
@@ -368,7 +373,7 @@ async function generateIntentStage(
 	systemPrompt: string,
 	question: string,
 	forcedModel?: string | null,
-	options?: { useFlashChain?: boolean }
+	options?: { useFlashChain?: boolean; baseIntent?: SchemeIntentV1 }
 ): Promise<{
 	parsed: { intent: SchemeIntentV1; assumptions: string[]; ambiguities: string[] };
 	model: GeminiModel;
@@ -378,7 +383,9 @@ async function generateIntentStage(
 	const chain = options?.useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
 	const generation = await generateWithFallback(chain[0], chain, messages, forcedModel);
 	return {
-		parsed: parseIntentResult(generation.text),
+		parsed: parseIntentResult(generation.text, {
+			baseIntent: options?.baseIntent
+		}),
 		model: generation.model,
 		tokens: generation.tokens
 	};
@@ -655,7 +662,9 @@ ${languagePolicy(languageSeed)}`;
 	const messages = buildContext(history, prompt, question);
 	const chain = useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
 	const generation = await generateWithFallback(chain[0], chain, messages, params.forcedModel);
-	const parsedRevision = parseIntentResult(generation.text);
+	const parsedRevision = parseIntentResult(generation.text, {
+		baseIntent: params.currentIntent
+	});
 
 	if (params.fastMode) {
 		return {
@@ -678,7 +687,7 @@ ${languagePolicy(languageSeed)}`,
 			2
 		)}`,
 		params.forcedModel,
-		{ useFlashChain }
+		{ useFlashChain, baseIntent: params.currentIntent }
 	);
 
 	return {
@@ -721,7 +730,9 @@ ${languagePolicy(languageSeed)}`;
 	const messages = buildContext(history, prompt, question);
 	const chain = useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
 	const stage1 = await generateWithFallback(chain[0], chain, messages, params.forcedModel);
-	const parsedStage1 = parseIntentResult(stage1.text);
+	const parsedStage1 = parseIntentResult(stage1.text, {
+		baseIntent: params.currentIntent
+	});
 
 	if (params.skipSelfCheck) {
 		return {
@@ -740,7 +751,7 @@ Keep only issue-driven changes.
 ${languagePolicy(languageSeed)}`,
 		`Issues:\n${issuesText}\n\nCandidate intent:\n${JSON.stringify(parsedStage1.intent, null, 2)}`,
 		params.forcedModel,
-		{ useFlashChain }
+		{ useFlashChain, baseIntent: params.currentIntent }
 	);
 
 	return {

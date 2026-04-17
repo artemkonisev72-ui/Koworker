@@ -124,6 +124,10 @@ export interface ParsedSchemeIntentResponse {
 	warnings: string[];
 }
 
+export interface ParseSchemeIntentResponseOptions {
+	baseIntent?: SchemeIntentV1;
+}
+
 const JOINT_ROLES = new Set<IntentJointRole>([
 	'start',
 	'end',
@@ -453,12 +457,20 @@ function normalizeLoadCandidate(raw: unknown, index: number): IntentLoad | null 
 		normalizeLoadTarget(raw) ??
 		(kind === 'distributed' ? null : normalizeLoadTarget({ jointKey: raw.jointKey ?? raw.joint }));
 	if (!target) return null;
+	const normalizedTarget: IntentLoadTarget =
+		kind === 'distributed' && 'memberKey' in target && 's' in target
+			? {
+				memberKey: target.memberKey,
+				fromS: Math.max(0, Math.min(1, target.s - 0.1)),
+				toS: Math.max(0, Math.min(1, target.s + 0.1))
+			}
+			: target;
 	const directionHint = normalizeDirectionHint(raw.directionHint ?? raw.direction ?? raw.cardinal);
 	const magnitudeHint = normalizeMagnitudeHint(raw.magnitudeHint ?? raw.magnitude ?? raw.intensity);
 	const distributionKind = normalizeDistributionKind(raw.distributionKind ?? raw.kindHint ?? raw.shape);
 	const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : undefined;
 
-	const load: IntentLoad = { key, kind, target };
+	const load: IntentLoad = { key, kind, target: normalizedTarget };
 	if (directionHint) load.directionHint = directionHint;
 	if (magnitudeHint !== undefined) load.magnitudeHint = magnitudeHint;
 	if (distributionKind) load.distributionKind = distributionKind;
@@ -493,6 +505,75 @@ function extractRootIntentCandidate(input: unknown): Record<string, unknown> {
 			? (direct.data.intent as Record<string, unknown>)
 			: null);
 	return wrapped ?? direct;
+}
+
+function hasOwnKey(record: Record<string, unknown>, key: string): boolean {
+	return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function mergeIntentWithBase(
+	candidatePayload: Record<string, unknown>,
+	normalizedCandidate: SchemeIntentV1,
+	baseIntent: SchemeIntentV1
+): SchemeIntentV1 {
+	const usesCandidateStructureKind = hasOwnKey(candidatePayload, 'structureKind');
+	const usesCandidateModelSpace = hasOwnKey(candidatePayload, 'modelSpace');
+
+	const structureKind = usesCandidateStructureKind
+		? normalizedCandidate.structureKind
+		: baseIntent.structureKind;
+	const modelSpace = usesCandidateModelSpace
+		? normalizedCandidate.modelSpace
+		: usesCandidateStructureKind
+			? (structureKind === 'spatial_frame' ? 'spatial' : 'planar')
+			: baseIntent.modelSpace;
+
+	const confidence = hasOwnKey(candidatePayload, 'confidence')
+		? normalizedCandidate.confidence
+		: baseIntent.confidence;
+	const source = hasOwnKey(candidatePayload, 'source')
+		? normalizedCandidate.source
+		: baseIntent.source;
+
+	const joints =
+		normalizedCandidate.joints.length > 0
+			? normalizedCandidate.joints
+			: baseIntent.joints;
+	const members =
+		normalizedCandidate.members.length > 0
+			? normalizedCandidate.members
+			: baseIntent.members;
+	const supports = hasOwnKey(candidatePayload, 'supports')
+		? normalizedCandidate.supports
+		: baseIntent.supports;
+	const loads = hasOwnKey(candidatePayload, 'loads')
+		? normalizedCandidate.loads
+		: baseIntent.loads;
+	const requestedResults = hasOwnKey(candidatePayload, 'requestedResults')
+		? normalizedCandidate.requestedResults
+		: baseIntent.requestedResults;
+	const assumptions = hasOwnKey(candidatePayload, 'assumptions')
+		? normalizedCandidate.assumptions
+		: baseIntent.assumptions;
+	const ambiguities = hasOwnKey(candidatePayload, 'ambiguities')
+		? normalizedCandidate.ambiguities
+		: baseIntent.ambiguities;
+
+	return {
+		version: SCHEME_INTENT_V1_VERSION,
+		taskDomain: 'mechanics',
+		structureKind,
+		modelSpace,
+		confidence,
+		source,
+		joints,
+		members,
+		supports,
+		loads,
+		...(requestedResults && requestedResults.length > 0 ? { requestedResults } : {}),
+		assumptions,
+		ambiguities
+	};
 }
 
 function extractJsonPayload(rawText: string): unknown {
@@ -747,8 +828,12 @@ export function validateSchemeIntent(input: unknown): SchemeIntentValidationResu
 	for (const [index, load] of intent.loads.entries()) {
 		if (!load.key.trim()) errors.push(`loads[${index}].key must be non-empty`);
 		if (load.kind === 'distributed') {
-			if (!('memberKey' in load.target) || !('fromS' in load.target) || !('toS' in load.target)) {
-				errors.push(`loads[${index}] kind "distributed" requires interval target {memberKey,fromS,toS}`);
+			if ('jointKey' in load.target) {
+				errors.push(`loads[${index}] kind "distributed" cannot target jointKey; use member target`);
+			} else if (!('memberKey' in load.target) || (!('fromS' in load.target) && !('s' in load.target))) {
+				errors.push(
+					`loads[${index}] kind "distributed" requires member target {memberKey,fromS,toS} (or member+s fallback)`
+				);
 			}
 		} else if ('memberKey' in load.target && 'fromS' in load.target) {
 			errors.push(`loads[${index}] kind "${load.kind}" cannot use interval target`);
@@ -782,13 +867,28 @@ export function validateSchemeIntent(input: unknown): SchemeIntentValidationResu
 	};
 }
 
-export function parseSchemeIntentResponse(rawText: string): ParsedSchemeIntentResponse {
+export function parseSchemeIntentResponse(
+	rawText: string,
+	options?: ParseSchemeIntentResponseOptions
+): ParsedSchemeIntentResponse {
 	const parsed = extractJsonPayload(rawText);
 	if (!isRecord(parsed)) {
 		throw new Error('Intent response JSON must be an object');
 	}
 	const payload = extractRootIntentCandidate(parsed);
-	const validation = validateSchemeIntent(payload);
+	let validation = validateSchemeIntent(payload);
+	const extraWarnings: string[] = [];
+	if ((!validation.ok || !validation.value) && options?.baseIntent) {
+		const normalizedCandidate = normalizeSchemeIntent(payload).value;
+		const merged = mergeIntentWithBase(payload, normalizedCandidate, options.baseIntent);
+		const mergedValidation = validateSchemeIntent(merged);
+		if (mergedValidation.ok && mergedValidation.value) {
+			extraWarnings.push(
+				`Intent response was merged with base intent due validation errors: ${validation.errors.join('; ')}`
+			);
+			validation = mergedValidation;
+		}
+	}
 	if (!validation.ok || !validation.value) {
 		throw new Error(`Intent response validation failed: ${validation.errors.join('; ')}`);
 	}
@@ -806,6 +906,6 @@ export function parseSchemeIntentResponse(rawText: string): ParsedSchemeIntentRe
 		},
 		assumptions,
 		ambiguities,
-		warnings: validation.warnings
+		warnings: [...validation.warnings, ...extraWarnings]
 	};
 }
