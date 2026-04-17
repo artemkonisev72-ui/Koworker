@@ -6,8 +6,14 @@
 	import { onMount, tick } from 'svelte';
 	import GraphView from './GraphView.svelte';
 	import SchemeView from './SchemeView.svelte';
-	import { isSchemaDataV2 } from '$lib/schema/schema-v2.js';
-	import { normalizeGraphEpure, type GraphData } from '$lib/graphs/types.js';
+	import { isSchemaDataV2, type SchemaDataV2 } from '$lib/schema/schema-v2.js';
+	import { normalizeSchemaDataV2 } from '$lib/schema/normalize-v2.js';
+	import {
+		formatGraphDisplayTitle,
+		formatGraphMemberLabel,
+		normalizeGraphEpure,
+		type GraphData
+	} from '$lib/graphs/types.js';
 	interface GraphGroup {
 		memberId: string | null;
 		items: GraphData[];
@@ -23,6 +29,9 @@
 		createdAt?: string;
 		isStreaming?: boolean;
 	}
+
+	type StructureKind = 'beam' | 'planar_frame' | 'spatial_frame';
+	const FRAME_COMPONENT_ORDER = ['N', 'Vy', 'Vz', 'T', 'My', 'Mz'] as const;
 
 	type ExportActionId = 'pdf';
 
@@ -74,9 +83,29 @@
 		return (message.graphData as GraphData[]).map((graph) => normalizeGraphEpure(graph).graph);
 	});
 
-	let graphGroups = $derived.by(() => {
+	function isRecord(value: unknown): value is Record<string, unknown> {
+		return typeof value === 'object' && value !== null && !Array.isArray(value);
+	}
+
+	function normalizeStructureKind(value: unknown): StructureKind {
+		if (typeof value !== 'string') return 'beam';
+		const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+		if (normalized === 'beam' || normalized === 'planar_frame' || normalized === 'spatial_frame') {
+			return normalized;
+		}
+		return 'beam';
+	}
+
+	function resolveStructureKind(schema: SchemaDataV2): StructureKind {
+		const fromMeta = normalizeStructureKind(schema.meta?.structureKind);
+		if (fromMeta !== 'beam') return fromMeta;
+		if (schema.coordinateSystem?.modelSpace === 'spatial') return 'spatial_frame';
+		return fromMeta;
+	}
+
+	function buildGraphGroups(items: GraphData[]): GraphGroup[] {
 		const groups = new Map<string, GraphGroup>();
-		for (const graph of graphs) {
+		for (const graph of items) {
 			if (!graph || !Array.isArray(graph.points) || graph.points.length < 2) continue;
 			const memberId =
 				typeof graph.memberId === 'string' && graph.memberId.trim().length > 0
@@ -93,29 +122,123 @@
 			if (a.memberId !== null && b.memberId === null) return -1;
 			return (a.memberId ?? '').localeCompare(b.memberId ?? '');
 		});
+	}
+
+	let graphGroups = $derived.by(() => {
+		return buildGraphGroups(graphs);
 	});
 
 	let schemes = $derived.by(() => {
-		if (!message.schemaData) return [] as unknown[];
+		if (!message.schemaData) return [] as SchemaDataV2[];
 		const raw = message.schemaData;
 		let parsed: unknown = raw;
 		if (typeof raw === 'string') {
 			try {
 				parsed = JSON.parse(raw);
 			} catch {
-				return [] as unknown[];
+				return [] as SchemaDataV2[];
 			}
 		}
 		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
 			const schema = parsed as Record<string, unknown>;
-			if (Array.isArray(schema.elements)) return [schema];
-			if (isSchemaDataV2(schema)) return [schema];
+			if (Array.isArray(schema.elements) || isSchemaDataV2(schema)) {
+				return [normalizeSchemaDataV2(schema).value];
+			}
 		}
-		return [] as unknown[];
+		return [] as SchemaDataV2[];
+	});
+
+	let frameGraphGroups = $derived.by(() => {
+		const frameGraphs: GraphData[] = [];
+
+		for (const schema of schemes) {
+			const structureKind = resolveStructureKind(schema);
+			if (structureKind !== 'planar_frame' && structureKind !== 'spatial_frame') continue;
+
+			for (const result of schema.results ?? []) {
+				if (result.type !== 'epure' || !isRecord(result.geometry) || !Array.isArray(result.geometry.values)) {
+					continue;
+				}
+				const component =
+					typeof result.geometry.component === 'string' && result.geometry.component.trim()
+						? result.geometry.component.trim()
+						: null;
+				if (!component) continue;
+
+				const points = result.geometry.values
+					.map((entry) => {
+						if (!isRecord(entry)) return null;
+						const x = typeof entry.s === 'number' && Number.isFinite(entry.s) ? entry.s : null;
+						const y = typeof entry.value === 'number' && Number.isFinite(entry.value) ? entry.value : null;
+						if (x === null || y === null) return null;
+						return { x, y };
+					})
+					.filter((entry): entry is { x: number; y: number } => Boolean(entry))
+					.sort((a, b) => a.x - b.x);
+				if (points.length < 2) continue;
+
+				const meta = isRecord(result.meta) ? result.meta : null;
+				const memberIdRaw = typeof meta?.baseObjectId === 'string' ? meta.baseObjectId.trim() : '';
+				const memberId = memberIdRaw.length > 0 ? memberIdRaw : undefined;
+				const epureKind =
+					component === 'N' ? 'N'
+						: component === 'Vy' ? 'Q'
+						: component === 'Mz' ? 'M'
+						: 'custom';
+				const compressedFiberSide =
+					result.geometry.compressedFiberSide === '+n' || result.geometry.compressedFiberSide === '-n'
+						? result.geometry.compressedFiberSide
+						: undefined;
+				const axisOrigin =
+					result.geometry.axisOrigin === 'auto' ||
+					result.geometry.axisOrigin === 'free_end' ||
+					result.geometry.axisOrigin === 'fixed_end' ||
+					result.geometry.axisOrigin === 'member_start' ||
+					result.geometry.axisOrigin === 'member_end'
+						? result.geometry.axisOrigin
+						: undefined;
+				const normalizedGraph = normalizeGraphEpure({
+					type: 'diagram',
+					memberId,
+					diagramType: component,
+					points,
+					epure: {
+						kind: epureKind,
+						component:
+							component === 'N' || component === 'Vy' || component === 'Vz' || component === 'T' || component === 'My' || component === 'Mz'
+								? component
+								: undefined,
+						fillHatch: result.geometry.fillHatch !== false,
+						showSigns: result.geometry.showSigns !== false,
+						...(axisOrigin ? { axisOrigin } : {}),
+						...(compressedFiberSide ? { compressedFiberSide } : {})
+					}
+				}).graph;
+
+				frameGraphs.push(normalizedGraph);
+			}
+		}
+
+		const componentRank = (diagramType: string | undefined): number => {
+			if (!diagramType) return FRAME_COMPONENT_ORDER.length + 1;
+			const index = FRAME_COMPONENT_ORDER.indexOf(diagramType as (typeof FRAME_COMPONENT_ORDER)[number]);
+			return index >= 0 ? index : FRAME_COMPONENT_ORDER.length;
+		};
+
+		frameGraphs.sort((a, b) => {
+			const memberCmp = (a.memberId ?? '').localeCompare(b.memberId ?? '');
+			if (memberCmp !== 0) return memberCmp;
+			return componentRank(a.diagramType) - componentRank(b.diagramType);
+		});
+
+		return buildGraphGroups(frameGraphs);
 	});
 
 	let visibleGraphGroups = $derived.by(() => {
-		if (schemes.length > 0) return [] as GraphGroup[];
+		if (schemes.length > 0) {
+			if (frameGraphGroups.length > 0) return frameGraphGroups;
+			return [] as GraphGroup[];
+		}
 		return graphGroups;
 	});
 
@@ -608,20 +731,10 @@
 			<div class="graphs-container">
 				{#each visibleGraphGroups as group}
 					{#if group.memberId}
-						<div class="graph-group-title">Member: {group.memberId}</div>
+						<div class="graph-group-title">{formatGraphMemberLabel(group.memberId)}</div>
 					{/if}
 					{#each group.items as graph}
-						<GraphView
-							{graph}
-							title={
-								graph.title ||
-								(graph.diagramType && group.memberId
-									? `${graph.diagramType} - ${group.memberId}`
-									: group.memberId
-										? `Member ${group.memberId}`
-										: 'Solution graph')
-							}
-						/>
+						<GraphView {graph} title={formatGraphDisplayTitle(graph)} />
 					{/each}
 				{/each}
 			</div>

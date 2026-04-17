@@ -415,16 +415,18 @@ Rules:
 2. Always print JSON using print(json.dumps({...})).
 3. Do not draw text/ASCII graphs.
 4. For plots/diagrams output graph points in key "graphs":
-   "graphs": [{"title":"...","type":"function"|"diagram","memberId":"...", "diagramType":"N|Q|M|...", "epure":{"kind":"N|Q|M|custom","fillHatch":true,"showSigns":true,"compressedFiberSide":"+n|-n"}, "points":[{"x":...,"y":...}, ...]}]
+   "graphs": [{"title":"...","type":"function"|"diagram","memberId":"...", "diagramType":"N|Q|M|Vy|Vz|T|My|Mz|...", "epure":{"kind":"N|Q|M|custom","component":"N|Vy|Vz|T|My|Mz","fillHatch":true,"showSigns":true,"compressedFiberSide":"+n|-n","axisOrigin":"auto|free_end|fixed_end|member_start|member_end"}, "points":[{"x":...,"y":...}, ...]}]
 5. For frame/truss/beam-system diagrams (epures), STRICT RULE: one graph object = one member (memberId). Never mix points from different members inside one graph.
 6. For type="diagram", always provide non-empty memberId.
 7. For epures always sort points by x ascending. If sign changes between neighboring samples, include a zero point at the crossing or sample densely enough that the renderer can reconstruct the crossing.
 8. For diagrams representing epures, set epure.fillHatch=true and epure.showSigns=true by default.
-9. For moment epures (diagramType/epure.kind = "M"), ALWAYS provide epure.compressedFiberSide as "+n" or "-n". Positive ordinates must correspond to the declared compressed-fiber side.
-10. Put primary numeric/text result in key "result".
-11. Prefer sympy for exact math and numpy arrays for sampling points.
+9. For frame epures, ALWAYS provide epure.component from N|Vy|Vz|T|My|Mz and set epure.axisOrigin="member_start". For spatial frames do not use legacy Q/M as the primary component contract.
+10. For moment epures in beam mode (diagramType/epure.kind = "M"), ALWAYS provide epure.compressedFiberSide as "+n" or "-n". Positive ordinates must correspond to the declared compressed-fiber side.
+11. For a simple cantilever beam with exactly one fixed support, epure x=0 must be at the free end, increase toward the fixed support, and epure.axisOrigin must be "free_end".
+12. Put primary numeric/text result in key "result".
+13. Prefer sympy for exact math and numpy arrays for sampling points.
 ${visualContract}
-12. ${languagePolicy(userMessage)}`;
+14. ${languagePolicy(userMessage)}`;
 
 	let userContent = `Task: ${userMessage}`;
 	if (retryContext) userContent += `\n\nFix this error context:\n${retryContext}`;
@@ -501,8 +503,8 @@ Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 schemaData MUST be version "2.0" with root keys:
 {
   "version":"2.0",
-  "meta":{"taskDomain":"mechanics","catalogVersion":"2026-04-11","layoutPipeline":"topology-first"},
-  "coordinateSystem":{"xUnit":"m","yUnit":"m","origin":{"x":0,"y":0},"axisOrientation":"right-handed","originPolicy":"auto|left_support|fixed_support|centroid"},
+  "meta":{"taskDomain":"mechanics","catalogVersion":"2026-04-11","layoutPipeline":"topology-first","structureKind":"beam|planar_frame|spatial_frame"},
+  "coordinateSystem":{"xUnit":"m","yUnit":"m","zUnit":"m","origin":{"x":0,"y":0},"modelSpace":"planar|spatial","axisOrientation":"right-handed","originPolicy":"auto|left_support|fixed_support|centroid","planeNormal":{"x":0,"y":0,"z":1},"referenceUp":{"x":0,"y":0,"z":1},"secondaryReference":{"x":1,"y":0,"z":0},"projectionPreset":"auto_isometric|xy|xz|yz"},
   "nodes": [],
   "objects": [],
   "results": [],
@@ -519,6 +521,11 @@ Topology-first policy: your primary responsibility is structure and constraints,
 Coordinates are only a coarse scaffold and may be overridden by deterministic backend layout.
 For linear members (bar/cable/spring/damper/axis/ground), include geometry.length and geometry.angleDeg or geometry.constraints.
 geometry.constraints object may include: collinearWith[], parallelTo[], perpendicularTo[], mirrorOf.
+For frame problems, set meta.structureKind and coordinateSystem.modelSpace explicitly:
+- beam -> structureKind="beam", modelSpace="planar"
+- planar frame -> structureKind="planar_frame", modelSpace="planar", include planeNormal
+- spatial frame -> structureKind="spatial_frame", modelSpace="spatial", include referenceUp (and secondaryReference fallback)
+For spatial frame nodes include z coordinates where needed.
 For supports and loads, always bind to existing member nodes via nodeRefs (never default to origin).
 For force/distributed/velocity/acceleration ALWAYS provide explicit direction:
 - prefer geometry.directionAngle in degrees
@@ -530,8 +537,13 @@ For fixed_wall use geometry.wallSide = left|right|top|bottom when side semantics
 If exact dimensions are unknown, keep consistent relative lengths and positions.
 For distributed, include geometry.kind and geometry.intensity.
 For moment/angular types, geometry.direction MUST be exactly "cw" or "ccw".
-For epure results, include geometry.kind, geometry.fillHatch=true, and geometry.showSigns=true unless explicitly requested otherwise.
+For epure results, include geometry.fillHatch=true and geometry.showSigns=true.
+Beam epures: include geometry.kind and geometry.axisOrigin when the reference end is known.
+Frame epures: ALWAYS include geometry.component from N|Vy|Vz|T|My|Mz and geometry.axisOrigin="member_start".
 For moment epure kind "M", ALWAYS include geometry.compressedFiberSide as "+n" or "-n".
+For planar_frame legacy mapping is allowed only as fallback: N->N, Q->Vy, M->Mz.
+For spatial_frame do not use legacy Q/M as the primary contract; provide explicit component.
+For a simple cantilever beam with one fixed_wall at one bar end, epure geometry.axisOrigin MUST be "free_end" and geometry.values/baseLine must run from the free end toward the fixed support.
 Do NOT place all supports/loads at (0,0) by default.
 Preserve language of assumptions/ambiguities according to user request.
 ${languagePolicy(userMessage)}`;
@@ -584,8 +596,9 @@ Fill canonical geometry per type:
 - distributed: nodeRefs [start,end] + kind + intensity + direction
 - rigid_disk: nodeRefs [center] + radius
 - trajectory: geometry.points array
-- epure (if present): put into results with baseLine + values + kind + fillHatch + showSigns
-- for moment epure kind "M", ALWAYS include geometry.compressedFiberSide as "+n" or "-n"`;
+- epure (if present): put into results with baseLine + values + fillHatch + showSigns
+- beam epure: include kind + axisOrigin (+ compressedFiberSide for kind "M")
+- frame epure: include component (N|Vy|Vz|T|My|Mz) + axisOrigin="member_start"`;
 	const stageBQuestion = `Task context:\n${contextMessage}\n\nStage A schema JSON:\n${stageASchemaJson}\n\nNow return finalized schemaData v2.`;
 	const stageB = await generateSchemaStage(history, stageBPrompt, stageBQuestion, params?.forcedModel);
 	usedModels.push(formatTokenAttribution(stageB.model, 'SchemaGen-B', stageB.tokens));
@@ -636,7 +649,12 @@ bar, cable, spring, damper, rigid_disk, fixed_wall, hinge_fixed, hinge_roller, i
 Use nodeRefs to bind all objects to nodes.
 If epure is needed, place it in schemaData.results, not in schemaData.objects.
 For epure visuals, default to geometry.fillHatch=true and geometry.showSigns=true unless the task explicitly asks otherwise.
+For frame tasks keep explicit structure metadata: meta.structureKind and coordinateSystem.modelSpace.
+For planar_frame include coordinateSystem.planeNormal.
+For spatial_frame include coordinateSystem.referenceUp (and secondaryReference fallback) and keep needed node z values.
+For frame epures, use geometry.component (N|Vy|Vz|T|My|Mz) and geometry.axisOrigin="member_start".
 For moment epure kind "M", ALWAYS include geometry.compressedFiberSide as "+n" or "-n".
+For a simple cantilever beam with one fixed_wall at one bar end, keep epure geometry.axisOrigin="free_end" and orient the epure from the free end toward the fixed support.
 For force/distributed/velocity/acceleration include explicit direction (directionAngle or direction vector or cardinal).
 Keep physically meaningful scale/proportions; avoid coordinate collapse and avoid decorative coordinates.
 Prefer coordinates in range [-10, 10] and preserve consistent relative lengths.
@@ -712,7 +730,9 @@ Focus on topology and constraints:
 - supports/loads should be attached via nodeRefs and, when needed, geometry.attach
 - force/distributed/velocity/acceleration must keep explicit direction fields
 - fixed_wall may use geometry.wallSide
-- epure visuals should preserve geometry.kind, geometry.fillHatch, geometry.showSigns, and for kind "M" geometry.compressedFiberSide
+- keep meta.structureKind and coordinateSystem.modelSpace consistent with the task type
+- frame epures should preserve geometry.component + geometry.axisOrigin="member_start"
+- beam epures should preserve geometry.kind + geometry.axisOrigin, and for kind "M" geometry.compressedFiberSide
 Keep schemaData.version = "2.0" and finite numbers.
 Keep epure entries only in schemaData.results (never in schemaData.objects).
 ${languagePolicy(languageSeed)}`;

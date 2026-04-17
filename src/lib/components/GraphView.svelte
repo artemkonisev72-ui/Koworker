@@ -17,6 +17,9 @@
 
 	let visibilityObserver: IntersectionObserver | null = null;
 	let resizeObserver: ResizeObserver | null = null;
+	const EPURE_CURVE_STROKE_WIDTH = 2.5;
+	const EPURE_BEAM_STROKE_WIDTH = EPURE_CURVE_STROKE_WIDTH + 0.8;
+	const EPURE_HIGHLIGHT_STROKE_WIDTH = 3;
 
 	function applyBoardTheme() {
 		if (!board) return;
@@ -240,7 +243,7 @@
 					fixed: true,
 					highlight: false,
 					strokeColor: 'var(--text-primary)',
-					strokeWidth: 2.2,
+					strokeWidth: EPURE_BEAM_STROKE_WIDTH,
 					opacity: 0.95,
 					layer: 3
 				}
@@ -252,10 +255,10 @@
 			[curvePoints.map((point) => point.x), curvePoints.map((point) => point.y)],
 			{
 				strokeColor: 'var(--text-primary)',
-				strokeWidth: 2.5,
+				strokeWidth: EPURE_CURVE_STROKE_WIDTH,
 				highlight: true,
 				highlightStrokeColor: 'var(--accent-primary)',
-				highlightStrokeWidth: 3,
+				highlightStrokeWidth: EPURE_HIGHLIGHT_STROKE_WIDTH,
 				layer: 4
 			}
 		);

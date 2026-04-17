@@ -5,7 +5,8 @@ import type {
 	ObjectV2,
 	ResultV2,
 	SchemaDataV2,
-	SchemaObjectTypeV2
+	SchemaObjectTypeV2,
+	Vector3V2
 } from './schema-v2.js';
 import { SCHEMA_DATA_V2_VERSION, isSchemaDataV2, isSchemaDataV2Loose } from './schema-v2.js';
 import {
@@ -32,6 +33,16 @@ interface NodeRefBounds {
 }
 
 type OriginPolicy = 'auto' | 'left_support' | 'fixed_support' | 'centroid';
+type StructureKind = 'beam' | 'planar_frame' | 'spatial_frame';
+type ModelSpace = 'planar' | 'spatial';
+type EpureAxisOrigin = 'auto' | 'free_end' | 'fixed_end' | 'member_start' | 'member_end';
+type FrameComponent = 'N' | 'Vy' | 'Vz' | 'T' | 'My' | 'Mz';
+type ProjectionPreset = 'auto_isometric' | 'xy' | 'xz' | 'yz';
+const CANTILEVER_END_SUPPORT_TYPES = new Set<SchemaObjectTypeV2>(['fixed_wall', 'hinge_fixed', 'hinge_roller']);
+const LINEAR_LOCAL_FRAME_TYPES = new Set<SchemaObjectTypeV2>(['bar', 'cable', 'spring', 'damper']);
+const DEFAULT_REFERENCE_UP: Vector3V2 = { x: 0, y: 0, z: 1 };
+const DEFAULT_SECONDARY_REFERENCE: Vector3V2 = { x: 1, y: 0, z: 0 };
+const DEFAULT_PLANE_NORMAL: Vector3V2 = { x: 0, y: 0, z: 1 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -49,6 +60,91 @@ function toFiniteNumber(value: unknown): number | null {
 	if (!match) return null;
 	const parsed = Number.parseFloat(match[0]);
 	return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeStructureKind(value: unknown): StructureKind | null {
+	if (typeof value !== 'string') return null;
+	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+	if (normalized === 'beam' || normalized === 'planar_frame' || normalized === 'spatial_frame') {
+		return normalized;
+	}
+	return null;
+}
+
+function normalizeModelSpace(value: unknown): ModelSpace | null {
+	if (typeof value !== 'string') return null;
+	const normalized = value.trim().toLowerCase();
+	if (normalized === 'planar' || normalized === 'spatial') return normalized;
+	return null;
+}
+
+function normalizeProjectionPreset(value: unknown): ProjectionPreset | null {
+	if (typeof value !== 'string') return null;
+	const normalized = value.trim().toLowerCase();
+	if (normalized === 'auto_isometric' || normalized === 'xy' || normalized === 'xz' || normalized === 'yz') {
+		return normalized;
+	}
+	return null;
+}
+
+function toVector3(value: unknown): Vector3V2 | null {
+	if (isRecord(value)) {
+		const x = toFiniteNumber(value.x);
+		const y = toFiniteNumber(value.y);
+		const z = toFiniteNumber(value.z);
+		if (x !== null && y !== null && z !== null) return { x, y, z };
+	}
+	if (Array.isArray(value) && value.length >= 3) {
+		const x = toFiniteNumber(value[0]);
+		const y = toFiniteNumber(value[1]);
+		const z = toFiniteNumber(value[2]);
+		if (x !== null && y !== null && z !== null) return { x, y, z };
+	}
+	return null;
+}
+
+function isFiniteVector3(value: unknown): value is Vector3V2 {
+	return (
+		isRecord(value) &&
+		isFiniteNumber(value.x) &&
+		isFiniteNumber(value.y) &&
+		isFiniteNumber(value.z)
+	);
+}
+
+function vector3Dot(a: Vector3V2, b: Vector3V2): number {
+	return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+function vector3Cross(a: Vector3V2, b: Vector3V2): Vector3V2 {
+	return {
+		x: a.y * b.z - a.z * b.y,
+		y: a.z * b.x - a.x * b.z,
+		z: a.x * b.y - a.y * b.x
+	};
+}
+
+function vector3Scale(v: Vector3V2, scalar: number): Vector3V2 {
+	return { x: v.x * scalar, y: v.y * scalar, z: v.z * scalar };
+}
+
+function vector3Sub(a: Vector3V2, b: Vector3V2): Vector3V2 {
+	return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
+}
+
+function vector3Length(v: Vector3V2): number {
+	return Math.hypot(v.x, v.y, v.z);
+}
+
+function normalizeVector3(v: Vector3V2, epsilon = 1e-9): Vector3V2 | null {
+	const length = vector3Length(v);
+	if (length <= epsilon) return null;
+	return { x: v.x / length, y: v.y / length, z: v.z / length };
+}
+
+function projectOntoPlane(vector: Vector3V2, normal: Vector3V2): Vector3V2 {
+	const scale = vector3Dot(vector, normal);
+	return vector3Sub(vector, vector3Scale(normal, scale));
 }
 
 function toPoint(value: unknown): Point | null {
@@ -164,6 +260,33 @@ function normalizeCompressedFiberSide(value: unknown): '+n' | '-n' | null {
 	if (typeof value !== 'string') return null;
 	const normalized = value.trim().toLowerCase();
 	if (normalized === '+n' || normalized === '-n') return normalized;
+	return null;
+}
+
+function normalizeEpureAxisOrigin(value: unknown): EpureAxisOrigin | null {
+	if (typeof value !== 'string') return null;
+	const normalized = value.trim().toLowerCase();
+	if (
+		normalized === 'auto' ||
+		normalized === 'free_end' ||
+		normalized === 'fixed_end' ||
+		normalized === 'member_start' ||
+		normalized === 'member_end'
+	) {
+		return normalized;
+	}
+	return null;
+}
+
+function normalizeFrameComponent(value: unknown): FrameComponent | null {
+	if (typeof value !== 'string') return null;
+	const normalized = value.trim().toLowerCase();
+	if (normalized === 'n') return 'N';
+	if (normalized === 'vy') return 'Vy';
+	if (normalized === 'vz') return 'Vz';
+	if (normalized === 't') return 'T';
+	if (normalized === 'my') return 'My';
+	if (normalized === 'mz') return 'Mz';
 	return null;
 }
 
@@ -286,10 +409,11 @@ function normalizeNode(raw: Record<string, unknown>, index: number): NodeV2 {
 	const id = idRaw || `N${index + 1}`;
 	const x = toFiniteNumber(raw.x) ?? 0;
 	const y = toFiniteNumber(raw.y) ?? 0;
+	const z = toFiniteNumber(raw.z) ?? 0;
 	const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : undefined;
 	const visible = typeof raw.visible === 'boolean' ? raw.visible : undefined;
 	const meta = isRecord(raw.meta) ? raw.meta : undefined;
-	return { id, x, y, label, visible, meta };
+	return { id, x, y, z, label, visible, meta };
 }
 
 function cardinalDirectionToVector(value: string): Point | null {
@@ -413,9 +537,24 @@ function normalizeDirectionGeometry(geometry: Record<string, unknown>): void {
 
 function normalizeBaseLine(input: unknown): Record<string, unknown> | null {
 	if (isRecord(input)) {
+		const startNodeId =
+			typeof input.startNodeId === 'string' && input.startNodeId.trim()
+				? input.startNodeId.trim()
+				: null;
+		const endNodeId =
+			typeof input.endNodeId === 'string' && input.endNodeId.trim()
+				? input.endNodeId.trim()
+				: null;
 		const start = pickPoint(input, ['start', 'from', 'p1', 'a', 'pointA']);
 		const end = pickPoint(input, ['end', 'to', 'p2', 'b', 'pointB']);
-		if (start && end) return { start, end };
+		if (start || end || startNodeId || endNodeId) {
+			return {
+				...(startNodeId ? { startNodeId } : {}),
+				...(endNodeId ? { endNodeId } : {}),
+				...(start ? { start } : {}),
+				...(end ? { end } : {})
+			};
+		}
 
 		const x1 = toFiniteNumber(input.x1);
 		const y1 = toFiniteNumber(input.y1);
@@ -628,11 +767,25 @@ function normalizeObjectGeometry(
 		} else if (kind === 'CUSTOM') {
 			geometry.kind = 'custom';
 		}
+		const component = normalizeFrameComponent(geometry.component);
+		if (component) {
+			geometry.component = component;
+		} else if (geometry.component !== undefined) {
+			delete geometry.component;
+			warnings.push(`${context} epure.component was invalid and removed`);
+		}
 		if (typeof geometry.fillHatch !== 'boolean') {
 			geometry.fillHatch = true;
 		}
 		if (typeof geometry.showSigns !== 'boolean') {
 			geometry.showSigns = true;
+		}
+		const axisOrigin = normalizeEpureAxisOrigin(geometry.axisOrigin);
+		if (axisOrigin) {
+			geometry.axisOrigin = axisOrigin;
+		} else if (geometry.axisOrigin !== undefined) {
+			delete geometry.axisOrigin;
+			warnings.push(`${context} epure.axisOrigin was invalid and removed`);
 		}
 		const compressedFiberSide = normalizeCompressedFiberSide(geometry.compressedFiberSide);
 		if (compressedFiberSide) {
@@ -682,6 +835,7 @@ function fallbackGeometryFromRaw(raw: Record<string, unknown>): Record<string, u
 		'radius',
 		'r',
 		'kind',
+		'component',
 		'intensity',
 		'intensityStart',
 		'intensityEnd',
@@ -846,7 +1000,7 @@ function ensureNodeForPoint(
 	if (existing) return existing;
 
 	const id = nextNodeId(nodeIds);
-	nodes.push({ id, x: point.x, y: point.y });
+	nodes.push({ id, x: point.x, y: point.y, z: 0 });
 	nodeIds.add(id);
 	nodeByPoint.set(key, id);
 	warnings.push(`${context} created node "${id}" from geometry point (${point.x}, ${point.y})`);
@@ -976,7 +1130,7 @@ function fillNodeRefs(
 			const forced = nextNodeId(nodeIds);
 			const px = nodes.length;
 			const py = 0;
-			nodes.push({ id: forced, x: px, y: py });
+			nodes.push({ id: forced, x: px, y: py, z: 0 });
 			nodeIds.add(forced);
 			nodeByPoint.set(pointKey({ x: px, y: py }), forced);
 			refs.push(forced);
@@ -1007,11 +1161,380 @@ function pointFromNodeRef(nodeRef: string | undefined, nodeById: Map<string, Nod
 	return { x: node.x, y: node.y };
 }
 
+function nodeToVector3(node: NodeV2): Vector3V2 {
+	return {
+		x: node.x,
+		y: node.y,
+		z: isFiniteNumber(node.z) ? node.z : 0
+	};
+}
+
+function fallbackOrthogonal(reference: Vector3V2): Vector3V2 {
+	return Math.abs(reference.x) < 0.9 ? { x: 1, y: 0, z: 0 } : { x: 0, y: 1, z: 0 };
+}
+
+function derivePlanarLocalFrame(
+	ex: Vector3V2,
+	planeNormal: Vector3V2 | null
+): { x: Vector3V2; y: Vector3V2; z: Vector3V2 } | null {
+	const ezSeed = normalizeVector3(planeNormal ?? DEFAULT_PLANE_NORMAL);
+	if (!ezSeed) return null;
+	let ey = normalizeVector3(vector3Cross(ezSeed, ex));
+	if (!ey) {
+		ey = normalizeVector3(vector3Cross(DEFAULT_REFERENCE_UP, ex));
+	}
+	if (!ey) return null;
+	const ez = normalizeVector3(vector3Cross(ex, ey));
+	if (!ez) return null;
+	return { x: ex, y: ey, z: ez };
+}
+
+function deriveSpatialLocalFrame(
+	ex: Vector3V2,
+	referenceUp: Vector3V2 | null,
+	secondaryReference: Vector3V2 | null
+): { x: Vector3V2; y: Vector3V2; z: Vector3V2 } | null {
+	const up = normalizeVector3(referenceUp ?? DEFAULT_REFERENCE_UP) ?? DEFAULT_REFERENCE_UP;
+	const secondary =
+		normalizeVector3(secondaryReference ?? DEFAULT_SECONDARY_REFERENCE) ?? DEFAULT_SECONDARY_REFERENCE;
+
+	let ez = normalizeVector3(projectOntoPlane(up, ex));
+	if (!ez) {
+		ez = normalizeVector3(projectOntoPlane(secondary, ex));
+	}
+	if (!ez) {
+		ez = normalizeVector3(projectOntoPlane(fallbackOrthogonal(ex), ex));
+	}
+	if (!ez) return null;
+
+	let ey = normalizeVector3(vector3Cross(ez, ex));
+	if (!ey) {
+		ey = normalizeVector3(vector3Cross(fallbackOrthogonal(ez), ex));
+	}
+	if (!ey) return null;
+
+	ez = normalizeVector3(vector3Cross(ex, ey));
+	if (!ez) return null;
+	return { x: ex, y: ey, z: ez };
+}
+
+function deriveMemberLocalFrame(
+	start: NodeV2,
+	end: NodeV2,
+	structureKind: StructureKind,
+	coordinateSystem: CoordinateSystemV2
+): { x: Vector3V2; y: Vector3V2; z: Vector3V2 } | null {
+	const start3 = nodeToVector3(start);
+	const end3 = nodeToVector3(end);
+	const ex = normalizeVector3({
+		x: end3.x - start3.x,
+		y: end3.y - start3.y,
+		z: end3.z - start3.z
+	});
+	if (!ex) return null;
+
+	if (structureKind === 'spatial_frame') {
+		return deriveSpatialLocalFrame(
+			ex,
+			isFiniteVector3(coordinateSystem.referenceUp) ? coordinateSystem.referenceUp : null,
+			isFiniteVector3(coordinateSystem.secondaryReference) ? coordinateSystem.secondaryReference : null
+		);
+	}
+
+	return derivePlanarLocalFrame(
+		ex,
+		isFiniteVector3(coordinateSystem.planeNormal) ? coordinateSystem.planeNormal : DEFAULT_PLANE_NORMAL
+	);
+}
+
+function deriveMemberLocalFrames(
+	objects: ObjectV2[],
+	nodeById: Map<string, NodeV2>,
+	structureKind: StructureKind,
+	coordinateSystem: CoordinateSystemV2,
+	warnings: string[]
+): void {
+	for (const object of objects) {
+		if (!LINEAR_LOCAL_FRAME_TYPES.has(object.type)) continue;
+		if (!Array.isArray(object.nodeRefs) || object.nodeRefs.length < 2) continue;
+		const startNode = nodeById.get(object.nodeRefs[0]);
+		const endNode = nodeById.get(object.nodeRefs[1]);
+		if (!startNode || !endNode) continue;
+
+		const localFrame = deriveMemberLocalFrame(startNode, endNode, structureKind, coordinateSystem);
+		if (!localFrame) {
+			warnings.push(`objects["${object.id}"] localFrame could not be derived`);
+			continue;
+		}
+
+		const meta = isRecord(object.meta) ? { ...object.meta } : {};
+		meta.localFrame = {
+			x: localFrame.x,
+			y: localFrame.y,
+			z: localFrame.z,
+			fromNodeId: object.nodeRefs[0],
+			toNodeId: object.nodeRefs[1]
+		};
+		object.meta = meta;
+	}
+}
+
+function pointsAlmostEqual(a: Point | null, b: Point | null, epsilon = 1e-6): boolean {
+	if (!a || !b) return false;
+	return Math.abs(a.x - b.x) <= epsilon && Math.abs(a.y - b.y) <= epsilon;
+}
+
+function resolveBaseLineNodeIds(
+	result: ResultV2,
+	baseObject: ObjectV2 | null,
+	nodeById: Map<string, NodeV2>
+): { startNodeId: string | null; endNodeId: string | null } {
+	const baseLine = isRecord(result.geometry.baseLine) ? result.geometry.baseLine : null;
+	const explicitStart =
+		typeof baseLine?.startNodeId === 'string' && baseLine.startNodeId.trim()
+			? baseLine.startNodeId.trim()
+			: null;
+	const explicitEnd =
+		typeof baseLine?.endNodeId === 'string' && baseLine.endNodeId.trim()
+			? baseLine.endNodeId.trim()
+			: null;
+	if (explicitStart && explicitEnd) {
+		return { startNodeId: explicitStart, endNodeId: explicitEnd };
+	}
+
+	if (!baseObject?.nodeRefs || baseObject.nodeRefs.length < 2 || !baseLine) {
+		return {
+			startNodeId:
+				explicitStart ??
+				(typeof result.nodeRefs?.[0] === 'string' && result.nodeRefs[0].trim()
+					? result.nodeRefs[0].trim()
+					: null),
+			endNodeId:
+				explicitEnd ??
+				(typeof result.nodeRefs?.[1] === 'string' && result.nodeRefs[1].trim()
+					? result.nodeRefs[1].trim()
+					: null)
+		};
+	}
+
+	const [barStartId, barEndId] = baseObject.nodeRefs;
+	const barStart = pointFromNodeRef(barStartId, nodeById);
+	const barEnd = pointFromNodeRef(barEndId, nodeById);
+	const baseStart = toPoint(baseLine.start) ?? toPoint(baseLine.from);
+	const baseEnd = toPoint(baseLine.end) ?? toPoint(baseLine.to);
+
+	const startNodeId =
+		explicitStart ??
+		(pointsAlmostEqual(baseStart, barStart) ? barStartId
+			: pointsAlmostEqual(baseStart, barEnd) ? barEndId
+			: typeof result.nodeRefs?.[0] === 'string' && result.nodeRefs[0].trim()
+				? result.nodeRefs[0].trim()
+				: null);
+	const endNodeId =
+		explicitEnd ??
+		(pointsAlmostEqual(baseEnd, barStart) ? barStartId
+			: pointsAlmostEqual(baseEnd, barEnd) ? barEndId
+			: typeof result.nodeRefs?.[1] === 'string' && result.nodeRefs[1].trim()
+				? result.nodeRefs[1].trim()
+				: null);
+
+	return { startNodeId, endNodeId };
+}
+
+function detectSimpleCantileverBar(
+	baseObject: ObjectV2 | null,
+	objects: ObjectV2[]
+): { fixedNodeId: string; freeNodeId: string } | null {
+	if (!baseObject || baseObject.type !== 'bar' || !baseObject.nodeRefs || baseObject.nodeRefs.length < 2) {
+		return null;
+	}
+	const bars = objects.filter((object) => object.type === 'bar');
+	if (bars.length !== 1) return null;
+	const fixedWalls = objects.filter((object) => object.type === 'fixed_wall');
+	if (fixedWalls.length !== 1) return null;
+
+	const [barStartId, barEndId] = baseObject.nodeRefs;
+	const fixedNodeId = fixedWalls[0]?.nodeRefs?.[0];
+	if (fixedNodeId !== barStartId && fixedNodeId !== barEndId) return null;
+
+	const freeNodeId = fixedNodeId === barStartId ? barEndId : barStartId;
+	const freeNodeSupportCount = objects.filter(
+		(object) => CANTILEVER_END_SUPPORT_TYPES.has(object.type) && object.nodeRefs?.[0] === freeNodeId
+	).length;
+	if (freeNodeSupportCount > 0) return null;
+
+	return { fixedNodeId, freeNodeId };
+}
+
+function swapBaseLineOrientation(baseLine: Record<string, unknown>): void {
+	const startNodeId = baseLine.startNodeId;
+	baseLine.startNodeId = baseLine.endNodeId;
+	baseLine.endNodeId = startNodeId;
+
+	const start = baseLine.start;
+	baseLine.start = baseLine.end;
+	baseLine.end = start;
+
+	const from = baseLine.from;
+	baseLine.from = baseLine.to;
+	baseLine.to = from;
+}
+
+function reverseEpureAxisValues(values: Array<{ s: number; value: number }>, length: number | null): Array<{ s: number; value: number }> {
+	const minS = Math.min(...values.map((entry) => entry.s));
+	const maxS = Math.max(...values.map((entry) => entry.s));
+	const usesNormalizedAxis = minS >= -1e-6 && maxS <= 1 + 1e-6;
+	const axisLength = usesNormalizedAxis ? 1 : length ?? maxS;
+	return values
+		.map((entry) => ({
+			s: axisLength - entry.s,
+			value: entry.value
+		}))
+		.sort((a, b) => a.s - b.s);
+}
+
+function mapLegacyFrameKindToComponent(
+	kind: unknown,
+	structureKind: StructureKind,
+	context: string,
+	warnings: string[]
+): FrameComponent | null {
+	if (typeof kind !== 'string') return null;
+	const normalized = kind.trim().toUpperCase();
+	if (normalized === 'N') return 'N';
+	if (normalized === 'Q') {
+		if (structureKind === 'planar_frame') return 'Vy';
+		warnings.push(`${context} spatial frame epure cannot use legacy kind "Q"; provide geometry.component.`);
+		return null;
+	}
+	if (normalized === 'M') {
+		if (structureKind === 'planar_frame') return 'Mz';
+		warnings.push(`${context} spatial frame epure cannot use legacy kind "M"; provide geometry.component.`);
+		return null;
+	}
+	return null;
+}
+
+function maybeCanonicalizeFrameEpure(
+	result: ResultV2,
+	resultIndex: number,
+	baseObject: ObjectV2 | null,
+	nodeById: Map<string, NodeV2>,
+	structureKind: StructureKind,
+	warnings: string[]
+): void {
+	if (structureKind !== 'planar_frame' && structureKind !== 'spatial_frame') return;
+	const geometry = result.geometry;
+	const context = `results[${resultIndex}]`;
+	const component =
+		normalizeFrameComponent(geometry.component) ??
+		mapLegacyFrameKindToComponent(geometry.kind, structureKind, context, warnings);
+	if (component) {
+		geometry.component = component;
+		if (geometry.kind === undefined && component === 'N') {
+			geometry.kind = 'N';
+		}
+	} else {
+		warnings.push(`${context} frame epure is missing geometry.component`);
+	}
+
+	if (geometry.axisOrigin === 'free_end' || geometry.axisOrigin === 'fixed_end') {
+		warnings.push(`${context} frame epure axisOrigin was converted to member-local convention`);
+	}
+
+	const values = Array.isArray(geometry.values)
+		? geometry.values.filter(
+				(entry): entry is { s: number; value: number } =>
+					isRecord(entry) && isFiniteNumber(entry.s) && isFiniteNumber(entry.value)
+		  )
+		: [];
+	const baseLine = isRecord(geometry.baseLine) ? geometry.baseLine : null;
+	if (!baseLine || values.length === 0) {
+		geometry.axisOrigin = 'member_start';
+		return;
+	}
+
+	const axisOrigin = normalizeEpureAxisOrigin(geometry.axisOrigin);
+	const { startNodeId, endNodeId } = resolveBaseLineNodeIds(result, baseObject, nodeById);
+	const memberStart = baseObject?.nodeRefs?.[0] ?? result.nodeRefs?.[0] ?? startNodeId;
+	const memberEnd = baseObject?.nodeRefs?.[1] ?? result.nodeRefs?.[1] ?? endNodeId;
+	const pointsFromEndToStart =
+		(startNodeId === memberEnd && endNodeId === memberStart) ||
+		(result.nodeRefs?.[0] === memberEnd && result.nodeRefs?.[1] === memberStart);
+	const shouldReverse = axisOrigin === 'member_end' || pointsFromEndToStart;
+
+	if (shouldReverse) {
+		swapBaseLineOrientation(baseLine);
+		const memberLength =
+			baseObject && isRecord(baseObject.geometry)
+				? toFiniteNumber(baseObject.geometry.length) ?? null
+				: null;
+		geometry.values = reverseEpureAxisValues(values, memberLength);
+		if (Array.isArray(result.nodeRefs) && result.nodeRefs.length >= 2) {
+			result.nodeRefs = [result.nodeRefs[1], result.nodeRefs[0]];
+		}
+		warnings.push(`${context} frame epure axis canonicalized from member_end to member_start`);
+	}
+
+	if (memberStart && memberEnd) {
+		baseLine.startNodeId = memberStart;
+		baseLine.endNodeId = memberEnd;
+		result.nodeRefs = [memberStart, memberEnd];
+	}
+	geometry.axisOrigin = 'member_start';
+}
+
+function maybeCanonicalizeCantileverEpure(
+	result: ResultV2,
+	resultIndex: number,
+	baseObject: ObjectV2 | null,
+	objects: ObjectV2[],
+	nodeById: Map<string, NodeV2>,
+	warnings: string[]
+): void {
+	const cantilever = detectSimpleCantileverBar(baseObject, objects);
+	if (!cantilever) return;
+
+	const geometry = result.geometry;
+	const baseLine = isRecord(geometry.baseLine) ? geometry.baseLine : null;
+	const values = Array.isArray(geometry.values)
+		? geometry.values.filter(
+				(entry): entry is { s: number; value: number } =>
+					isRecord(entry) && isFiniteNumber(entry.s) && isFiniteNumber(entry.value)
+		  )
+		: [];
+	if (!baseLine || values.length === 0) return;
+
+	const axisOrigin = normalizeEpureAxisOrigin(geometry.axisOrigin);
+	const { startNodeId, endNodeId } = resolveBaseLineNodeIds(result, baseObject, nodeById);
+	const shouldReverse =
+		axisOrigin === 'fixed_end' ||
+		(startNodeId === cantilever.fixedNodeId && endNodeId === cantilever.freeNodeId);
+
+	if (shouldReverse) {
+		swapBaseLineOrientation(baseLine);
+		const barLength =
+			baseObject && isRecord(baseObject.geometry)
+				? toFiniteNumber(baseObject.geometry.length) ?? null
+				: null;
+		geometry.values = reverseEpureAxisValues(values, barLength);
+		if (Array.isArray(result.nodeRefs) && result.nodeRefs.length >= 2) {
+			result.nodeRefs = [result.nodeRefs[1], result.nodeRefs[0]];
+		}
+		warnings.push(
+			`results[${resultIndex}] epure axis canonicalized to free_end for simple cantilever`
+		);
+	}
+
+	geometry.axisOrigin = 'free_end';
+}
+
 function ensureEpureCompleteness(
 	result: ResultV2,
 	resultIndex: number,
 	objects: ObjectV2[],
 	nodeById: Map<string, NodeV2>,
+	structureKind: StructureKind,
 	warnings: string[]
 ): ResultV2 | null {
 	if (result.type !== 'epure') return result;
@@ -1080,6 +1603,11 @@ function ensureEpureCompleteness(
 		return null;
 	}
 
+	maybeCanonicalizeFrameEpure(result, resultIndex, baseObject, nodeById, structureKind, warnings);
+	if (structureKind === 'beam') {
+		maybeCanonicalizeCantileverEpure(result, resultIndex, baseObject, objects, nodeById, warnings);
+	}
+
 	return result;
 }
 
@@ -1144,32 +1672,65 @@ export function normalizeSchemaDataV2(input: unknown): SchemaNormalizeResultV2 {
 	}
 
 	const version = typeof root.version === 'string' ? root.version : SCHEMA_DATA_V2_VERSION;
-	const meta = isRecord(root.meta) ? root.meta : {};
+	const rawMeta = isRecord(root.meta) ? { ...root.meta } : {};
+	const rawCoordinateSystem = isRecord(root.coordinateSystem) ? root.coordinateSystem : {};
+	const structureKindFromMeta = normalizeStructureKind(rawMeta.structureKind ?? root.structureKind);
+	const requestedModelSpace = normalizeModelSpace(rawCoordinateSystem.modelSpace ?? root.modelSpace);
+	const structureKind: StructureKind =
+		structureKindFromMeta ??
+		(requestedModelSpace === 'spatial' ? 'spatial_frame' : requestedModelSpace === 'planar' ? 'planar_frame' : 'beam');
+	const modelSpace: ModelSpace =
+		requestedModelSpace ?? (structureKind === 'spatial_frame' ? 'spatial' : 'planar');
+	const meta = {
+		...rawMeta,
+		structureKind
+	};
 	const originPolicy = normalizeOriginPolicy(
-		(isRecord(root.coordinateSystem) ? root.coordinateSystem.originPolicy : undefined) ??
+		rawCoordinateSystem.originPolicy ??
 		root.originPolicy ??
 		(isRecord(root.meta) ? root.meta.originPolicy : undefined)
 	);
+	const referenceUp = normalizeVector3(toVector3(rawCoordinateSystem.referenceUp) ?? DEFAULT_REFERENCE_UP) ?? DEFAULT_REFERENCE_UP;
+	const secondaryReference =
+		normalizeVector3(toVector3(rawCoordinateSystem.secondaryReference) ?? DEFAULT_SECONDARY_REFERENCE) ??
+		DEFAULT_SECONDARY_REFERENCE;
+	const planeNormal =
+		normalizeVector3(toVector3(rawCoordinateSystem.planeNormal) ?? DEFAULT_PLANE_NORMAL) ?? DEFAULT_PLANE_NORMAL;
+	const projectionPreset =
+		normalizeProjectionPreset(rawCoordinateSystem.projectionPreset) ??
+		(modelSpace === 'spatial' ? 'auto_isometric' : 'xy');
 	const coordinateSystem: CoordinateSystemV2 = isRecord(root.coordinateSystem)
 		? {
 				xUnit: typeof root.coordinateSystem.xUnit === 'string' ? root.coordinateSystem.xUnit : 'm',
 				yUnit: typeof root.coordinateSystem.yUnit === 'string' ? root.coordinateSystem.yUnit : 'm',
+				zUnit: typeof root.coordinateSystem.zUnit === 'string' ? root.coordinateSystem.zUnit : 'm',
 				origin:
 					isRecord(root.coordinateSystem.origin) &&
 					isFiniteNumber(root.coordinateSystem.origin.x) &&
 					isFiniteNumber(root.coordinateSystem.origin.y)
 						? { x: root.coordinateSystem.origin.x, y: root.coordinateSystem.origin.y }
 						: { x: 0, y: 0 },
+				modelSpace,
 				axisOrientation:
 					root.coordinateSystem.axisOrientation === 'left-handed' ? 'left-handed' : 'right-handed',
-				originPolicy
+				originPolicy,
+				referenceUp,
+				secondaryReference,
+				planeNormal,
+				projectionPreset
 			}
 		: {
 				xUnit: 'm',
 				yUnit: 'm',
+				zUnit: 'm',
 				origin: { x: 0, y: 0 },
+				modelSpace,
 				axisOrientation: 'right-handed',
-				originPolicy
+				originPolicy,
+				referenceUp,
+				secondaryReference,
+				planeNormal,
+				projectionPreset
 			};
 
 	const nodesRaw = toObjectArray(root.nodes);
@@ -1200,9 +1761,12 @@ export function normalizeSchemaDataV2(input: unknown): SchemaNormalizeResultV2 {
 
 	nodes = ensureUniqueNodeIds(nodes, warnings);
 	const nodeById = new Map(nodes.map((node) => [node.id, node]));
+	deriveMemberLocalFrames(canonicalObjects, nodeById, structureKind, coordinateSystem, warnings);
 
 	const results = canonicalResultsInitial
-		.map((result, index) => ensureEpureCompleteness(result, index, canonicalObjects, nodeById, warnings))
+		.map((result, index) =>
+			ensureEpureCompleteness(result, index, canonicalObjects, nodeById, structureKind, warnings)
+		)
 		.filter((entry): entry is ResultV2 => Boolean(entry));
 
 	const assumptions = toStringArray(root.assumptions);

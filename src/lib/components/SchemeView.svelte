@@ -88,6 +88,8 @@
 		muted: 'var(--text-muted)',
 		text: 'var(--text-secondary)'
 	} as const;
+	const EPURE_CURVE_STROKE_WIDTH = 1.6;
+	const EPURE_BEAM_STROKE_WIDTH = EPURE_CURVE_STROKE_WIDTH + 0.8;
 
 	function isRecord(value: unknown): value is Record<string, unknown> {
 		return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -101,6 +103,53 @@
 		return isRecord(value) && isFiniteNumber(value.x) && isFiniteNumber(value.y);
 	}
 
+	function normalizeStructureKind(value: unknown): 'beam' | 'planar_frame' | 'spatial_frame' {
+		if (typeof value !== 'string') return 'beam';
+		const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+		if (normalized === 'beam' || normalized === 'planar_frame' || normalized === 'spatial_frame') {
+			return normalized;
+		}
+		return 'beam';
+	}
+
+	function normalizeProjectionPreset(value: unknown): 'auto_isometric' | 'xy' | 'xz' | 'yz' {
+		if (typeof value !== 'string') return 'auto_isometric';
+		const normalized = value.trim().toLowerCase();
+		if (normalized === 'xy' || normalized === 'xz' || normalized === 'yz' || normalized === 'auto_isometric') {
+			return normalized;
+		}
+		return 'auto_isometric';
+	}
+
+	function projectSpatialPoint(
+		point: { x: number; y: number; z?: number },
+		preset: 'auto_isometric' | 'xy' | 'xz' | 'yz'
+	): SchemaPoint {
+		const z = isFiniteNumber(point.z) ? point.z : 0;
+		if (preset === 'xy') return { x: point.x, y: point.y };
+		if (preset === 'xz') return { x: point.x, y: z };
+		if (preset === 'yz') return { x: point.y, y: z };
+		const cos30 = 0.8660254038;
+		return {
+			x: (point.x - point.y) * cos30,
+			y: z + (point.x + point.y) * 0.5
+		};
+	}
+
+	function projectNode(schema: SchemaDataV2, node: NodeV2): SchemaPoint {
+		const modelSpace = schema.coordinateSystem?.modelSpace === 'spatial' ? 'spatial' : 'planar';
+		if (modelSpace !== 'spatial') return { x: node.x, y: node.y };
+		const preset = normalizeProjectionPreset(schema.coordinateSystem?.projectionPreset);
+		return projectSpatialPoint(node, preset);
+	}
+
+	function resolveStructureKind(schema: SchemaDataV2): 'beam' | 'planar_frame' | 'spatial_frame' {
+		const fromMeta = normalizeStructureKind(schema.meta?.structureKind);
+		if (fromMeta !== 'beam') return fromMeta;
+		if (schema.coordinateSystem?.modelSpace === 'spatial') return 'spatial_frame';
+		return fromMeta;
+	}
+
 	function toPoint(value: unknown): SchemaPoint | null {
 		if (isPoint(value)) return { x: value.x, y: value.y };
 		if (
@@ -110,6 +159,29 @@
 			isFiniteNumber(value[1])
 		) {
 			return { x: value[0], y: value[1] };
+		}
+		return null;
+	}
+
+	function toPoint3(value: unknown): { x: number; y: number; z: number } | null {
+		if (isRecord(value) && isFiniteNumber(value.x) && isFiniteNumber(value.y)) {
+			return {
+				x: value.x,
+				y: value.y,
+				z: isFiniteNumber(value.z) ? value.z : 0
+			};
+		}
+		if (
+			Array.isArray(value) &&
+			value.length >= 2 &&
+			isFiniteNumber(value[0]) &&
+			isFiniteNumber(value[1])
+		) {
+			return {
+				x: value[0],
+				y: value[1],
+				z: isFiniteNumber(value[2]) ? value[2] : 0
+			};
 		}
 		return null;
 	}
@@ -256,13 +328,18 @@
 	}
 
 	function collectPoints(schema: SchemaDataV2): SchemaPoint[] {
-		const points: SchemaPoint[] = schema.nodes.map((n) => ({ x: n.x, y: n.y }));
+		const points: SchemaPoint[] = schema.nodes.map((node) => projectNode(schema, node));
 
 		for (const object of schema.objects) {
 			if (object.type === 'trajectory' && Array.isArray(object.geometry.points)) {
 				for (const rawPoint of object.geometry.points) {
-					const point = toPoint(rawPoint);
-					if (point) points.push(point);
+					const point = toPoint3(rawPoint);
+					if (!point) continue;
+					points.push(
+						schema.coordinateSystem?.modelSpace === 'spatial'
+							? projectSpatialPoint(point, normalizeProjectionPreset(schema.coordinateSystem?.projectionPreset))
+							: { x: point.x, y: point.y }
+					);
 				}
 			}
 		}
@@ -270,20 +347,49 @@
 		for (const result of schema.results ?? []) {
 			if (result.type === 'trajectory' && Array.isArray(result.geometry.points)) {
 				for (const rawPoint of result.geometry.points) {
-					const point = toPoint(rawPoint);
-					if (point) points.push(point);
+					const point = toPoint3(rawPoint);
+					if (!point) continue;
+					points.push(
+						schema.coordinateSystem?.modelSpace === 'spatial'
+							? projectSpatialPoint(point, normalizeProjectionPreset(schema.coordinateSystem?.projectionPreset))
+							: { x: point.x, y: point.y }
+					);
 				}
 			}
 		}
 
 		if (schema.coordinateSystem?.origin && isPoint(schema.coordinateSystem.origin)) {
-			points.push(schema.coordinateSystem.origin);
+			const originPoint = {
+				x: schema.coordinateSystem.origin.x,
+				y: schema.coordinateSystem.origin.y,
+				z: 0
+			};
+			points.push(
+				schema.coordinateSystem?.modelSpace === 'spatial'
+					? projectSpatialPoint(
+							originPoint,
+							normalizeProjectionPreset(schema.coordinateSystem?.projectionPreset)
+						)
+					: schema.coordinateSystem.origin
+			);
 		}
 		return points;
 	}
 
 	function createNodeMap(schema: SchemaDataV2): Map<string, NodeV2> {
-		return new Map(schema.nodes.map((node) => [node.id, node]));
+		return new Map(
+			schema.nodes.map((node) => {
+				const projected = projectNode(schema, node);
+				return [
+					node.id,
+					{
+						...node,
+						x: projected.x,
+						y: projected.y
+					}
+				];
+			})
+		);
 	}
 
 	function getNode(nodeMap: Map<string, NodeV2>, id: string | undefined): NodeV2 | null {
@@ -826,7 +932,8 @@
 
 	function drawDebugLayer(schema: SchemaDataV2, nodeMap: Map<string, NodeV2>): void {
 		for (const node of schema.nodes) {
-			board.create('point', [node.x, node.y], {
+			const projectedNode = getNode(nodeMap, node.id) ?? node;
+			board.create('point', [projectedNode.x, projectedNode.y], {
 				name: node.id,
 				withLabel: true,
 				size: 2,
@@ -953,7 +1060,7 @@
 
 		drawSegment(start, end, {
 			strokeColor: COLOR.base,
-			strokeWidth: 2.1,
+			strokeWidth: EPURE_BEAM_STROKE_WIDTH,
 			opacity: 0.95,
 			layer: 3
 		});
@@ -964,7 +1071,7 @@
 				fixed: true,
 				highlight: false,
 				strokeColor: COLOR.result,
-				strokeWidth: 1.6,
+				strokeWidth: EPURE_CURVE_STROKE_WIDTH,
 				layer: 4
 			});
 		}
@@ -1005,9 +1112,15 @@
 		renderer(object, nodeMap);
 	}
 
-	function renderResult(result: ResultV2, nodeMap: Map<string, NodeV2>): void {
+	function renderResult(
+		result: ResultV2,
+		nodeMap: Map<string, NodeV2>,
+		structureKind: 'beam' | 'planar_frame' | 'spatial_frame'
+	): void {
 		if (result.type === 'epure') {
-			drawEpure(result, nodeMap);
+			if (structureKind === 'beam') {
+				drawEpure(result, nodeMap);
+			}
 			return;
 		}
 		if (result.type === 'trajectory') {
@@ -1098,6 +1211,7 @@
 	async function initializeBoard() {
 		const schema = normalizedSchema;
 		if (!schema || schema.objects.length === 0 || board) return;
+		const structureKind = resolveStructureKind(schema);
 
 		const JSXGraphModule = await import('jsxgraph');
 		const JXG = JSXGraphModule.default ?? JSXGraphModule;
@@ -1149,7 +1263,7 @@
 
 		for (const result of schema.results ?? []) {
 			try {
-				renderResult(result, nodeMap);
+				renderResult(result, nodeMap, structureKind);
 			} catch (err) {
 				console.warn('[SchemeView] Failed to render result:', result.id, err);
 			}

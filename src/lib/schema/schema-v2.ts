@@ -34,18 +34,31 @@ export interface SchemaMetaV2 {
 	taskDomain?: string;
 	catalogVersion?: string;
 	language?: string;
+	structureKind?: 'beam' | 'planar_frame' | 'spatial_frame';
 	layoutMetrics?: Record<string, unknown>;
 	layoutCorrections?: string[];
 	layoutAutoCorrected?: boolean;
 	[key: string]: unknown;
 }
 
+export interface Vector3V2 {
+	x: number;
+	y: number;
+	z: number;
+}
+
 export interface CoordinateSystemV2 {
 	xUnit?: string;
 	yUnit?: string;
+	zUnit?: string;
 	origin?: SchemaPoint;
+	modelSpace?: 'planar' | 'spatial';
 	axisOrientation?: 'right-handed' | 'left-handed';
 	originPolicy?: 'auto' | 'left_support' | 'fixed_support' | 'centroid';
+	referenceUp?: Vector3V2;
+	secondaryReference?: Vector3V2;
+	planeNormal?: Vector3V2;
+	projectionPreset?: 'auto_isometric' | 'xy' | 'xz' | 'yz';
 }
 
 export interface AttachSpecV2 {
@@ -66,6 +79,7 @@ export interface NodeV2 {
 	id: string;
 	x: number;
 	y: number;
+	z?: number;
 	label?: string;
 	visible?: boolean;
 	meta?: Record<string, unknown>;

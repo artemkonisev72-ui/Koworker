@@ -400,10 +400,17 @@
 
 `geometry`:
 - `kind?: "N" | "Q" | "M" | "custom"`
+- `component?: "N" | "Vy" | "Vz" | "T" | "My" | "Mz"` (обязательно для frame-эпюр)
 - `fillHatch?: boolean`
 - `showSigns?: boolean`
+- `axisOrigin?: "auto" | "free_end" | "fixed_end" | "member_start" | "member_end"` (`"free_end"` обязателен для простой консольной балки; `"member_start"` — канон для frame-эпюр)
 - `compressedFiberSide?: "+n" | "-n"` (обязательно для `kind: "M"` в новых данных)
 - `extrema?: Array<{s:number, value:number, label?:string}>`
+
+Для рам:
+- `meta.structureKind: "planar_frame" | "spatial_frame"`
+- `coordinateSystem.modelSpace: "planar" | "spatial"`
+- frame-эпюры задаются через `component + axisOrigin="member_start"` (без beam-only эвристик free/fixed).
 
 Пример:
 ```json
@@ -419,6 +426,7 @@
       { "s": 0.5, "value": 10.0 },
       { "s": 1.0, "value": -2.0 }
     ],
+    "axisOrigin": "free_end",
     "showSigns": true,
     "fillHatch": true,
     "compressedFiberSide": "+n"

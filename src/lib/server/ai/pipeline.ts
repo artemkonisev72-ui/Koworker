@@ -229,8 +229,10 @@ function normalizeGraphEpureMeta(raw: unknown): GraphData['epure'] | undefined {
 
 	const epure = {
 		...(typeof raw.kind === 'string' ? { kind: raw.kind } : {}),
+		...(typeof raw.component === 'string' ? { component: raw.component } : {}),
 		...(typeof raw.fillHatch === 'boolean' ? { fillHatch: raw.fillHatch } : {}),
 		...(typeof raw.showSigns === 'boolean' ? { showSigns: raw.showSigns } : {}),
+		...(typeof raw.axisOrigin === 'string' ? { axisOrigin: raw.axisOrigin } : {}),
 		...(typeof raw.compressedFiberSide === 'string'
 			? { compressedFiberSide: raw.compressedFiberSide }
 			: {})

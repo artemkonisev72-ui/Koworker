@@ -10,6 +10,9 @@ export const MAX_SCHEMA_V2_TEXT_ITEMS = 128;
 export const MAX_SCHEMA_V2_TEXT_LENGTH = 1_500;
 export const MAX_SCHEMA_V2_COORD_ABS = 100_000;
 const CONSTRAINT_REQUIRED_TYPES = new Set(['bar', 'cable', 'spring', 'damper']);
+const FRAME_COMPONENTS = new Set(['N', 'Vy', 'Vz', 'T', 'My', 'Mz']);
+const FRAME_STRUCTURE_KINDS = new Set(['planar_frame', 'spatial_frame']);
+const ALLOWED_AXIS_ORIGINS = new Set(['auto', 'free_end', 'fixed_end', 'member_start', 'member_end']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -17,6 +20,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isFiniteNumber(value: unknown): value is number {
 	return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isFiniteVector3(value: unknown): boolean {
+	return (
+		isRecord(value) &&
+		isFiniteNumber(value.x) &&
+		isFiniteNumber(value.y) &&
+		isFiniteNumber(value.z)
+	);
+}
+
+function normalizeStructureKind(value: unknown): 'beam' | 'planar_frame' | 'spatial_frame' | null {
+	if (typeof value !== 'string') return null;
+	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+	if (normalized === 'beam' || normalized === 'planar_frame' || normalized === 'spatial_frame') {
+		return normalized;
+	}
+	return null;
 }
 
 function pushError(errors: string[], message: string): void {
@@ -27,11 +48,15 @@ function validateNode(node: NodeV2, index: number, errors: string[]): void {
 	if (!node.id || typeof node.id !== 'string') {
 		pushError(errors, `nodes[${index}].id must be a non-empty string`);
 	}
-	if (!isFiniteNumber(node.x) || !isFiniteNumber(node.y)) {
+	if (!isFiniteNumber(node.x) || !isFiniteNumber(node.y) || (node.z !== undefined && !isFiniteNumber(node.z))) {
 		pushError(errors, `nodes[${index}] coordinates must be finite numbers`);
 		return;
 	}
-	if (Math.abs(node.x) > MAX_SCHEMA_V2_COORD_ABS || Math.abs(node.y) > MAX_SCHEMA_V2_COORD_ABS) {
+	if (
+		Math.abs(node.x) > MAX_SCHEMA_V2_COORD_ABS ||
+		Math.abs(node.y) > MAX_SCHEMA_V2_COORD_ABS ||
+		Math.abs(node.z ?? 0) > MAX_SCHEMA_V2_COORD_ABS
+	) {
 		pushError(errors, `nodes[${index}] is outside coordinate bounds`);
 	}
 }
@@ -207,11 +232,20 @@ function validateObjectSpecific(object: ObjectV2 | ResultV2, index: number, erro
 		) {
 			pushError(errors, `${section}[${index}] epure.geometry.kind must be "N" | "Q" | "M" | "custom"`);
 		}
+		if (geometry.component !== undefined && !FRAME_COMPONENTS.has(String(geometry.component))) {
+			pushError(errors, `${section}[${index}] epure.geometry.component must be one of N|Vy|Vz|T|My|Mz`);
+		}
 		if (geometry.fillHatch !== undefined && typeof geometry.fillHatch !== 'boolean') {
 			pushError(errors, `${section}[${index}] epure.geometry.fillHatch must be boolean`);
 		}
 		if (geometry.showSigns !== undefined && typeof geometry.showSigns !== 'boolean') {
 			pushError(errors, `${section}[${index}] epure.geometry.showSigns must be boolean`);
+		}
+		if (geometry.axisOrigin !== undefined && !ALLOWED_AXIS_ORIGINS.has(String(geometry.axisOrigin))) {
+			pushError(
+				errors,
+				`${section}[${index}] epure.geometry.axisOrigin must be "auto" | "free_end" | "fixed_end" | "member_start" | "member_end"`
+			);
 		}
 		if (
 			geometry.compressedFiberSide !== undefined &&
@@ -220,6 +254,39 @@ function validateObjectSpecific(object: ObjectV2 | ResultV2, index: number, erro
 		) {
 			pushError(errors, `${section}[${index}] epure.geometry.compressedFiberSide must be "+n" | "-n"`);
 		}
+	}
+}
+
+function validateCoordinateSystem(schema: SchemaDataV2, errors: string[]): void {
+	const coordinateSystem = isRecord(schema.coordinateSystem) ? schema.coordinateSystem : null;
+	if (!coordinateSystem) return;
+
+	if (
+		coordinateSystem.modelSpace !== undefined &&
+		coordinateSystem.modelSpace !== 'planar' &&
+		coordinateSystem.modelSpace !== 'spatial'
+	) {
+		pushError(errors, 'coordinateSystem.modelSpace must be "planar" | "spatial"');
+	}
+
+	if (
+		coordinateSystem.projectionPreset !== undefined &&
+		coordinateSystem.projectionPreset !== 'auto_isometric' &&
+		coordinateSystem.projectionPreset !== 'xy' &&
+		coordinateSystem.projectionPreset !== 'xz' &&
+		coordinateSystem.projectionPreset !== 'yz'
+	) {
+		pushError(errors, 'coordinateSystem.projectionPreset must be "auto_isometric" | "xy" | "xz" | "yz"');
+	}
+
+	if (coordinateSystem.referenceUp !== undefined && !isFiniteVector3(coordinateSystem.referenceUp)) {
+		pushError(errors, 'coordinateSystem.referenceUp must be a finite {x,y,z} vector');
+	}
+	if (coordinateSystem.secondaryReference !== undefined && !isFiniteVector3(coordinateSystem.secondaryReference)) {
+		pushError(errors, 'coordinateSystem.secondaryReference must be a finite {x,y,z} vector');
+	}
+	if (coordinateSystem.planeNormal !== undefined && !isFiniteVector3(coordinateSystem.planeNormal)) {
+		pushError(errors, 'coordinateSystem.planeNormal must be a finite {x,y,z} vector');
 	}
 }
 
@@ -271,6 +338,7 @@ export function validateSchemaDataV2(input: unknown): SchemaValidationResultV2 {
 	const normalized = normalizeSchemaDataV2(input);
 	const schema = normalized.value;
 	const errors: string[] = [];
+	const structureKind = normalizeStructureKind(schema.meta?.structureKind) ?? 'beam';
 
 	if (schema.version !== SCHEMA_DATA_V2_VERSION) {
 		pushError(errors, `schema.version must be "${SCHEMA_DATA_V2_VERSION}"`);
@@ -286,6 +354,11 @@ export function validateSchemaDataV2(input: unknown): SchemaValidationResultV2 {
 
 	if (schema.objects.length === 0) {
 		pushError(errors, 'schema.objects must not be empty');
+	}
+
+	validateCoordinateSystem(schema, errors);
+	if (structureKind === 'spatial_frame' && schema.coordinateSystem?.modelSpace !== 'spatial') {
+		pushError(errors, 'meta.structureKind="spatial_frame" requires coordinateSystem.modelSpace="spatial"');
 	}
 
 	const nodeIds = new Set<string>();
@@ -350,6 +423,37 @@ export function validateSchemaDataV2(input: unknown): SchemaValidationResultV2 {
 		walkNumbers(result, (num, path) => {
 			if (!Number.isFinite(num)) pushError(errors, `${path} must be finite`);
 		}, `results[${index}]`);
+	}
+
+	if (FRAME_STRUCTURE_KINDS.has(structureKind)) {
+		for (const [index, result] of (schema.results ?? []).entries()) {
+			if (result.type !== 'epure' || !isRecord(result.geometry)) continue;
+			const geometry = result.geometry;
+			if (!FRAME_COMPONENTS.has(String(geometry.component))) {
+				pushError(errors, `results[${index}] frame epure requires geometry.component (N|Vy|Vz|T|My|Mz)`);
+			}
+			if (structureKind === 'spatial_frame' && (geometry.kind === 'Q' || geometry.kind === 'M')) {
+				pushError(errors, `results[${index}] spatial frame epure cannot use legacy kind "${geometry.kind}"`);
+			}
+		}
+	}
+
+	if (structureKind === 'spatial_frame') {
+		const hasDepthNode = schema.nodes.some((node) => Math.abs(node.z ?? 0) > 1e-9);
+		const hasOutOfPlaneComponent = (schema.results ?? []).some(
+			(result) =>
+				result.type === 'epure' &&
+				isRecord(result.geometry) &&
+				(result.geometry.component === 'Vz' ||
+					result.geometry.component === 'T' ||
+					result.geometry.component === 'My')
+		);
+		if (!hasDepthNode && hasOutOfPlaneComponent) {
+			pushError(
+				errors,
+				'spatial_frame with Vz/T/My epures requires non-zero node z coordinates to define 3D geometry'
+			);
+		}
 	}
 
 	validateTextArray(schema.assumptions, 'assumptions', errors);
