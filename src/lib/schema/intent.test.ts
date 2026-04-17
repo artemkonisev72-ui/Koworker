@@ -73,4 +73,45 @@ describe('scheme intent validation', () => {
 		expect(normalized.value.joints.map((joint) => joint.key)).toEqual(['A', 'B']);
 		expect(normalized.warnings.some((warning) => warning.includes('inferred'))).toBe(true);
 	});
+
+	it('allows legacy Q/M requested results for planar_frame', () => {
+		const result = validateSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'planar_frame',
+			modelSpace: 'planar',
+			confidence: 'medium',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'A' }, { key: 'B' }],
+			members: [{ key: 'm1', kind: 'bar', startJoint: 'A', endJoint: 'B' }],
+			supports: [],
+			loads: [],
+			requestedResults: [{ kind: 'N' }, { kind: 'Q' }, { kind: 'M' }],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		expect(result.ok).toBe(true);
+	});
+
+	it('keeps rejecting legacy Q/M requested results for spatial_frame', () => {
+		const result = validateSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'spatial_frame',
+			modelSpace: 'spatial',
+			confidence: 'medium',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'A' }, { key: 'B' }],
+			members: [{ key: 'm1', kind: 'bar', startJoint: 'A', endJoint: 'B' }],
+			supports: [],
+			loads: [],
+			requestedResults: [{ kind: 'Q' }, { kind: 'M' }],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		expect(result.ok).toBe(false);
+		expect(result.errors.some((error) => error.includes('requestedResults'))).toBe(true);
+	});
 });

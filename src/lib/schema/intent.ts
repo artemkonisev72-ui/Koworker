@@ -662,7 +662,8 @@ function validateRequestedResults(
 ): void {
 	if (!intent.requestedResults || intent.requestedResults.length === 0) return;
 	const allowedBeam = new Set<IntentResultKind>(['N', 'Q', 'M']);
-	const allowedPlanarFrame = new Set<IntentResultKind>(['N', 'Vy', 'Mz']);
+	// Backward compatibility: allow legacy Q/M for planar frames.
+	const allowedPlanarFrame = new Set<IntentResultKind>(['N', 'Vy', 'Mz', 'Q', 'M']);
 	const allowedSpatialFrame = new Set<IntentResultKind>(['N', 'Vy', 'Vz', 'T', 'My', 'Mz']);
 
 	for (const [index, result] of intent.requestedResults.entries()) {
