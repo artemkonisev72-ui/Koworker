@@ -7,18 +7,7 @@
 	import GraphView from './GraphView.svelte';
 	import SchemeView from './SchemeView.svelte';
 	import { isSchemaDataV2 } from '$lib/schema/schema-v2.js';
-
-	interface GraphPoint {
-		x: number;
-		y: number;
-	}
-	interface GraphData {
-		title?: string;
-		type?: 'function' | 'diagram';
-		memberId?: string;
-		diagramType?: string;
-		points: GraphPoint[];
-	}
+	import { normalizeGraphEpure, type GraphData } from '$lib/graphs/types.js';
 	interface GraphGroup {
 		memberId: string | null;
 		items: GraphData[];
@@ -77,12 +66,12 @@
 		if (!message.graphData) return [];
 		if (typeof message.graphData === 'string') {
 			try {
-				return JSON.parse(message.graphData) as GraphData[];
+				return (JSON.parse(message.graphData) as GraphData[]).map((graph) => normalizeGraphEpure(graph).graph);
 			} catch {
 				return [];
 			}
 		}
-		return message.graphData as GraphData[];
+		return (message.graphData as GraphData[]).map((graph) => normalizeGraphEpure(graph).graph);
 	});
 
 	let graphGroups = $derived.by(() => {
@@ -623,7 +612,7 @@
 					{/if}
 					{#each group.items as graph}
 						<GraphView
-							points={graph.points}
+							{graph}
 							title={
 								graph.title ||
 								(graph.diagramType && group.memberId
@@ -632,7 +621,6 @@
 										? `Member ${group.memberId}`
 										: 'Solution graph')
 							}
-							type={graph.type}
 						/>
 					{/each}
 				{/each}

@@ -5,18 +5,7 @@
 	 */
 	import { onMount, tick } from 'svelte';
 	import MessageRenderer from '$lib/components/MessageRenderer.svelte';
-
-	interface GraphPoint {
-		x: number;
-		y: number;
-	}
-	interface GraphData {
-		title?: string;
-		type?: 'function' | 'diagram';
-		memberId?: string;
-		diagramType?: string;
-		points: GraphPoint[];
-	}
+	import type { GraphData } from '$lib/graphs/types.js';
 	interface ActiveDraftState {
 		draftId: string;
 		status: string;

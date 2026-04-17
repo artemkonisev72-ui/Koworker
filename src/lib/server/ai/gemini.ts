@@ -415,13 +415,16 @@ Rules:
 2. Always print JSON using print(json.dumps({...})).
 3. Do not draw text/ASCII graphs.
 4. For plots/diagrams output graph points in key "graphs":
-   "graphs": [{"title":"...","type":"function"|"diagram","memberId":"...", "diagramType":"N|Q|M|...", "points":[{"x":...,"y":...}, ...]}]
+   "graphs": [{"title":"...","type":"function"|"diagram","memberId":"...", "diagramType":"N|Q|M|...", "epure":{"kind":"N|Q|M|custom","fillHatch":true,"showSigns":true,"compressedFiberSide":"+n|-n"}, "points":[{"x":...,"y":...}, ...]}]
 5. For frame/truss/beam-system diagrams (epures), STRICT RULE: one graph object = one member (memberId). Never mix points from different members inside one graph.
 6. For type="diagram", always provide non-empty memberId.
-7. Put primary numeric/text result in key "result".
-8. Prefer sympy for exact math and numpy arrays for sampling points.
+7. For epures always sort points by x ascending. If sign changes between neighboring samples, include a zero point at the crossing or sample densely enough that the renderer can reconstruct the crossing.
+8. For diagrams representing epures, set epure.fillHatch=true and epure.showSigns=true by default.
+9. For moment epures (diagramType/epure.kind = "M"), ALWAYS provide epure.compressedFiberSide as "+n" or "-n". Positive ordinates must correspond to the declared compressed-fiber side.
+10. Put primary numeric/text result in key "result".
+11. Prefer sympy for exact math and numpy arrays for sampling points.
 ${visualContract}
-11. ${languagePolicy(userMessage)}`;
+12. ${languagePolicy(userMessage)}`;
 
 	let userContent = `Task: ${userMessage}`;
 	if (retryContext) userContent += `\n\nFix this error context:\n${retryContext}`;
@@ -527,6 +530,8 @@ For fixed_wall use geometry.wallSide = left|right|top|bottom when side semantics
 If exact dimensions are unknown, keep consistent relative lengths and positions.
 For distributed, include geometry.kind and geometry.intensity.
 For moment/angular types, geometry.direction MUST be exactly "cw" or "ccw".
+For epure results, include geometry.kind, geometry.fillHatch=true, and geometry.showSigns=true unless explicitly requested otherwise.
+For moment epure kind "M", ALWAYS include geometry.compressedFiberSide as "+n" or "-n".
 Do NOT place all supports/loads at (0,0) by default.
 Preserve language of assumptions/ambiguities according to user request.
 ${languagePolicy(userMessage)}`;
@@ -579,7 +584,8 @@ Fill canonical geometry per type:
 - distributed: nodeRefs [start,end] + kind + intensity + direction
 - rigid_disk: nodeRefs [center] + radius
 - trajectory: geometry.points array
-- epure (if present): put into results with baseLine + values`;
+- epure (if present): put into results with baseLine + values + kind + fillHatch + showSigns
+- for moment epure kind "M", ALWAYS include geometry.compressedFiberSide as "+n" or "-n"`;
 	const stageBQuestion = `Task context:\n${contextMessage}\n\nStage A schema JSON:\n${stageASchemaJson}\n\nNow return finalized schemaData v2.`;
 	const stageB = await generateSchemaStage(history, stageBPrompt, stageBQuestion, params?.forcedModel);
 	usedModels.push(formatTokenAttribution(stageB.model, 'SchemaGen-B', stageB.tokens));
@@ -629,6 +635,8 @@ Use ONLY object types from catalog v2:
 bar, cable, spring, damper, rigid_disk, fixed_wall, hinge_fixed, hinge_roller, internal_hinge, slider, force, moment, distributed, velocity, acceleration, angular_velocity, angular_acceleration, trajectory, epure, label, dimension, axis, ground.
 Use nodeRefs to bind all objects to nodes.
 If epure is needed, place it in schemaData.results, not in schemaData.objects.
+For epure visuals, default to geometry.fillHatch=true and geometry.showSigns=true unless the task explicitly asks otherwise.
+For moment epure kind "M", ALWAYS include geometry.compressedFiberSide as "+n" or "-n".
 For force/distributed/velocity/acceleration include explicit direction (directionAngle or direction vector or cardinal).
 Keep physically meaningful scale/proportions; avoid coordinate collapse and avoid decorative coordinates.
 Prefer coordinates in range [-10, 10] and preserve consistent relative lengths.
@@ -704,6 +712,7 @@ Focus on topology and constraints:
 - supports/loads should be attached via nodeRefs and, when needed, geometry.attach
 - force/distributed/velocity/acceleration must keep explicit direction fields
 - fixed_wall may use geometry.wallSide
+- epure visuals should preserve geometry.kind, geometry.fillHatch, geometry.showSigns, and for kind "M" geometry.compressedFiberSide
 Keep schemaData.version = "2.0" and finite numbers.
 Keep epure entries only in schemaData.results (never in schemaData.objects).
 ${languagePolicy(languageSeed)}`;

@@ -1,16 +1,9 @@
 <script lang="ts">
 	import { onDestroy, onMount, tick } from 'svelte';
+	import { buildEpureLayout } from '$lib/epure/layout.js';
+	import { getEpureDisplayFactor, normalizeGraphEpure, type GraphData } from '$lib/graphs/types.js';
 
-	interface GraphPoint {
-		x: number;
-		y: number;
-	}
-
-	let {
-		points,
-		title = 'Graph',
-		type = 'function'
-	}: { points: GraphPoint[]; title?: string; type?: 'function' | 'diagram' } = $props();
+	let { graph, title = 'Graph' }: { graph: GraphData; title?: string } = $props();
 
 	let wrapperEl: HTMLDivElement | undefined = $state();
 	let boardEl: HTMLDivElement | undefined = $state();
@@ -147,13 +140,27 @@
 	}
 
 	async function initializeBoard() {
-		if (board || !boardEl || !points || points.length < 2) return;
+		if (board || !boardEl || !graph?.points || graph.points.length < 2) return;
 
 		const JSXGraph = await import('jsxgraph');
 		const JXG = JSXGraph.default ?? JSXGraph;
+		const normalizedGraph = normalizeGraphEpure(graph).graph;
+		const epureFactor = getEpureDisplayFactor(normalizedGraph.epure);
+		const epureLayout =
+			normalizedGraph.type === 'diagram'
+				? buildEpureLayout(
+						normalizedGraph.points.map((point) => ({
+							x: point.x,
+							value: point.y,
+							displayValue: point.y * epureFactor
+						}))
+					)
+				: null;
+		const curvePoints = epureLayout?.curvePoints ?? normalizedGraph.points;
+		if (curvePoints.length < 2) return;
 
-		const xs = points.map((p) => p.x);
-		const ys = points.map((p) => p.y);
+		const xs = curvePoints.map((p) => p.x);
+		const ys = curvePoints.map((p) => p.y);
 		const xMin = Math.min(...xs);
 		const xMax = Math.max(...xs);
 		const yMin = Math.min(...ys);
@@ -172,61 +179,45 @@
 		});
 
 		applyBoardTheme();
+		if (normalizedGraph.type === 'diagram' && epureLayout) {
+			const fillOpacity = normalizedGraph.epure?.fillHatch === false ? 0.12 : 0.05;
+			for (const region of epureLayout.regions) {
+				board.create(
+					'polygon',
+					region.polygon.map((point) => [point.x, point.y]),
+					{
+						fillColor: 'var(--accent-primary)',
+						fillOpacity,
+						withLines: false,
+						borders: { visible: false },
+						vertices: { visible: false, withLabel: false },
+						highlight: false,
+						layer: 0
+					}
+				);
 
-		const curve = board.create(
-			'curve',
-			[points.map((p) => p.x), points.map((p) => p.y)],
-			{
-				strokeColor: 'var(--text-primary)',
-				strokeWidth: 2.5,
-				highlight: true,
-				highlightStrokeColor: 'var(--accent-primary)',
-				highlightStrokeWidth: 3
-			}
-		);
-
-		if (type === 'diagram') {
-			const xCoords = points.map((p) => p.x);
-			board.create(
-				'polygon',
-				[[xCoords[0], 0], ...points.map((p) => [p.x, p.y]), [xCoords[xCoords.length - 1], 0]],
-				{
-					fillColor: 'var(--accent-primary)',
-					fillOpacity: 0.15,
-					withLines: false,
-					borders: { visible: false },
-					vertices: { visible: false },
-					highlight: false,
-					layer: 0
+				if (normalizedGraph.epure?.fillHatch !== false) {
+					for (const hatch of region.hatchSegments) {
+						board.create(
+							'segment',
+							[
+								[hatch.start.x, hatch.start.y],
+								[hatch.end.x, hatch.end.y]
+							],
+							{
+								fixed: true,
+								highlight: false,
+								strokeColor: 'var(--accent-primary)',
+								opacity: 0.45,
+								strokeWidth: 1,
+								layer: 1
+							}
+						);
+					}
 				}
-			);
 
-			const regions: { sign: number; points: GraphPoint[] }[] = [];
-			let currentRegion = { sign: 0, points: [] as GraphPoint[] };
-
-			for (const p of points) {
-				if (Math.abs(p.y) < 1e-6) continue;
-				const sign = p.y > 0 ? 1 : -1;
-				if (currentRegion.sign === 0) {
-					currentRegion.sign = sign;
-					currentRegion.points.push(p);
-				} else if (currentRegion.sign === sign) {
-					currentRegion.points.push(p);
-				} else {
-					regions.push(currentRegion);
-					currentRegion = { sign, points: [p] };
-				}
-			}
-			if (currentRegion.points.length > 0) regions.push(currentRegion);
-
-			const heightThreshold = (yMax - yMin) * 0.05;
-			for (const region of regions) {
-				let peak = region.points[0];
-				for (const point of region.points) {
-					if (Math.abs(point.y) > Math.abs(peak.y)) peak = point;
-				}
-				if (Math.abs(peak.y) > heightThreshold) {
-					board.create('text', [peak.x, peak.y / 2, region.sign > 0 ? '+' : '-'], {
+				if (normalizedGraph.epure?.showSigns !== false && region.showSign) {
+					board.create('text', [region.centroid.x, region.centroid.y, region.sign > 0 ? '+' : '-'], {
 						fontSize: 28,
 						fontWeight: 'bold',
 						anchorX: 'middle',
@@ -239,7 +230,20 @@
 			}
 		}
 
-		const glider = board.create('point', [xMin, points[0].y], {
+		const curve = board.create(
+			'curve',
+			[curvePoints.map((point) => point.x), curvePoints.map((point) => point.y)],
+			{
+				strokeColor: 'var(--text-primary)',
+				strokeWidth: 2.5,
+				highlight: true,
+				highlightStrokeColor: 'var(--accent-primary)',
+				highlightStrokeWidth: 3,
+				layer: 4
+			}
+		);
+
+		const glider = board.create('point', [curvePoints[0].x, curvePoints[0].y], {
 			name: '',
 			slideObject: curve,
 			visible: true,
@@ -282,7 +286,7 @@
 	}
 
 	onMount(() => {
-		if (!points || points.length < 2) return;
+		if (!graph?.points || graph.points.length < 2) return;
 
 		const activate = () => {
 			if (initRequested) return;
@@ -357,7 +361,7 @@
 	});
 </script>
 
-{#if points && points.length >= 2}
+{#if graph?.points && graph.points.length >= 2}
 	<div class="graph-wrapper" bind:this={wrapperEl} class:fullscreen={isFullscreen}>
 		<div class="graph-title">
 			<span>{title}</span>

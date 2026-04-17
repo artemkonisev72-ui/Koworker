@@ -160,6 +160,13 @@ function normalizeAttachSide(value: unknown): '+n' | '-n' | '+t' | '-t' | 'cente
 	return null;
 }
 
+function normalizeCompressedFiberSide(value: unknown): '+n' | '-n' | null {
+	if (typeof value !== 'string') return null;
+	const normalized = value.trim().toLowerCase();
+	if (normalized === '+n' || normalized === '-n') return normalized;
+	return null;
+}
+
 function normalizeStringRefArray(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
 	return value
@@ -614,6 +621,28 @@ function normalizeObjectGeometry(
 				})
 				.filter((entry): entry is { s: number; value: number } => Boolean(entry));
 			geometry.values = values;
+		}
+		const kind = typeof geometry.kind === 'string' ? geometry.kind.trim().toUpperCase() : '';
+		if (kind === 'N' || kind === 'Q' || kind === 'M') {
+			geometry.kind = kind;
+		} else if (kind === 'CUSTOM') {
+			geometry.kind = 'custom';
+		}
+		if (typeof geometry.fillHatch !== 'boolean') {
+			geometry.fillHatch = true;
+		}
+		if (typeof geometry.showSigns !== 'boolean') {
+			geometry.showSigns = true;
+		}
+		const compressedFiberSide = normalizeCompressedFiberSide(geometry.compressedFiberSide);
+		if (compressedFiberSide) {
+			geometry.compressedFiberSide = compressedFiberSide;
+		} else if (geometry.compressedFiberSide !== undefined) {
+			delete geometry.compressedFiberSide;
+			warnings.push(`${context} epure.compressedFiberSide was invalid and removed`);
+		}
+		if (geometry.kind === 'M' && geometry.compressedFiberSide === undefined) {
+			warnings.push(`${context} moment epure is missing geometry.compressedFiberSide`);
 		}
 	}
 

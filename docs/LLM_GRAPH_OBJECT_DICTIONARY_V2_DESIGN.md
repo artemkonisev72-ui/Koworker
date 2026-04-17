@@ -402,6 +402,7 @@
 - `kind?: "N" | "Q" | "M" | "custom"`
 - `fillHatch?: boolean`
 - `showSigns?: boolean`
+- `compressedFiberSide?: "+n" | "-n"` (обязательно для `kind: "M"` в новых данных)
 - `extrema?: Array<{s:number, value:number, label?:string}>`
 
 Пример:
@@ -419,7 +420,8 @@
       { "s": 1.0, "value": -2.0 }
     ],
     "showSigns": true,
-    "fillHatch": true
+    "fillHatch": true,
+    "compressedFiberSide": "+n"
   }
 }
 ```
@@ -677,4 +679,3 @@ LLM (или серверный пост-процесс) проверяет:
   "ambiguities": []
 }
 ```
-

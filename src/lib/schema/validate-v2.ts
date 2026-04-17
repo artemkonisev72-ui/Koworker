@@ -198,6 +198,28 @@ function validateObjectSpecific(object: ObjectV2 | ResultV2, index: number, erro
 		if (!Array.isArray(geometry.values) || geometry.values.length === 0) {
 			pushError(errors, `${section}[${index}] epure requires non-empty geometry.values`);
 		}
+		if (
+			geometry.kind !== undefined &&
+			geometry.kind !== 'N' &&
+			geometry.kind !== 'Q' &&
+			geometry.kind !== 'M' &&
+			geometry.kind !== 'custom'
+		) {
+			pushError(errors, `${section}[${index}] epure.geometry.kind must be "N" | "Q" | "M" | "custom"`);
+		}
+		if (geometry.fillHatch !== undefined && typeof geometry.fillHatch !== 'boolean') {
+			pushError(errors, `${section}[${index}] epure.geometry.fillHatch must be boolean`);
+		}
+		if (geometry.showSigns !== undefined && typeof geometry.showSigns !== 'boolean') {
+			pushError(errors, `${section}[${index}] epure.geometry.showSigns must be boolean`);
+		}
+		if (
+			geometry.compressedFiberSide !== undefined &&
+			geometry.compressedFiberSide !== '+n' &&
+			geometry.compressedFiberSide !== '-n'
+		) {
+			pushError(errors, `${section}[${index}] epure.geometry.compressedFiberSide must be "+n" | "-n"`);
+		}
 	}
 }
 

@@ -141,3 +141,52 @@ describe('normalize-v2 direction normalization', () => {
 		expect(distributed?.geometry.directionAngle).toBe(180);
 	});
 });
+
+describe('normalize-v2 epure visuals', () => {
+	it('defaults readable epure visuals and warns about missing compressed fiber side for moment epures', () => {
+		const validation = validateSchemaDataV2({
+			version: '2.0',
+			nodes: [
+				{ id: 'A', x: 0, y: 0 },
+				{ id: 'B', x: 4, y: 0 }
+			],
+			objects: [
+				{
+					id: 'bar_1',
+					type: 'bar',
+					nodeRefs: ['A', 'B'],
+					geometry: { length: 4, angleDeg: 0 }
+				}
+			],
+			results: [
+				{
+					id: 'ep_M',
+					type: 'epure',
+					nodeRefs: ['A', 'B'],
+					meta: { baseObjectId: 'bar_1' },
+					geometry: {
+						kind: 'm',
+						baseLine: { startNodeId: 'A', endNodeId: 'B' },
+						values: [
+							{ s: 0, value: 0 },
+							{ s: 0.5, value: 3 },
+							{ s: 1, value: 0 }
+						]
+					}
+				}
+			]
+		});
+
+		expect(validation.ok).toBe(true);
+		expect(validation.value).toBeTruthy();
+		if (!validation.value) return;
+
+		const epure = validation.value.results?.find((result) => result.id === 'ep_M');
+		expect(epure?.geometry.kind).toBe('M');
+		expect(epure?.geometry.fillHatch).toBe(true);
+		expect(epure?.geometry.showSigns).toBe(true);
+		expect((validation.warnings ?? []).some((warning) => warning.includes('compressedFiberSide'))).toBe(
+			true
+		);
+	});
+});

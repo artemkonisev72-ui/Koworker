@@ -1,5 +1,10 @@
 <script lang="ts">
 	import { onDestroy, onMount, tick } from 'svelte';
+	import {
+		buildEpureLayout,
+		transformEpurePoint,
+		transformEpureSegment
+	} from '$lib/epure/layout.js';
 	import type { SchemaData, SchemaPoint } from '$lib/schema/schema-data.js';
 	import type { NodeV2, ObjectV2, ResultV2, SchemaDataV2 } from '$lib/schema/schema-v2.js';
 	import { normalizeSchemaDataV2 } from '$lib/schema/normalize-v2.js';
@@ -882,35 +887,80 @@
 		const ty = dy / len;
 		const nx = -ty;
 		const ny = tx;
-		const maxAbs = Math.max(...values.map((v) => Math.abs(v.value)), 1);
-		const scale = 0.8 / maxAbs;
-
-		const upper = values.map((v) => {
-			const bx = start.x + dx * v.s;
-			const by = start.y + dy * v.s;
-			return { x: bx + nx * v.value * scale, y: by + ny * v.value * scale };
-		});
-		const base = values
-			.slice()
-			.reverse()
-			.map((v) => ({ x: start.x + dx * v.s, y: start.y + dy * v.s }));
-
-		const polygon = [...upper, ...base].map((p) => [p.x, p.y]);
-		board.create('polygon', polygon as any, {
-			fixed: true,
-			highlight: false,
-			vertices: { visible: false, fixed: true, highlight: false, withLabel: false },
-			fillColor: COLOR.muted,
-			fillOpacity: 0.16,
-			strokeColor: COLOR.result,
-			strokeWidth: 1.3
-		});
-
 		const kind = typeof result.geometry.kind === 'string' ? result.geometry.kind : 'epure';
-		drawText({ x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 + 0.2 }, kind, {
-			strokeColor: COLOR.result,
-			anchorX: 'middle'
-		});
+		const compressedFiberSide =
+			result.geometry.compressedFiberSide === '+n' || result.geometry.compressedFiberSide === '-n'
+				? result.geometry.compressedFiberSide
+				: undefined;
+		const displayFactor = kind === 'M' && compressedFiberSide === '-n' ? -1 : 1;
+		const maxAbs = Math.max(...values.map((entry) => Math.abs(entry.value)), 1);
+		const scale = 0.8 / maxAbs;
+		const minS = Math.min(...values.map((entry) => entry.s));
+		const maxS = Math.max(...values.map((entry) => entry.s));
+		const sSpan = Math.max(maxS - minS, 1);
+		const usesNormalizedS = minS >= -1e-6 && maxS <= 1 + 1e-6;
+		const localSamples = values.map((entry) => ({
+			x: (usesNormalizedS ? entry.s : (entry.s - minS) / sSpan) * len,
+			value: entry.value,
+			displayValue: entry.value * scale * displayFactor
+		}));
+		const epureLayout = buildEpureLayout(localSamples);
+		const basis = {
+			origin: start,
+			tangent: { x: tx, y: ty },
+			normal: { x: nx, y: ny }
+		};
+
+		for (const region of epureLayout.regions) {
+			board.create(
+				'polygon',
+				region.polygon.map((point) => {
+					const world = transformEpurePoint(point, basis);
+					return [world.x, world.y];
+				}) as any,
+				{
+					fixed: true,
+					highlight: false,
+					vertices: { visible: false, fixed: true, highlight: false, withLabel: false },
+					fillColor: COLOR.result,
+					fillOpacity: result.geometry.fillHatch === false ? 0.18 : 0.06,
+					withLines: false,
+					borders: { visible: false }
+				}
+			);
+
+			if (result.geometry.fillHatch !== false) {
+				for (const hatch of region.hatchSegments) {
+					const segment = transformEpureSegment(hatch, basis);
+					drawSegment(segment.start, segment.end, {
+						strokeColor: COLOR.result,
+						strokeWidth: 0.9,
+						opacity: 0.55
+					});
+				}
+			}
+
+			if (result.geometry.showSigns !== false && region.showSign) {
+				drawText(transformEpurePoint(region.centroid, basis), region.sign > 0 ? '+' : '-', {
+					strokeColor: COLOR.result,
+					fontSize: 26,
+					fontWeight: 'bold',
+					anchorX: 'middle',
+					anchorY: 'middle'
+				});
+			}
+		}
+
+		const curveWorld = epureLayout.curvePoints.map((point) => transformEpurePoint(point, basis));
+		if (curveWorld.length >= 2) {
+			board.create('curve', [curveWorld.map((point) => point.x), curveWorld.map((point) => point.y)], {
+				fixed: true,
+				highlight: false,
+				strokeColor: COLOR.result,
+				strokeWidth: 1.6,
+				layer: 4
+			});
+		}
 	}
 
 	type DrawFn = (object: ObjectV2, nodeMap: Map<string, NodeV2>) => void;

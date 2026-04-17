@@ -19,6 +19,11 @@ import {
 import { workerPool, SandboxError } from '../sandbox/worker-pool.js';
 import { validateSchemaAny, type SchemaAny, type SchemaVersionTag } from '$lib/schema/schema-any.js';
 import { applySchemaPatchToApprovedSchema, extractSchemaPatchFromOutput } from './schema-patch.js';
+import {
+	normalizeGraphEpure,
+	type GraphData,
+	type GraphPoint
+} from '$lib/graphs/types.js';
 
 export type PipelineStatus =
 	| { type: 'ping' }
@@ -35,19 +40,6 @@ export type PipelineStatus =
 	  }
 	| { type: 'error'; message: string };
 
-export interface GraphPoint {
-	x: number;
-	y: number;
-}
-
-export interface GraphData {
-	title?: string;
-	type?: 'function' | 'diagram';
-	memberId?: string;
-	diagramType?: string;
-	points: GraphPoint[];
-}
-
 interface SandboxOutput {
 	result?: unknown;
 	graph_points?: GraphPoint[]; // Для обратной совместимости
@@ -61,6 +53,7 @@ interface SandboxOutput {
 interface GraphNormalizationResult {
 	graphs: GraphData[];
 	issues: string[];
+	warnings: string[];
 }
 
 interface SchemaNormalizationResult {
@@ -231,18 +224,34 @@ function normalizeGraphTitle(raw: Record<string, unknown>, fallback: string): st
 	return title ?? fallback;
 }
 
+function normalizeGraphEpureMeta(raw: unknown): GraphData['epure'] | undefined {
+	if (!isRecord(raw)) return undefined;
+
+	const epure = {
+		...(typeof raw.kind === 'string' ? { kind: raw.kind } : {}),
+		...(typeof raw.fillHatch === 'boolean' ? { fillHatch: raw.fillHatch } : {}),
+		...(typeof raw.showSigns === 'boolean' ? { showSigns: raw.showSigns } : {}),
+		...(typeof raw.compressedFiberSide === 'string'
+			? { compressedFiberSide: raw.compressedFiberSide }
+			: {})
+	};
+
+	return Object.keys(epure).length > 0 ? (epure as GraphData['epure']) : undefined;
+}
+
 function normalizeAndValidateGraphs(output: SandboxOutput | null): GraphNormalizationResult {
-	if (!output) return { graphs: [], issues: [] };
+	if (!output) return { graphs: [], issues: [], warnings: [] };
 
 	const rawGraphs: unknown[] = Array.isArray(output.graphs)
 		? (output.graphs as unknown[])
 		: Array.isArray(output.graph_points)
 			? [{ title: 'График решения', type: 'function', points: output.graph_points }]
 			: [];
-	if (rawGraphs.length === 0) return { graphs: [], issues: [] };
+	if (rawGraphs.length === 0) return { graphs: [], issues: [], warnings: [] };
 
 	const normalizedGraphs: GraphData[] = [];
 	const issues: string[] = [];
+	const warnings: string[] = [];
 
 	for (let index = 0; index < rawGraphs.length; index++) {
 		const rawGraph = rawGraphs[index];
@@ -251,8 +260,13 @@ function normalizeAndValidateGraphs(output: SandboxOutput | null): GraphNormaliz
 			continue;
 		}
 
+		const diagramType = normalizeDiagramType(rawGraph) ?? undefined;
+		const epureMeta = normalizeGraphEpureMeta(rawGraph.epure);
 		let type = normalizeGraphType(rawGraph.type ?? rawGraph.graphType ?? rawGraph.kind);
-		if (type === 'function' && looksLikeDiagramTitle(rawGraph.title ?? rawGraph.name ?? rawGraph.label)) {
+		if (
+			type === 'function' &&
+			(diagramType || epureMeta || looksLikeDiagramTitle(rawGraph.title ?? rawGraph.name ?? rawGraph.label))
+		) {
 			type = 'diagram';
 		}
 		const points = normalizeGraphPoints(rawGraph.points ?? rawGraph.data ?? rawGraph.values);
@@ -285,16 +299,19 @@ function normalizeAndValidateGraphs(output: SandboxOutput | null): GraphNormaliz
 			issues.push(`graphs[${index}] memberId looks composite ("${memberId}"); use one member per graph`);
 		}
 
-		normalizedGraphs.push({
+		const epureNormalized = normalizeGraphEpure({
 			title: normalizeGraphTitle(rawGraph, `Graph ${index + 1}`),
 			type,
 			memberId: memberId ?? undefined,
-			diagramType: normalizeDiagramType(rawGraph) ?? undefined,
+			diagramType,
+			epure: epureMeta,
 			points
 		});
+		warnings.push(...epureNormalized.warnings.map((warning) => `graphs[${index}]: ${warning}`));
+		normalizedGraphs.push(epureNormalized.graph);
 	}
 
-	return { graphs: normalizedGraphs, issues };
+	return { graphs: normalizedGraphs, issues, warnings };
 }
 
 function extractSchemaCandidate(output: SandboxOutput | null): unknown {
@@ -741,6 +758,9 @@ export async function runPipeline(
 						return;
 					}
 					continue;
+				}
+				if (graphNormalization.warnings.length > 0) {
+					console.warn('[Pipeline] Graph normalization warnings:', graphNormalization.warnings);
 				}
 				sandboxOutput = { ...sandboxOutput, graphs: graphNormalization.graphs };
 
