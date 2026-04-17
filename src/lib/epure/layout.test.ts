@@ -55,6 +55,22 @@ describe('epure layout helper', () => {
 		}
 	});
 
+	it('draws default hatch segments perpendicular to the beam axis', () => {
+		const layout = buildEpureLayout([
+			{ x: 0, value: 0 },
+			{ x: 1, value: 2 },
+			{ x: 2, value: 0 }
+		]);
+
+		expect(layout.regions).toHaveLength(1);
+		const region = layout.regions[0];
+		expect(region.hatchSegments.length).toBeGreaterThan(0);
+
+		for (const hatch of region.hatchSegments) {
+			expect(Math.abs(hatch.end.x - hatch.start.x)).toBeLessThan(1e-6);
+		}
+	});
+
 	it('places sign anchor near the geometric center of the region', () => {
 		const layout = buildEpureLayout([
 			{ x: 0, value: 0 },

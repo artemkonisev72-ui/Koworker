@@ -161,10 +161,11 @@
 
 		const xs = curvePoints.map((p) => p.x);
 		const ys = curvePoints.map((p) => p.y);
+		const yBounds = normalizedGraph.type === 'diagram' ? [...ys, 0] : ys;
 		const xMin = Math.min(...xs);
 		const xMax = Math.max(...xs);
-		const yMin = Math.min(...ys);
-		const yMax = Math.max(...ys);
+		const yMin = Math.min(...yBounds);
+		const yMax = Math.max(...yBounds);
 		const xPad = (xMax - xMin) * 0.1 || 1;
 		const yPad = (yMax - yMin) * 0.1 || 1;
 
@@ -228,6 +229,22 @@
 					});
 				}
 			}
+
+			board.create(
+				'segment',
+				[
+					[epureLayout.xMin, 0],
+					[epureLayout.xMax, 0]
+				],
+				{
+					fixed: true,
+					highlight: false,
+					strokeColor: 'var(--text-primary)',
+					strokeWidth: 2.2,
+					opacity: 0.95,
+					layer: 3
+				}
+			);
 		}
 
 		const curve = board.create(

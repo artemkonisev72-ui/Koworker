@@ -951,6 +951,13 @@
 			}
 		}
 
+		drawSegment(start, end, {
+			strokeColor: COLOR.base,
+			strokeWidth: 2.1,
+			opacity: 0.95,
+			layer: 3
+		});
+
 		const curveWorld = epureLayout.curvePoints.map((point) => transformEpurePoint(point, basis));
 		if (curveWorld.length >= 2) {
 			board.create('curve', [curveWorld.map((point) => point.x), curveWorld.map((point) => point.y)], {

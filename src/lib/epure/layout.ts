@@ -251,7 +251,8 @@ function buildHatchSegments(
 ): EpureSegment[] {
 	if (polygon.length < 3) return [];
 
-	const hatchAngleDeg = options.hatchAngleDeg ?? 60;
+	// Default hatch direction is local +Y, i.e. perpendicular to the beam axis (+X).
+	const hatchAngleDeg = options.hatchAngleDeg ?? 90;
 	const angle = (hatchAngleDeg * Math.PI) / 180;
 	const direction = { x: Math.cos(angle), y: Math.sin(angle) };
 	const normal = { x: -direction.y, y: direction.x };
