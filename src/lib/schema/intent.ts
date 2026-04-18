@@ -680,6 +680,21 @@ export function normalizeSchemeIntent(input: unknown): SchemeIntentNormalizeResu
 			joints.push({ key: unique });
 		}
 		warnings.push('Intent joints were inferred from member endpoints.');
+	} else if (joints.length > 0 && members.length > 0) {
+		const missingJointKeys = uniqueStrings(
+			members
+				.flatMap((member) => [member.startJoint, member.endJoint])
+				.filter((key) => !usedJointKeys.has(key))
+		);
+		if (missingJointKeys.length > 0) {
+			for (const key of missingJointKeys) {
+				const unique = ensureUniqueKey(key, usedJointKeys, 'J');
+				joints.push({ key: unique });
+			}
+			warnings.push(
+				`Intent joints were extended from member endpoints: ${missingJointKeys.join(', ')}`
+			);
+		}
 	}
 
 	const usedSupportKeys = new Set<string>();

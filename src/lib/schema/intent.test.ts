@@ -77,7 +77,7 @@ describe('scheme intent parser', () => {
 });
 
 describe('scheme intent validation', () => {
-	it('rejects member references to unknown joints', () => {
+	it('rejects supports that reference unknown joints', () => {
 		const result = validateSchemeIntent({
 			version: 'intent-1.0',
 			taskDomain: 'mechanics',
@@ -86,8 +86,8 @@ describe('scheme intent validation', () => {
 			confidence: 'medium',
 			source: { hasImage: false, language: 'ru' },
 			joints: [{ key: 'A' }],
-			members: [{ key: 'm1', kind: 'bar', startJoint: 'A', endJoint: 'B' }],
-			supports: [],
+			members: [{ key: 'm1', kind: 'bar', startJoint: 'A', endJoint: 'A_end' }],
+			supports: [{ key: 's1', kind: 'hinge_fixed', jointKey: 'MissingJoint' }],
 			loads: [],
 			assumptions: [],
 			ambiguities: []
@@ -110,6 +110,29 @@ describe('scheme intent validation', () => {
 
 		expect(normalized.value.joints.map((joint) => joint.key)).toEqual(['A', 'B']);
 		expect(normalized.warnings.some((warning) => warning.includes('inferred'))).toBe(true);
+	});
+
+	it('extends partial joints list from member endpoints', () => {
+		const normalized = normalizeSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'beam',
+			modelSpace: 'planar',
+			confidence: 'medium',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'A' }],
+			members: [{ key: 'm1', kind: 'bar', startJoint: 'A', endJoint: 'node_bottom' }],
+			supports: [],
+			loads: [],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		expect(normalized.value.joints.map((joint) => joint.key)).toEqual(['A', 'node_bottom']);
+		expect(normalized.warnings.some((warning) => warning.includes('extended'))).toBe(true);
+
+		const validated = validateSchemeIntent(normalized.value);
+		expect(validated.ok).toBe(true);
 	});
 
 	it('allows legacy Q/M requested results for planar_frame', () => {
