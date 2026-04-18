@@ -1,39 +1,63 @@
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { prisma } from '$lib/server/db';
-import { verifyPassword, createSession } from '$lib/server/auth';
+import {
+	backfillLegacyUser,
+	createSession,
+	findUserByNormalizedEmail,
+	isEmailFormatValid,
+	isUserEmailVerified,
+	normalizeEmail,
+	setSessionCookie,
+	verifyPassword
+} from '$lib/server/auth';
+import { enforceAuthRateLimit } from '$lib/server/auth-throttle';
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, url }) => {
 	if (locals.user) {
 		throw redirect(302, '/');
 	}
+
+	return {
+		verified: url.searchParams.get('verified') === '1'
+	};
 };
 
 export const actions: Actions = {
-	default: async ({ request, cookies }) => {
+	default: async (event) => {
+		const { request, cookies } = event;
 		const data = await request.formData();
-		const email = data.get('email')?.toString();
-		const password = data.get('password')?.toString();
+		const rawEmail = data.get('email')?.toString() ?? '';
+		const rawPassword = data.get('password')?.toString() ?? '';
+		const emailTrimmed = rawEmail.trim();
+		const emailNormalized = normalizeEmail(rawEmail);
 
-		if (!email || !password) {
-			return fail(400, { email, message: 'Все поля обязательны' });
+		if (!isEmailFormatValid(emailNormalized) || !rawPassword) {
+			return fail(400, { email: emailTrimmed, message: 'Invalid email or password.' });
 		}
 
-		const user = await prisma.user.findUnique({ where: { email } });
-
-		if (!user || !verifyPassword(password, user.passwordHash)) {
-			return fail(400, { email, message: 'Неверный email или пароль' });
+		const rateLimit = await enforceAuthRateLimit(event, 'login', emailNormalized);
+		if (!rateLimit.allowed) {
+			return fail(429, {
+				email: emailTrimmed,
+				message: `Too many requests. Try again in ${rateLimit.retryAfterSeconds} seconds.`
+			});
 		}
 
-		const sessionId = await createSession(user.id);
-		cookies.set('session', sessionId, {
-			path: '/',
-			httpOnly: true,
-			sameSite: 'strict',
-			secure: process.env.NODE_ENV === 'production',
-			maxAge: 60 * 60 * 24 * 30 // 30 days
-		});
+		let user = await findUserByNormalizedEmail(emailNormalized);
+		if (!user || !verifyPassword(rawPassword, user.passwordHash)) {
+			return fail(400, { email: emailTrimmed, message: 'Invalid email or password.' });
+		}
 
-		throw redirect(302, '/');
+		if (!user.emailNormalized) {
+			user = await backfillLegacyUser(user);
+		}
+
+		if (!isUserEmailVerified(user)) {
+			throw redirect(303, `/verify-email?email=${encodeURIComponent(emailNormalized)}`);
+		}
+
+		const sessionToken = await createSession(user.id);
+		setSessionCookie(cookies, sessionToken);
+		throw redirect(303, '/');
 	}
 };

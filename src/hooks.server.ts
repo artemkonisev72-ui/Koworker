@@ -1,22 +1,23 @@
 import dns from 'node:dns';
 dns.setDefaultResultOrder('ipv4first');
 
-import { getSession } from '$lib/server/auth';
+import { clearSessionCookie, getSession, SESSION_COOKIE_NAME } from '$lib/server/auth';
 import type { Handle } from '@sveltejs/kit';
 
 export const handle: Handle = async ({ event, resolve }) => {
-	const sessionId = event.cookies.get('session');
+	const sessionToken = event.cookies.get(SESSION_COOKIE_NAME);
 
-	if (!sessionId) {
+	if (!sessionToken) {
 		event.locals.user = null;
 		event.locals.session = null;
 	} else {
-		const session = await getSession(sessionId);
+		const session = await getSession(sessionToken);
 		if (session) {
 			event.locals.user = {
 				id: session.user.id,
 				email: session.user.email,
-				name: session.user.name
+				name: session.user.name,
+				emailVerifiedAt: session.user.emailVerifiedAt
 			};
 			event.locals.session = {
 				id: session.id,
@@ -25,7 +26,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 		} else {
 			event.locals.user = null;
 			event.locals.session = null;
-			event.cookies.delete('session', { path: '/' });
+			clearSessionCookie(event.cookies);
 		}
 	}
 

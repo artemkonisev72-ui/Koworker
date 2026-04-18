@@ -1,5 +1,7 @@
 <script lang="ts">
-	let { form } = $props();
+	import { resolve } from '$app/paths';
+
+	let { form, data } = $props();
 </script>
 
 <div class="auth-container">
@@ -10,6 +12,10 @@
 		</header>
 
 		<form method="POST" class="auth-form">
+			{#if data?.verified}
+				<div class="auth-success">Email verified. You can sign in now.</div>
+			{/if}
+
 			{#if form?.message}
 				<div class="auth-error">{form.message}</div>
 			{/if}
@@ -28,14 +34,22 @@
 
 			<div class="form-group">
 				<label for="password">Пароль</label>
-				<input type="password" id="password" name="password" placeholder="••••••••" required />
+				<input
+					type="password"
+					id="password"
+					name="password"
+					placeholder="••••••••"
+					minlength="12"
+					maxlength="128"
+					required
+				/>
 			</div>
 
 			<button type="submit" class="auth-submit">Войти</button>
 		</form>
 
 		<footer class="auth-footer">
-			Нет аккаунта? <a href="/register">Зарегистрироваться</a>
+			Нет аккаунта? <a href={resolve('/register')}>Зарегистрироваться</a>
 		</footer>
 	</div>
 </div>
@@ -90,6 +104,15 @@
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-md);
 		color: var(--text-primary);
+		font-size: 0.85rem;
+		text-align: center;
+	}
+	.auth-success {
+		padding: 0.75rem;
+		background: rgba(16, 185, 129, 0.12);
+		border: 1px solid rgba(16, 185, 129, 0.35);
+		border-radius: var(--radius-md);
+		color: #065f46;
 		font-size: 0.85rem;
 		text-align: center;
 	}

@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
+
 	let { data } = $props();
 
 	async function logout() {
@@ -12,7 +14,7 @@
 <div class="account-container">
 	<div class="account-card">
 		<header class="account-header">
-			<a href="/" class="back-link">
+			<a href={resolve('/')} class="back-link">
 				<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 					<path d="M19 12H5M12 19l-7-7 7-7"/>
 				</svg>
@@ -37,8 +39,10 @@
 				<span class="value">{data.user?.id}</span>
 			</div>
 			<div class="detail-item">
-				<span class="label">Статус</span>
-				<span class="value status-active">Активен</span>
+				<span class="label">Email status</span>
+				<span class={`value ${data.user?.emailVerifiedAt ? 'status-active' : 'status-pending'}`}>
+					{data.user?.emailVerifiedAt ? 'Verified' : 'Not verified'}
+				</span>
 			</div>
 		</div>
 
@@ -163,6 +167,9 @@
 
 	.status-active {
 		color: #10b981 !important;
+	}
+	.status-pending {
+		color: #f59e0b !important;
 	}
 
 	.logout-btn {

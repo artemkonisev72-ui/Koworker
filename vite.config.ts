@@ -1,23 +1,22 @@
-import { defineConfig } from 'vitest/config';
+﻿import { defineConfig } from 'vitest/config';
 import tailwindcss from '@tailwindcss/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
 import dns from 'node:dns';
 
-// Жестко заставляем Node.js/Vite использовать только IPv4 для всех сетевых запросов (fetch, db и др.)
 dns.setDefaultResultOrder('ipv4first');
+
+const devServerPort = Number(process.env.DEV_SERVER_PORT ?? '5173');
+const devStrictPort = process.env.DEV_STRICT_PORT !== 'false';
 
 export default defineConfig({
 	plugins: [tailwindcss(), sveltekit()],
 	server: {
-		host: '0.0.0.0', // Слушать на всех интерфейсах (0.0.0.0)
-		port: 5173,      // Основной порт Vite
-		strictPort: true,
+		host: '0.0.0.0',
+		port: devServerPort,
+		strictPort: devStrictPort,
 		allowedHosts: ['dev.koworker.oops.wtf', 'koworker.oops.wtf'],
-		cors: true,      // Разрешить CORS запросы
-		hmr: {
-			// При доступе через SSH-туннель браузер видит localhost, а не IP сервера
-			clientPort: 5173
-		}
+		cors: true,
+		hmr: devStrictPort ? { clientPort: devServerPort } : undefined
 	},
 	test: {
 		expect: { requireAssertions: true },

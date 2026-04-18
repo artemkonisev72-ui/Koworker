@@ -29,6 +29,46 @@ npm run dev
 npm run dev -- --open
 ```
 
+## Local test database (PostgreSQL)
+
+The project has a dedicated local test DB connection in `.env.test`:
+
+```sh
+DATABASE_URL="postgresql://postgres@127.0.0.1:5433/coworker_test"
+DEV_SERVER_PORT="5174"
+DEV_STRICT_PORT="false"
+```
+
+Useful commands:
+
+```sh
+npm run db:test:push   # apply Prisma schema to test DB
+npm run db:test:reset  # reset test DB schema
+npm run test:db        # sync schema + run tests
+npm run dev:testdb     # run local app with test DB (.env.test)
+```
+
+Note: `npm run dev` and `npm run dev:testdb` now run `prisma generate` automatically, so Prisma Client stays in sync with `prisma/schema.prisma`.
+
+## Auth email verification
+
+New registrations now require email confirmation before login.
+
+Environment variables for this flow:
+
+```sh
+APP_BASE_URL="http://localhost:5173"
+EMAIL_VERIFY_TTL_MINUTES="1440"
+SMTP_HOST="smtp.example.com"
+SMTP_PORT="587"
+SMTP_SECURE="false"
+SMTP_USER="smtp-user"
+SMTP_PASS="smtp-password"
+SMTP_FROM="Coworker <no-reply@example.com>"
+```
+
+If SMTP variables are not configured, the app logs verification links to server logs (dev/test fallback).
+
 ## Building
 
 To create a production version of your app:

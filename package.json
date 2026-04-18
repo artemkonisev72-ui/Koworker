@@ -4,7 +4,9 @@
 	"version": "0.0.1",
 	"type": "module",
 	"scripts": {
-		"dev": "vite dev",
+		"prisma:generate": "prisma generate",
+		"dev": "npm run prisma:generate && vite dev",
+		"dev:testdb": "npm run db:test:push && node --env-file=.env.test ./node_modules/vite/bin/vite.js dev",
 		"build": "vite build",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
@@ -14,6 +16,9 @@
 		"format": "prettier --write .",
 		"test:unit": "vitest",
 		"test": "npm run test:unit -- --run",
+		"db:test:push": "npm run prisma:generate && prisma db push --url postgresql://postgres@127.0.0.1:5433/coworker_test",
+		"db:test:reset": "npm run prisma:generate && prisma db push --force-reset --accept-data-loss --url postgresql://postgres@127.0.0.1:5433/coworker_test",
+		"test:db": "npm run db:test:push && npm run test",
 		"build:worker": "esbuild src/lib/server/sandbox/pyodide-worker.ts --bundle=false --platform=node --format=esm --outfile=src/lib/server/sandbox/pyodide-worker.js"
 	},
 	"devDependencies": {
@@ -24,6 +29,7 @@
 		"@sveltejs/vite-plugin-svelte": "^6.2.4",
 		"@tailwindcss/vite": "^4.1.18",
 		"@types/node": "^24",
+		"@types/nodemailer": "^8.0.0",
 		"eslint": "^10.0.3",
 		"eslint-config-prettier": "^10.1.8",
 		"eslint-plugin-svelte": "^3.15.2",
@@ -54,6 +60,7 @@
 		"jsxgraph": "^1.12.2",
 		"katex": "^0.16.43",
 		"marked": "^17.0.5",
+		"nodemailer": "^8.0.5",
 		"pg": "^8.20.0",
 		"prisma": "^7.5.0",
 		"pyodide": "^0.29.3"

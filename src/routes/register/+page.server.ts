@@ -1,7 +1,23 @@
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
+import {
+	backfillLegacyUser,
+	findUserByNormalizedEmail,
+	hashPassword,
+	isEmailFormatValid,
+	isPasswordFormatValid,
+	isUserEmailVerified,
+	issueEmailVerificationToken,
+	normalizeEmail,
+	sanitizeDisplayName
+} from '$lib/server/auth';
+import { sendVerificationEmail } from '$lib/server/auth-email';
+import { enforceAuthRateLimit } from '$lib/server/auth-throttle';
 import { prisma } from '$lib/server/db';
-import { hashPassword, createSession } from '$lib/server/auth';
+
+function verifyRedirect(emailNormalized: string): never {
+	throw redirect(303, `/verify-email?email=${encodeURIComponent(emailNormalized)}`);
+}
 
 export const load: PageServerLoad = async ({ locals }) => {
 	if (locals.user) {
@@ -10,38 +26,70 @@ export const load: PageServerLoad = async ({ locals }) => {
 };
 
 export const actions: Actions = {
-	default: async ({ request, cookies }) => {
+	default: async (event) => {
+		const { request, url } = event;
 		const data = await request.formData();
-		const email = data.get('email')?.toString();
-		const password = data.get('password')?.toString();
-		const name = data.get('name')?.toString();
+		const rawEmail = data.get('email')?.toString() ?? '';
+		const rawPassword = data.get('password')?.toString() ?? '';
+		const displayName = sanitizeDisplayName(data.get('name')?.toString());
+		const emailTrimmed = rawEmail.trim();
+		const emailNormalized = normalizeEmail(rawEmail);
 
-		if (!email || !password) {
-			return fail(400, { email, message: 'Email и пароль обязательны' });
+		if (!isEmailFormatValid(emailNormalized)) {
+			return fail(400, { email: emailTrimmed, message: 'Enter a valid email address.' });
 		}
 
-		const existing = await prisma.user.findUnique({ where: { email } });
-		if (existing) {
-			return fail(400, { email, message: 'Пользователь с таким email уже существует' });
+		if (!isPasswordFormatValid(rawPassword)) {
+			return fail(400, {
+				email: emailTrimmed,
+				message: 'Password must be between 12 and 128 characters.'
+			});
 		}
 
-		const user = await prisma.user.create({
-			data: {
-				email,
-				name,
-				passwordHash: hashPassword(password)
+		const rateLimit = await enforceAuthRateLimit(event, 'register', emailNormalized);
+		if (!rateLimit.allowed) {
+			return fail(429, {
+				email: emailTrimmed,
+				message: `Too many requests. Try again in ${rateLimit.retryAfterSeconds} seconds.`
+			});
+		}
+
+		let user = await findUserByNormalizedEmail(emailNormalized);
+		if (!user) {
+			try {
+				user = await prisma.user.create({
+					data: {
+						email: emailTrimmed,
+						emailNormalized,
+						name: displayName,
+						passwordHash: hashPassword(rawPassword)
+					}
+				});
+			} catch {
+				user = await findUserByNormalizedEmail(emailNormalized);
+				if (!user) {
+					return fail(500, {
+						email: emailTrimmed,
+						message: 'Unable to create account right now. Please try again.'
+					});
+				}
 			}
-		});
+		}
 
-		const sessionId = await createSession(user.id);
-		cookies.set('session', sessionId, {
-			path: '/',
-			httpOnly: true,
-			sameSite: 'strict',
-			secure: process.env.NODE_ENV === 'production',
-			maxAge: 60 * 60 * 24 * 30 // 30 days
-		});
+		if (!user.emailNormalized) {
+			user = await backfillLegacyUser(user);
+		}
 
-		throw redirect(302, '/');
+		if (!isUserEmailVerified(user)) {
+			const { token } = await issueEmailVerificationToken(user.id);
+			await sendVerificationEmail({
+				to: user.email,
+				name: user.name,
+				token,
+				baseUrl: url.origin
+			});
+		}
+
+		verifyRedirect(emailNormalized);
 	}
 };

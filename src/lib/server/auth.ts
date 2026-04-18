@@ -1,53 +1,195 @@
+import type { User } from '@prisma/client';
+import type { Cookies } from '@sveltejs/kit';
+import { env } from '$env/dynamic/private';
 import { prisma } from './db';
-import { scryptSync, randomBytes, timingSafeEqual } from 'node:crypto';
+import {
+	generateOpaqueToken,
+	hashPassword,
+	hashToken,
+	isEmailFormatValid,
+	isPasswordFormatValid,
+	normalizeEmail,
+	sanitizeDisplayName,
+	verifyPassword
+} from './auth-utils';
 
-// ── Password Hashing (Simple & Secure) ─────────────────────────────────────────
+const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
+const SESSION_COOKIE_MAX_AGE_SECONDS = Math.floor(SESSION_DURATION_MS / 1000);
+const DEFAULT_EMAIL_VERIFY_TTL_MINUTES = 24 * 60;
+const EMAIL_VERIFY_TTL_MINUTES_VALUE = Number.parseInt(env.EMAIL_VERIFY_TTL_MINUTES || '', 10);
 
-export function hashPassword(password: string): string {
-	const salt = randomBytes(16).toString('hex');
-	const hash = scryptSync(password, salt, 64).toString('hex');
-	return `${salt}:${hash}`;
+export const SESSION_COOKIE_NAME = 'session';
+export { hashPassword, isEmailFormatValid, isPasswordFormatValid, normalizeEmail, sanitizeDisplayName, verifyPassword };
+
+function cookieIsSecure(): boolean {
+	return process.env.NODE_ENV === 'production';
 }
 
-export function verifyPassword(password: string, storedHash: string): boolean {
-	const [salt, hash] = storedHash.split(':');
-	const hashToVerify = scryptSync(password, salt, 64).toString('hex');
-	return timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(hashToVerify, 'hex'));
+function getEmailVerifyTtlMinutes(): number {
+	if (Number.isFinite(EMAIL_VERIFY_TTL_MINUTES_VALUE) && EMAIL_VERIFY_TTL_MINUTES_VALUE > 0) {
+		return EMAIL_VERIFY_TTL_MINUTES_VALUE;
+	}
+	return DEFAULT_EMAIL_VERIFY_TTL_MINUTES;
 }
 
-// ── Session Management (Database-backed) ───────────────────────────────────────
+export function isLegacyUnmigratedUser(user: Pick<User, 'emailNormalized' | 'emailVerifiedAt'>): boolean {
+	return !user.emailNormalized && !user.emailVerifiedAt;
+}
 
-const SESSION_DURATION = 30 * 24 * 60 * 60 * 1000; // 30 days
+export function isUserEmailVerified(user: Pick<User, 'emailNormalized' | 'emailVerifiedAt'>): boolean {
+	return Boolean(user.emailVerifiedAt) || isLegacyUnmigratedUser(user);
+}
+
+export async function findUserByNormalizedEmail(emailNormalized: string): Promise<User | null> {
+	const byNormalized = await prisma.user.findUnique({ where: { emailNormalized } });
+	if (byNormalized) return byNormalized;
+
+	return prisma.user.findFirst({
+		where: {
+			email: {
+				equals: emailNormalized,
+				mode: 'insensitive'
+			}
+		}
+	});
+}
+
+export async function backfillLegacyUser(user: Pick<User, 'id' | 'email' | 'emailNormalized' | 'emailVerifiedAt'>): Promise<User> {
+	if (user.emailNormalized) {
+		return user as User;
+	}
+
+	const normalized = normalizeEmail(user.email);
+	try {
+		return await prisma.user.update({
+			where: { id: user.id },
+			data: {
+				emailNormalized: normalized,
+				emailVerifiedAt: user.emailVerifiedAt ?? new Date()
+			}
+		});
+	} catch {
+		return prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+	}
+}
 
 export async function createSession(userId: string): Promise<string> {
-	const sessionId = crypto.randomUUID();
-	const expiresAt = new Date(Date.now() + SESSION_DURATION);
+	const sessionToken = generateOpaqueToken();
+	const expiresAt = new Date(Date.now() + SESSION_DURATION_MS);
 
 	await prisma.session.create({
 		data: {
-			id: sessionId,
 			userId,
+			tokenHash: hashToken(sessionToken),
 			expiresAt
 		}
 	});
 
-	return sessionId;
+	return sessionToken;
 }
 
-export async function getSession(sessionId: string) {
-	const session = await prisma.session.findUnique({
-		where: { id: sessionId },
+async function findSessionByTokenOrLegacyId(sessionToken: string) {
+	const byTokenHash = await prisma.session.findUnique({
+		where: { tokenHash: hashToken(sessionToken) },
 		include: { user: true }
 	});
+	if (byTokenHash) return byTokenHash;
 
+	return prisma.session.findUnique({
+		where: { id: sessionToken },
+		include: { user: true }
+	});
+}
+
+export async function getSession(sessionToken: string) {
+	const session = await findSessionByTokenOrLegacyId(sessionToken);
 	if (!session || session.expiresAt.getTime() < Date.now()) {
-		if (session) await deleteSession(sessionId);
+		if (session) await deleteSession(sessionToken);
 		return null;
+	}
+
+	if (isLegacyUnmigratedUser(session.user)) {
+		const migratedUser = await backfillLegacyUser(session.user);
+		return {
+			...session,
+			user: migratedUser
+		};
 	}
 
 	return session;
 }
 
-export async function deleteSession(sessionId: string) {
-	await prisma.session.delete({ where: { id: sessionId } }).catch(() => {});
+export async function deleteSession(sessionToken: string): Promise<void> {
+	await prisma.session.deleteMany({
+		where: {
+			OR: [{ tokenHash: hashToken(sessionToken) }, { id: sessionToken }]
+		}
+	});
+}
+
+export function setSessionCookie(cookies: Cookies, sessionToken: string): void {
+	cookies.set(SESSION_COOKIE_NAME, sessionToken, {
+		path: '/',
+		httpOnly: true,
+		sameSite: 'strict',
+		secure: cookieIsSecure(),
+		maxAge: SESSION_COOKIE_MAX_AGE_SECONDS
+	});
+}
+
+export function clearSessionCookie(cookies: Cookies): void {
+	cookies.delete(SESSION_COOKIE_NAME, { path: '/' });
+}
+
+export async function issueEmailVerificationToken(userId: string): Promise<{ token: string; expiresAt: Date }> {
+	const token = generateOpaqueToken();
+	const expiresAt = new Date(Date.now() + getEmailVerifyTtlMinutes() * 60 * 1000);
+
+	await prisma.$transaction(async (tx) => {
+		await tx.emailVerificationToken.deleteMany({ where: { userId } });
+		await tx.emailVerificationToken.create({
+			data: {
+				userId,
+				tokenHash: hashToken(token),
+				expiresAt
+			}
+		});
+	});
+
+	return { token, expiresAt };
+}
+
+export type ConsumeEmailVerificationResult = 'verified' | 'invalid' | 'expired';
+
+export async function consumeEmailVerificationToken(rawToken: string): Promise<ConsumeEmailVerificationResult> {
+	if (!rawToken) return 'invalid';
+
+	const tokenHash = hashToken(rawToken);
+	const tokenRecord = await prisma.emailVerificationToken.findUnique({
+		where: { tokenHash },
+		include: { user: true }
+	});
+
+	if (!tokenRecord) return 'invalid';
+
+	if (tokenRecord.expiresAt.getTime() < Date.now()) {
+		await prisma.emailVerificationToken.delete({ where: { id: tokenRecord.id } }).catch(() => {});
+		return 'expired';
+	}
+
+	await prisma.$transaction(async (tx) => {
+		await tx.user.update({
+			where: { id: tokenRecord.userId },
+			data: {
+				emailVerifiedAt: new Date(),
+				emailNormalized: tokenRecord.user.emailNormalized ?? normalizeEmail(tokenRecord.user.email)
+			}
+		});
+
+		await tx.emailVerificationToken.deleteMany({
+			where: { userId: tokenRecord.userId }
+		});
+	});
+
+	return 'verified';
 }
