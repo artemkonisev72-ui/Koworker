@@ -36,6 +36,7 @@ export type PipelineStatus =
 			executionLogs?: string;
 			graphData?: GraphData[];
 			schemaData?: SchemaAny;
+			schemaDescription?: string;
 			schemaVersion?: SchemaVersionTag;
 			usedModels?: string[];
 	  }
@@ -64,6 +65,7 @@ interface SchemaNormalizationResult {
 }
 
 const MAX_RETRIES = 2;
+const APPROVED_SCHEME_DESCRIPTION_MARKER = '\n\n[APPROVED_SCHEME_DESCRIPTION]\n';
 const APPROVED_SCHEMA_MARKER = '\n\n[APPROVED_SCHEMA_JSON]\n';
 const SOLVER_MODEL_MARKER = '\n\n[SOLVER_MODEL_JSON]\n';
 
@@ -506,7 +508,14 @@ function compactUnknownValue(
 }
 
 function sanitizeFinalizerTaskContext(rawUserMessage: string): string {
-	const markerIndex = rawUserMessage.indexOf(APPROVED_SCHEMA_MARKER);
+	const markerIndexes = [
+		rawUserMessage.indexOf(APPROVED_SCHEME_DESCRIPTION_MARKER.trim()),
+		rawUserMessage.indexOf('[ACCEPTED_SCHEMA_REVISIONS]'),
+		rawUserMessage.indexOf(SOLVER_MODEL_MARKER.trim()),
+		rawUserMessage.indexOf(APPROVED_SCHEMA_MARKER.trim())
+	].filter((index) => index >= 0);
+
+	const markerIndex = markerIndexes.length > 0 ? Math.min(...markerIndexes) : -1;
 	const task = markerIndex >= 0 ? rawUserMessage.slice(0, markerIndex) : rawUserMessage;
 	return task.trim();
 }
@@ -624,6 +633,7 @@ export async function runPipelineWithApprovedSchema(
 	params: {
 		userMessage: string;
 		approvedSchema: SchemaAny;
+		approvedSchemeDescription?: string | null;
 		revisionNotes?: string[];
 		solverModel?: SolverModelV1;
 	},
@@ -641,15 +651,21 @@ export async function runPipelineWithApprovedSchema(
 	});
 
 	const schemaJson = JSON.stringify(params.approvedSchema, null, 2);
+	const approvedSchemeDescription = typeof params.approvedSchemeDescription === 'string'
+		? params.approvedSchemeDescription.trim()
+		: '';
+	const descriptionBlock = approvedSchemeDescription
+		? `${APPROVED_SCHEME_DESCRIPTION_MARKER}${approvedSchemeDescription}`
+		: '';
 	const solverModelJson = params.solverModel ? JSON.stringify(params.solverModel, null, 2) : null;
 	const notesBlock =
 		params.revisionNotes && params.revisionNotes.length > 0
 			? `\n\n[ACCEPTED_SCHEMA_REVISIONS]\n${params.revisionNotes.map((note, i) => `${i + 1}. ${note}`).join('\n')}`
 			: '';
 	const solverBlock = solverModelJson ? `${SOLVER_MODEL_MARKER}${solverModelJson}` : '';
-	const messageWithSchemaContext = `${params.userMessage}${APPROVED_SCHEMA_MARKER}${schemaJson}${notesBlock}${solverBlock}\n\nUse approved schema as source of truth.${solverModelJson ? ' Use solver model as canonical semantics for member local axes, signs, and axis origins.' : ''}`;
+	const messageWithSchemaContext = `${params.userMessage}${descriptionBlock}${notesBlock}${solverBlock}${APPROVED_SCHEMA_MARKER}${schemaJson}\n\n${approvedSchemeDescription ? 'Use approved scheme description as primary narrative context for solving.' : ''} Use approved schema as canonical structural context.${solverModelJson ? ' Use solver model as canonical semantics for member local axes, signs, and axis origins.' : ''}`;
 
-	return runPipeline(messageWithSchemaContext, history, onStatus, imageData, forcedModel, {
+	return runPipeline(messageWithSchemaContext, [], onStatus, undefined, forcedModel, {
 		approvedSchema: params.approvedSchema
 	})
 		.finally(() => {
@@ -671,13 +687,19 @@ export async function runPipeline(
 	let currentContext = userMessage;
 	const usedModelsList: string[] = [];
 	const approvedSchema = options?.approvedSchema ?? null;
+	const effectiveHistory = approvedSchema ? [] : history;
 
 	try {
 		// ── Шаг 0: Анализ изображения (Vision) ──────────────────────────────
-		if (imageData) {
+		if (imageData && !approvedSchema) {
 			console.log('[Pipeline] Analyzing image...');
 			onStatus({ type: 'status', message: 'Анализ изображения...' });
-			const { text: visionDescription, model: visionModel, tokens: visionTokens } = await analyzeImage(history, imageData.base64, imageData.mimeType, forcedModel);
+			const { text: visionDescription, model: visionModel, tokens: visionTokens } = await analyzeImage(
+				effectiveHistory,
+				imageData.base64,
+				imageData.mimeType,
+				forcedModel
+			);
 			usedModelsList.push(`${visionModel} (Vision): ${visionTokens.toLocaleString('ru-RU')} токенов`);
 			console.log('[Pipeline] Vision description received from', visionModel);
 			
@@ -688,14 +710,22 @@ export async function runPipeline(
 		// ── Шаг 1: Маршрутизация (Flash) ─────────────────────────────────────
 		console.log('[Pipeline] Step 1: routing...');
 		onStatus({ type: 'status', message: 'Анализ задачи...' });
-		const { result: needsComputation, model: routerModel, tokens: routerTokens } = await routeQuestion(history, currentContext, forcedModel);
+		const { result: needsComputation, model: routerModel, tokens: routerTokens } = await routeQuestion(
+			effectiveHistory,
+			currentContext,
+			forcedModel
+		);
 		usedModelsList.push(`${routerModel} (Router): ${routerTokens.toLocaleString('ru-RU')} токенов`);
 		console.log('[Pipeline] Step 1 done: needsComputation =', needsComputation);
 
 		if (!needsComputation) {
 			console.log('[Pipeline] General question — calling answerGeneralQuestion');
 			onStatus({ type: 'status', message: 'Формирование ответа...' });
-			const { text: answer, model: flashModel, tokens: textTokens } = await answerGeneralQuestion(history, currentContext, forcedModel);
+			const { text: answer, model: flashModel, tokens: textTokens } = await answerGeneralQuestion(
+				effectiveHistory,
+				currentContext,
+				forcedModel
+			);
 			usedModelsList.push(`${flashModel} (Text): ${textTokens.toLocaleString('ru-RU')} токенов`);
 			onStatus({ type: 'result', content: answer, usedModels: usedModelsList });
 			return;
@@ -704,7 +734,12 @@ export async function runPipeline(
 		// ── Шаг 2: Генерация кода (Pro) ──────────────────────────────────────
 		console.log('[Pipeline] Step 2: generating Python code...');
 		onStatus({ type: 'status', message: 'Генерация кода решения...' });
-		let { code: pythonCode, model: codeModel, tokens: codeTokens } = await generatePythonCode(history, currentContext, undefined, forcedModel);
+		let { code: pythonCode, model: codeModel, tokens: codeTokens } = await generatePythonCode(
+			effectiveHistory,
+			currentContext,
+			undefined,
+			forcedModel
+		);
 		usedModelsList.push(`${codeModel} (CodeGen): ${codeTokens.toLocaleString('ru-RU')} токенов`);
 		console.log('[Pipeline] Step 2 done, code length:', pythonCode.length);
 
@@ -720,7 +755,7 @@ export async function runPipeline(
 				console.log(`[Pipeline] Retry ${attempt}/${MAX_RETRIES}, lastError:`, lastError?.slice(0, 200));
 				onStatus({ type: 'status', message: `Исправление ошибки (попытка ${attempt}/${MAX_RETRIES})...` });
 				const retryRes = await generatePythonCode(
-					history,
+					effectiveHistory,
 					currentContext,
 					`Предыдущий код:\n\`\`\`python\n${pythonCode}\n\`\`\`\n\nОшибка:\n${lastError}`,
 					forcedModel
@@ -821,7 +856,7 @@ export async function runPipeline(
 		console.log('[Pipeline] Step 4: assembling final answer...');
 		onStatus({ type: 'status', message: 'Формирование ответа...' });
 
-		const finalizerHistory = trimHistoryForFinalizer(history);
+		const finalizerHistory = trimHistoryForFinalizer(effectiveHistory);
 		const finalizerTask = truncateText(
 			sanitizeFinalizerTaskContext(userMessage) || sanitizeFinalizerTaskContext(currentContext) || userMessage,
 			FINALIZER_TASK_MAX_CHARS

@@ -102,6 +102,7 @@ model Message {
   executionLogs String?     @db.Text
   graphData     Json?
   schemaData    Json?
+  schemaDescription String? @db.Text
   schemaVersion String?     @default("1.0")
   usedModels    Json?
   imageData     String?     @db.Text
@@ -122,10 +123,14 @@ model TaskDraft {
   schemaVersion     String              @default("1.0")
   originalPrompt    String              @db.Text
   originalImageData String?             @db.Text
+  currentUnderstanding Json?
+  approvedUnderstanding Json?
   currentIntent     Json?
   approvedIntent    Json?
   currentSchema     Json?
   approvedSchema    Json?
+  currentSchemeDescription  String?    @db.Text
+  approvedSchemeDescription String?    @db.Text
   solverModel       Json?
   revisionCount     Int                 @default(0)
   createdAt         DateTime            @default(now())
@@ -145,8 +150,10 @@ model TaskDraftRevision {
   revisionIndex Int
   schemaVersion String    @default("1.0")
   userNotes     String?   @db.Text
+  understanding Json?
   intent        Json?
   schema        Json
+  schemeDescription String? @db.Text
   assumptions   Json?
   ambiguities   Json?
   createdAt     DateTime  @default(now())

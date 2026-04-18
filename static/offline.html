@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width,initial-scale=1" />
+		<title>Koworker Offline</title>
+		<style>
+			:root {
+				color-scheme: light dark;
+				font-family: Inter, system-ui, sans-serif;
+			}
+			body {
+				margin: 0;
+				min-height: 100vh;
+				display: grid;
+				place-items: center;
+				padding: 1.25rem;
+				background: #f7f5f2;
+				color: #1f1c17;
+			}
+			.card {
+				max-width: 32rem;
+				background: rgba(255, 255, 255, 0.92);
+				border: 1px solid rgba(31, 28, 23, 0.14);
+				border-radius: 1rem;
+				padding: 1.25rem 1.35rem;
+				box-shadow: 0 12px 34px rgba(31, 28, 23, 0.12);
+			}
+			h1 {
+				margin: 0 0 0.5rem;
+				font-size: 1.25rem;
+			}
+			p {
+				margin: 0;
+				line-height: 1.55;
+			}
+			@media (prefers-color-scheme: dark) {
+				body {
+					background: #171310;
+					color: #f2ece4;
+				}
+				.card {
+					background: rgba(31, 25, 20, 0.92);
+					border-color: rgba(242, 236, 228, 0.16);
+					box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
+				}
+			}
+		</style>
+	</head>
+	<body>
+		<main class="card">
+			<h1>You are offline</h1>
+			<p>Koworker cannot load this page right now. Check your internet connection and try again.</p>
+		</main>
+	</body>
+</html>

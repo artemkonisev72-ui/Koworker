@@ -11,6 +11,7 @@
 		status: string;
 		revisionIndex: number;
 		schema: unknown;
+		schemeDescription: string;
 		assumptions: string[];
 		ambiguities: string[];
 	}
@@ -20,6 +21,7 @@
 		content: string;
 		graphData?: GraphData[] | string | null;
 		schemaData?: unknown;
+		schemaDescription?: string | null;
 		schemaVersion?: string | null;
 		imageData?: string | null;
 		usedModels?: string[] | string | null;
@@ -428,10 +430,18 @@
 				status: payload.status,
 				revisionIndex: payload.revisionCount,
 				schema: payload.currentSchema,
+				schemeDescription:
+					typeof payload.currentSchemeDescription === 'string'
+						? payload.currentSchemeDescription
+						: typeof payload.latestRevision?.schemeDescription === 'string'
+							? payload.latestRevision.schemeDescription
+							: '',
 				assumptions: Array.isArray(payload.latestRevision?.assumptions)
 					? payload.latestRevision.assumptions.filter((item: unknown) => typeof item === 'string')
 					: [],
-				ambiguities: []
+				ambiguities: Array.isArray(payload.latestRevision?.ambiguities)
+					? payload.latestRevision.ambiguities.filter((item: unknown) => typeof item === 'string')
+					: []
 			};
 		} catch {
 			activeDraft = null;
@@ -447,6 +457,7 @@
 					...m,
 					graphData: typeof m.graphData === 'string' ? JSON.parse(m.graphData) : m.graphData,
 					schemaData: parseMaybeJson(m.schemaData),
+					schemaDescription: typeof m.schemaDescription === 'string' ? m.schemaDescription : null,
 					schemaVersion: typeof m.schemaVersion === 'string' ? m.schemaVersion : null,
 					usedModels: typeof m.usedModels === 'string' ? JSON.parse(m.usedModels) : m.usedModels,
 					draftId: m.draftId ?? null
@@ -605,6 +616,8 @@
 				status: payload.status,
 				revisionIndex: payload.revisionIndex,
 				schema: payload.schema,
+				schemeDescription:
+					typeof payload.schemeDescription === 'string' ? payload.schemeDescription : '',
 				assumptions: payload.assumptions ?? [],
 				ambiguities: payload.ambiguities ?? []
 			};
@@ -639,6 +652,8 @@
 				status: payload.status,
 				revisionIndex: payload.revisionIndex,
 				schema: payload.schema,
+				schemeDescription:
+					typeof payload.schemeDescription === 'string' ? payload.schemeDescription : '',
 				assumptions: payload.assumptions ?? [],
 				ambiguities: payload.ambiguities ?? []
 			};
@@ -793,6 +808,7 @@
 							content?: string;
 							graphData?: GraphData[];
 							schemaData?: unknown;
+							schemaDescription?: string;
 							schemaVersion?: string;
 							usedModels?: string[];
 						};
@@ -807,6 +823,7 @@
 											content: event.content ?? '',
 											graphData: event.graphData ?? null,
 											schemaData: event.schemaData ?? null,
+											schemaDescription: event.schemaDescription ?? null,
 											schemaVersion: event.schemaVersion ?? null,
 											usedModels: event.usedModels ?? null,
 											isStreaming: false

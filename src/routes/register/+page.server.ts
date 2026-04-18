@@ -42,7 +42,7 @@ export const actions: Actions = {
 		if (!isPasswordFormatValid(rawPassword)) {
 			return fail(400, {
 				email: emailTrimmed,
-				message: 'Password must be between 12 and 128 characters.'
+				message: 'Password must be between 6 and 128 characters.'
 			});
 		}
 

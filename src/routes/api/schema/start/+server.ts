@@ -1,7 +1,10 @@
 import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
-import { generateInitialIntent, repairIntentByIssues } from '$lib/server/ai/gemini.js';
+import {
+	generateInitialSchemeUnderstanding,
+	repairIntentByIssues
+} from '$lib/server/ai/gemini.js';
 import {
 	isModelPreference,
 	normalizeModelPreference,
@@ -10,10 +13,14 @@ import {
 import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import { compileSchemeIntent, SchemeIntentCompileError } from '$lib/schema/compiler.js';
 import {
+	buildSchemeUnderstandingDescription,
+	schemeUnderstandingFromIntent,
+	schemeUnderstandingToIntent
+} from '$lib/schema/understanding.js';
+import {
 	detectPromptLanguage,
 	formatSchemaAssistantContent,
 	getSchemaLayoutLogDetails,
-	loadGeminiHistory,
 	logSchemaCheck,
 	validateImageData,
 	validateUserPrompt,
@@ -95,7 +102,6 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		effectiveModelPreference,
 		forcedModel
 	});
-	const history = await loadGeminiHistory(chatId, 4);
 
 	await db.message.create({
 		data: {
@@ -125,23 +131,28 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	});
 
 	try {
-		const generated = await generateInitialIntent(history, message, {
+		const generatedUnderstanding = await generateInitialSchemeUnderstanding([], message, {
 			imageData,
 			forcedModel,
-			fastMode: true
+			fastMode: false
 		});
-		logSchemaCheck('start.intent_generated', {
+		logSchemaCheck('start.understanding_generated', {
 			draftId: draft.id,
-			model: generated.model,
-			tokens: generated.tokens,
-			assumptions: generated.assumptions.length,
-			ambiguities: generated.ambiguities.length
+			model: generatedUnderstanding.model,
+			tokens: generatedUnderstanding.tokens,
+			assumptions: generatedUnderstanding.assumptions.length,
+			ambiguities: generatedUnderstanding.ambiguities.length
 		});
-		let finalGenerated = generated;
+
+		let finalUnderstanding = generatedUnderstanding.understanding;
+		let finalIntent = schemeUnderstandingToIntent(finalUnderstanding);
+		let assumptions = [...generatedUnderstanding.assumptions];
+		let ambiguities = [...generatedUnderstanding.ambiguities];
+		const usedModels = [...generatedUnderstanding.usedModels];
 		let compiledSchema: ReturnType<typeof compileSchemeIntent> | null = null;
 
 		try {
-			compiledSchema = compileSchemeIntent(generated.intent);
+			compiledSchema = compileSchemeIntent(finalIntent);
 		} catch (compileErr) {
 			if (!(compileErr instanceof SchemeIntentCompileError)) throw compileErr;
 			const repairIssues = compileErr.issues.slice(0, 6);
@@ -152,27 +163,24 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			});
 			if (repairIssues.length > 0) {
 				try {
-					const repaired = await repairIntentByIssues(history, {
+					const repaired = await repairIntentByIssues([], {
 						originalPrompt: message,
-						currentIntent: generated.intent,
+						currentIntent: finalIntent,
 						issues: repairIssues,
 						forcedModel,
 						fastMode: true,
 						skipSelfCheck: true
 					});
-					const repairedCompiled = compileSchemeIntent(repaired.intent);
-					compiledSchema = repairedCompiled;
-					finalGenerated = {
-						...repaired,
-						tokens: generated.tokens + repaired.tokens,
-						usedModels: [...generated.usedModels, ...repaired.usedModels],
-						assumptions: repaired.assumptions.length > 0 ? repaired.assumptions : generated.assumptions,
-						ambiguities: repaired.ambiguities.length > 0 ? repaired.ambiguities : generated.ambiguities
-					};
+					compiledSchema = compileSchemeIntent(repaired.intent);
+					finalIntent = repaired.intent;
+					finalUnderstanding = schemeUnderstandingFromIntent(repaired.intent);
+					assumptions = repaired.assumptions.length > 0 ? repaired.assumptions : assumptions;
+					ambiguities = repaired.ambiguities.length > 0 ? repaired.ambiguities : ambiguities;
+					usedModels.push(...repaired.usedModels);
 					logSchemaCheck('start.intent_repair_applied', {
 						draftId: draft.id,
 						fixed: true,
-						compileWarnings: repairedCompiled.warnings.length
+						compileWarnings: compiledSchema.warnings.length
 					});
 				} catch (repairErr) {
 					logSchemaCheck('start.intent_repair_failed', {
@@ -211,11 +219,14 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			});
 		}
 
+		const language = detectPromptLanguage(message);
+		const schemeDescription = buildSchemeUnderstandingDescription(finalUnderstanding, language);
+
 		const assistantContent = formatSchemaAssistantContent({
 			revisionIndex: 0,
-			assumptions: finalGenerated.assumptions,
-			ambiguities: finalGenerated.ambiguities,
-			language: detectPromptLanguage(message)
+			assumptions,
+			ambiguities,
+			language
 		});
 
 		const result = await db.$transaction(async (txRaw: any) => {
@@ -224,8 +235,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				where: { id: draft.id },
 				data: {
 					status: 'AWAITING_REVIEW',
-					currentIntent: finalGenerated.intent,
+					currentUnderstanding: finalUnderstanding,
+					currentIntent: finalIntent,
 					currentSchema: finalValidation.value,
+					currentSchemeDescription: schemeDescription,
 					schemaVersion: finalValidation.version ?? '2.0',
 					revisionCount: 0
 				}
@@ -236,10 +249,12 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 					draftId: draft.id,
 					revisionIndex: 0,
 					schemaVersion: finalValidation.version ?? '2.0',
-					intent: finalGenerated.intent,
+					understanding: finalUnderstanding,
+					intent: finalIntent,
 					schema: finalValidation.value,
-					assumptions: finalGenerated.assumptions,
-					ambiguities: finalGenerated.ambiguities
+					schemeDescription,
+					assumptions,
+					ambiguities
 				}
 			});
 
@@ -250,8 +265,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 					role: 'ASSISTANT',
 					content: assistantContent,
 					schemaData: JSON.stringify(finalValidation.value),
+					schemaDescription: schemeDescription,
 					schemaVersion: finalValidation.version ?? '2.0',
-					usedModels: JSON.stringify(finalGenerated.usedModels)
+					usedModels: JSON.stringify(usedModels)
 				}
 			});
 
@@ -270,14 +286,16 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			schemaVersion: finalValidation.version ?? '2.0',
 			revisionIndex: result.updatedDraft.revisionCount,
 			schema: finalValidation.value,
-			assumptions: finalGenerated.assumptions,
-			ambiguities: finalGenerated.ambiguities,
+			schemeDescription,
+			assumptions,
+			ambiguities,
 			assistantMessage: {
 				id: result.assistantMessage.id,
 				role: result.assistantMessage.role,
 				content: result.assistantMessage.content,
 				schemaData: finalValidation.value,
-				usedModels: finalGenerated.usedModels,
+				schemaDescription: schemeDescription,
+				usedModels,
 				draftId: result.assistantMessage.draftId,
 				createdAt: result.assistantMessage.createdAt
 			}
@@ -291,12 +309,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			durationMs: Date.now() - startedAt
 		});
 		return error(500, `Failed to generate schema: ${messageText}`);
-	}
-	finally {
+	} finally {
 		logSchemaCheck('start.finished', {
 			draftId: draft.id,
 			durationMs: Date.now() - startedAt
 		});
 	}
 };
-

@@ -39,7 +39,7 @@
 					id="password"
 					name="password"
 					placeholder="••••••••"
-					minlength="12"
+					minlength="6"
 					maxlength="128"
 					required
 				/>

@@ -11,8 +11,13 @@ import type { SchemaAny } from '$lib/schema/schema-any.js';
 import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import { compileSchemeIntent } from '$lib/schema/compiler.js';
 import { validateSchemeIntent } from '$lib/schema/intent.js';
+import {
+	buildSchemeUnderstandingDescription,
+	schemeUnderstandingFromIntent,
+	validateSchemeUnderstanding
+} from '$lib/schema/understanding.js';
 import { buildSolverModelFromSchema, type SolverModelV1 } from '$lib/solver/model.js';
-import { canConfirmStatus, loadGeminiHistory, logSchemaCheck, parseImageData } from '$lib/server/schema/flow.js';
+import { canConfirmStatus, loadGeminiHistory, logSchemaCheck } from '$lib/server/schema/flow.js';
 
 function isResultEvent(event: PipelineStatus): event is Extract<PipelineStatus, { type: 'result' }> {
 	return event.type === 'result';
@@ -21,10 +26,10 @@ function isResultEvent(event: PipelineStatus): event is Extract<PipelineStatus, 
 async function runSolveWithGate(params: {
 	userMessage: string;
 	approvedSchema: SchemaAny;
+	approvedSchemeDescription?: string | null;
 	solverModel?: SolverModelV1;
 	revisionNotes: string[];
 	history: Awaited<ReturnType<typeof loadGeminiHistory>>;
-	imageData?: { base64: string; mimeType: string };
 	forcedModel?: string | null;
 }): Promise<Extract<PipelineStatus, { type: 'result' }>> {
 	let lastError: string | null = null;
@@ -34,6 +39,7 @@ async function runSolveWithGate(params: {
 		{
 			userMessage: params.userMessage,
 			approvedSchema: params.approvedSchema,
+			approvedSchemeDescription: params.approvedSchemeDescription,
 			solverModel: params.solverModel,
 			revisionNotes: params.revisionNotes
 		},
@@ -42,7 +48,7 @@ async function runSolveWithGate(params: {
 			if (event.type === 'error') lastError = event.message;
 			if (isResultEvent(event)) finalResult = event;
 		},
-		params.imageData,
+		undefined,
 		params.forcedModel
 	);
 
@@ -65,8 +71,8 @@ function launchSchemaSolveInBackground(params: {
 	draftId: string;
 	chatId: string;
 	userMessage: string;
-	originalImageData?: string | null;
 	approvedSchema: SchemaAny;
+	approvedSchemeDescription?: string | null;
 	solverModel?: SolverModelV1;
 	schemaVersion: string;
 	revisionNotes: string[];
@@ -82,14 +88,13 @@ function launchSchemaSolveInBackground(params: {
 	const task = (async () => {
 		try {
 			const history = await loadGeminiHistory(params.chatId);
-			const imageData = parseImageData(params.originalImageData);
 			const resultEvent = await runSolveWithGate({
 				userMessage: params.userMessage,
 				approvedSchema: params.approvedSchema,
+				approvedSchemeDescription: params.approvedSchemeDescription,
 				solverModel: params.solverModel,
 				revisionNotes: params.revisionNotes,
 				history,
-				imageData,
 				forcedModel: params.forcedModel
 			});
 			logSchemaCheck('confirm.pipeline_result', {
@@ -211,6 +216,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	}
 
 	let approvedIntent: unknown = null;
+	let approvedUnderstanding: unknown = null;
 	let approvedSchemaValue: SchemaAny | null = null;
 	let approvedSchemaVersion: string = '2.0';
 
@@ -220,6 +226,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 			try {
 				const compiled = compileSchemeIntent(intentValidation.value);
 				approvedIntent = intentValidation.value;
+				approvedUnderstanding = schemeUnderstandingFromIntent(intentValidation.value);
 				approvedSchemaValue = compiled.schemaData;
 				approvedSchemaVersion = '2.0';
 				logSchemaCheck('confirm.intent_compiled', {
@@ -237,6 +244,13 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 				draftId: draft.id,
 				errors: intentValidation.errors
 			});
+		}
+	}
+
+	if (!approvedUnderstanding && draft.currentUnderstanding) {
+		const understandingValidation = validateSchemeUnderstanding(draft.currentUnderstanding);
+		if (understandingValidation.ok && understandingValidation.value) {
+			approvedUnderstanding = understandingValidation.value;
 		}
 	}
 
@@ -288,12 +302,25 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	const revisionNotes = draft.revisions
 		.map((revision: { userNotes?: string | null }) => revision.userNotes?.trim())
 		.filter((note: string | undefined): note is string => Boolean(note));
+	let approvedSchemeDescription =
+		typeof draft.currentSchemeDescription === 'string' ? draft.currentSchemeDescription.trim() : '';
+	if (!approvedSchemeDescription && approvedUnderstanding) {
+		const understandingValidation = validateSchemeUnderstanding(approvedUnderstanding);
+		if (understandingValidation.ok && understandingValidation.value) {
+			approvedSchemeDescription = buildSchemeUnderstandingDescription(
+				understandingValidation.value,
+				understandingValidation.value.source.language
+			);
+		}
+	}
 
 	await db.taskDraft.update({
 		where: { id: draft.id },
 		data: {
+			approvedUnderstanding,
 			approvedIntent,
 			approvedSchema: approvedSchemaValue,
+			approvedSchemeDescription: approvedSchemeDescription || null,
 			solverModel,
 			status: 'SOLVING',
 			schemaVersion: approvedSchemaVersion
@@ -309,8 +336,8 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 		draftId: draft.id,
 		chatId: draft.chatId,
 		userMessage: draft.originalPrompt,
-		originalImageData: draft.originalImageData,
 		approvedSchema: approvedSchemaValue,
+		approvedSchemeDescription: approvedSchemeDescription || null,
 		solverModel,
 		schemaVersion: approvedSchemaVersion,
 		revisionNotes,

@@ -3,25 +3,28 @@ import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
 import {
 	repairIntentByIssues,
-	repairSchemaByIssues,
 	reviseIntent,
-	reviseSchema
+	reviseSchemeUnderstanding
 } from '$lib/server/ai/gemini.js';
 import {
 	isModelPreference,
 	normalizeModelPreference,
 	toForcedModel
 } from '$lib/server/ai/model-preference.js';
-import type { SchemaAny } from '$lib/schema/schema-any.js';
 import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import { compileSchemeIntent, SchemeIntentCompileError } from '$lib/schema/compiler.js';
 import { validateSchemeIntent } from '$lib/schema/intent.js';
+import {
+	buildSchemeUnderstandingDescription,
+	schemeUnderstandingFromIntent,
+	schemeUnderstandingToIntent,
+	validateSchemeUnderstanding
+} from '$lib/schema/understanding.js';
 import {
 	detectPromptLanguage,
 	formatSchemaAssistantContent,
 	getSchemaLayoutLogDetails,
 	isReviewableStatus,
-	loadGeminiHistory,
 	logSchemaCheck,
 	validateRevisionNotes
 } from '$lib/server/schema/flow.js';
@@ -93,7 +96,6 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 		effectiveModelPreference,
 		forcedModel
 	});
-	const history = await loadGeminiHistory(draft.chatId);
 
 	await db.message.create({
 		data: {
@@ -107,230 +109,117 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 	try {
 		const revisionIndex = draft.revisionCount + 1;
 		const language = detectPromptLanguage(`${draft.originalPrompt}\n${notes}`);
-		const intentValidation = draft.currentIntent ? validateSchemeIntent(draft.currentIntent) : null;
-		const canUseIntent = Boolean(intentValidation?.ok && intentValidation.value);
 
-		if (canUseIntent && intentValidation?.value) {
-			const revised = await reviseIntent(history, {
+		const storedUnderstandingValidation = draft.currentUnderstanding
+			? validateSchemeUnderstanding(draft.currentUnderstanding)
+			: null;
+		const currentIntentValidation = draft.currentIntent
+			? validateSchemeIntent(draft.currentIntent)
+			: null;
+		const currentUnderstanding =
+			storedUnderstandingValidation?.ok && storedUnderstandingValidation.value
+				? storedUnderstandingValidation.value
+				: currentIntentValidation?.ok && currentIntentValidation.value
+					? schemeUnderstandingFromIntent(currentIntentValidation.value)
+					: null;
+
+		if (!currentUnderstanding) {
+			return error(422, 'Current draft has no valid understanding/intent for revision');
+		}
+
+		let revisedUnderstandingResult;
+		if (storedUnderstandingValidation?.ok && storedUnderstandingValidation.value) {
+			revisedUnderstandingResult = await reviseSchemeUnderstanding([], {
 				originalPrompt: draft.originalPrompt,
-				currentIntent: intentValidation.value,
+				currentUnderstanding,
 				revisionNotes: notes,
 				forcedModel,
-				fastMode: true
+				fastMode: false
 			});
-			logSchemaCheck('revise.intent_generated', {
+			logSchemaCheck('revise.understanding_generated', {
 				draftId: draft.id,
-				model: revised.model,
-				tokens: revised.tokens,
-				assumptions: revised.assumptions.length,
-				ambiguities: revised.ambiguities.length
+				model: revisedUnderstandingResult.model,
+				tokens: revisedUnderstandingResult.tokens,
+				assumptions: revisedUnderstandingResult.assumptions.length,
+				ambiguities: revisedUnderstandingResult.ambiguities.length
 			});
-
-			let finalRevision = revised;
-			let compiledSchema: ReturnType<typeof compileSchemeIntent> | null = null;
-
-			try {
-				compiledSchema = compileSchemeIntent(revised.intent);
-			} catch (compileErr) {
-				if (!(compileErr instanceof SchemeIntentCompileError)) throw compileErr;
-				const repairIssues = compileErr.issues.slice(0, 6);
-				logSchemaCheck('revise.intent_repair_requested', {
-					draftId: draft.id,
-					errorCount: compileErr.issues.length,
-					issues: repairIssues
-				});
-				if (repairIssues.length > 0) {
-					try {
-						const repaired = await repairIntentByIssues(history, {
-							originalPrompt: draft.originalPrompt,
-							currentIntent: revised.intent,
-							issues: repairIssues,
-							forcedModel,
-							fastMode: true,
-							skipSelfCheck: true
-						});
-						const repairedCompiled = compileSchemeIntent(repaired.intent);
-						compiledSchema = repairedCompiled;
-						finalRevision = {
-							...repaired,
-							tokens: revised.tokens + repaired.tokens,
-							usedModels: [...revised.usedModels, ...repaired.usedModels],
-							assumptions:
-								repaired.assumptions.length > 0 ? repaired.assumptions : revised.assumptions,
-							ambiguities:
-								repaired.ambiguities.length > 0 ? repaired.ambiguities : revised.ambiguities
-						};
-						logSchemaCheck('revise.intent_repair_applied', {
-							draftId: draft.id,
-							fixed: true,
-							compileWarnings: repairedCompiled.warnings.length
-						});
-					} catch (repairErr) {
-						logSchemaCheck('revise.intent_repair_failed', {
-							draftId: draft.id,
-							error: repairErr instanceof Error ? repairErr.message : String(repairErr)
-						});
-					}
-				}
-			}
-
-			if (!compiledSchema) {
-				return error(422, 'Intent compilation failed during revision');
-			}
-
-			const finalValidation = validateSchemaAny(compiledSchema.schemaData);
-			if (!finalValidation.ok || !finalValidation.value) {
-				logSchemaCheck('revise.schema_invalid', { draftId: draft.id, errors: finalValidation.errors });
-				return error(422, `Revised schema validation failed: ${finalValidation.errors.join('; ')}`);
-			}
-
-			const layoutDetails = getSchemaLayoutLogDetails(finalValidation.value);
-			if (layoutDetails) {
-				logSchemaCheck('revise.layout_metrics', {
-					draftId: draft.id,
-					...layoutDetails,
-					layoutAutoCorrected: (finalValidation.value as any)?.meta?.layoutAutoCorrected === true,
-					layoutCorrections: Array.isArray((finalValidation.value as any)?.meta?.layoutCorrections)
-						? (finalValidation.value as any).meta.layoutCorrections
-						: []
-				});
-			}
-
-			const assistantContent = formatSchemaAssistantContent({
-				revisionIndex,
-				assumptions: finalRevision.assumptions,
-				ambiguities: finalRevision.ambiguities,
-				language
+		} else if (currentIntentValidation?.ok && currentIntentValidation.value) {
+			const revisedIntent = await reviseIntent([], {
+				originalPrompt: draft.originalPrompt,
+				currentIntent: currentIntentValidation.value,
+				revisionNotes: notes,
+				forcedModel,
+				fastMode: false
 			});
-
-			const result = await db.$transaction(async (txRaw: any) => {
-				const tx = txRaw as any;
-				const updatedDraft = await tx.taskDraft.update({
-					where: { id: draft.id },
-					data: {
-						status: 'AWAITING_REVIEW',
-						currentIntent: finalRevision.intent,
-						currentSchema: finalValidation.value,
-						schemaVersion: finalValidation.version ?? '2.0',
-						revisionCount: revisionIndex
-					}
-				});
-
-				await tx.taskDraftRevision.create({
-					data: {
-						draftId: draft.id,
-						revisionIndex,
-						schemaVersion: finalValidation.version ?? '2.0',
-						userNotes: notes,
-						intent: finalRevision.intent,
-						schema: finalValidation.value,
-						assumptions: finalRevision.assumptions,
-						ambiguities: finalRevision.ambiguities
-					}
-				});
-
-				const assistantMessage = await tx.message.create({
-					data: {
-						chatId: draft.chatId,
-						draftId: draft.id,
-						role: 'ASSISTANT',
-						content: assistantContent,
-						schemaData: JSON.stringify(finalValidation.value),
-						schemaVersion: finalValidation.version ?? '2.0',
-						usedModels: JSON.stringify(finalRevision.usedModels)
-					}
-				});
-
-				return { updatedDraft, assistantMessage };
-			});
-
-			return json({
+			revisedUnderstandingResult = {
+				understanding: schemeUnderstandingFromIntent(revisedIntent.intent),
+				assumptions: revisedIntent.assumptions,
+				ambiguities: revisedIntent.ambiguities,
+				model: revisedIntent.model,
+				tokens: revisedIntent.tokens,
+				usedModels: revisedIntent.usedModels
+			};
+			logSchemaCheck('revise.intent_fallback_applied', {
 				draftId: draft.id,
-				status: result.updatedDraft.status,
-				schemaVersion: finalValidation.version ?? '2.0',
-				revisionIndex,
-				schema: finalValidation.value,
-				assumptions: finalRevision.assumptions,
-				ambiguities: finalRevision.ambiguities,
-				assistantMessage: {
-					id: result.assistantMessage.id,
-					role: result.assistantMessage.role,
-					content: result.assistantMessage.content,
-					schemaData: finalValidation.value,
-					usedModels: finalRevision.usedModels,
-					draftId: result.assistantMessage.draftId,
-					createdAt: result.assistantMessage.createdAt
-				}
+				model: revisedIntent.model,
+				tokens: revisedIntent.tokens
 			});
+		} else {
+			return error(422, 'Current draft has no valid baseline for revision');
 		}
 
-		logSchemaCheck('revise.legacy_fallback', {
-			draftId: draft.id,
-			reason: intentValidation?.ok === false ? 'invalid_current_intent' : 'missing_current_intent'
-		});
-		const revised = await reviseSchema(history, {
-			originalPrompt: draft.originalPrompt,
-			currentSchema: draft.currentSchema as SchemaAny,
-			revisionNotes: notes,
-			forcedModel,
-			fastMode: true
-		});
-		logSchemaCheck('revise.llm_generated', {
-			draftId: draft.id,
-			model: revised.model,
-			tokens: revised.tokens,
-			assumptions: revised.assumptions.length,
-			ambiguities: revised.ambiguities.length
-		});
+		let finalUnderstanding = revisedUnderstandingResult.understanding;
+		let finalIntent = schemeUnderstandingToIntent(finalUnderstanding);
+		let assumptions = [...revisedUnderstandingResult.assumptions];
+		let ambiguities = [...revisedUnderstandingResult.ambiguities];
+		const usedModels = [...revisedUnderstandingResult.usedModels];
+		let compiledSchema: ReturnType<typeof compileSchemeIntent> | null = null;
 
-		let finalRevision = revised;
-		let finalValidation = validateSchemaAny(revised.schemaData);
-
-		if (!finalValidation.ok || !finalValidation.value) {
-			const repairIssues = finalValidation.errors.slice(0, 6);
-			logSchemaCheck('revise.repair_requested', {
+		try {
+			compiledSchema = compileSchemeIntent(finalIntent);
+		} catch (compileErr) {
+			if (!(compileErr instanceof SchemeIntentCompileError)) throw compileErr;
+			const repairIssues = compileErr.issues.slice(0, 6);
+			logSchemaCheck('revise.intent_repair_requested', {
 				draftId: draft.id,
-				reason: 'initial_validation_failed',
-				errorCount: finalValidation.errors.length,
+				errorCount: compileErr.issues.length,
 				issues: repairIssues
 			});
-			try {
-				const repaired = await repairSchemaByIssues(history, {
-					originalPrompt: draft.originalPrompt,
-					currentSchema: revised.schemaData as SchemaAny,
-					issues: repairIssues,
-					forcedModel,
-					fastMode: true,
-					skipSelfCheck: true
-				});
-				const repairedValidation = validateSchemaAny(repaired.schemaData);
-				if (repairedValidation.ok && repairedValidation.value) {
-					finalValidation = repairedValidation;
-					finalRevision = {
-						...repaired,
-						tokens: revised.tokens + repaired.tokens,
-						usedModels: [...revised.usedModels, ...repaired.usedModels],
-						assumptions: repaired.assumptions.length > 0 ? repaired.assumptions : revised.assumptions,
-						ambiguities: repaired.ambiguities.length > 0 ? repaired.ambiguities : revised.ambiguities
-					};
-					logSchemaCheck('revise.repair_applied', {
-						draftId: draft.id,
-						fixed: true
+			if (repairIssues.length > 0) {
+				try {
+					const repaired = await repairIntentByIssues([], {
+						originalPrompt: draft.originalPrompt,
+						currentIntent: finalIntent,
+						issues: repairIssues,
+						forcedModel,
+						fastMode: true,
+						skipSelfCheck: true
 					});
-				} else {
-					logSchemaCheck('revise.repair_invalid', {
+					compiledSchema = compileSchemeIntent(repaired.intent);
+					finalIntent = repaired.intent;
+					finalUnderstanding = schemeUnderstandingFromIntent(repaired.intent);
+					assumptions = repaired.assumptions.length > 0 ? repaired.assumptions : assumptions;
+					ambiguities = repaired.ambiguities.length > 0 ? repaired.ambiguities : ambiguities;
+					usedModels.push(...repaired.usedModels);
+					logSchemaCheck('revise.intent_repair_applied', {
 						draftId: draft.id,
-						errors: repairedValidation.errors
+						fixed: true,
+						compileWarnings: compiledSchema.warnings.length
+					});
+				} catch (repairErr) {
+					logSchemaCheck('revise.intent_repair_failed', {
+						draftId: draft.id,
+						error: repairErr instanceof Error ? repairErr.message : String(repairErr)
 					});
 				}
-			} catch (repairErr) {
-				logSchemaCheck('revise.repair_failed', {
-					draftId: draft.id,
-					error: repairErr instanceof Error ? repairErr.message : String(repairErr)
-				});
 			}
 		}
 
+		if (!compiledSchema) {
+			return error(422, 'Intent compilation failed during revision');
+		}
+
+		const finalValidation = validateSchemaAny(compiledSchema.schemaData);
 		if (!finalValidation.ok || !finalValidation.value) {
 			logSchemaCheck('revise.schema_invalid', { draftId: draft.id, errors: finalValidation.errors });
 			return error(422, `Revised schema validation failed: ${finalValidation.errors.join('; ')}`);
@@ -348,10 +237,11 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 			});
 		}
 
+		const schemeDescription = buildSchemeUnderstandingDescription(finalUnderstanding, language);
 		const assistantContent = formatSchemaAssistantContent({
 			revisionIndex,
-			assumptions: finalRevision.assumptions,
-			ambiguities: finalRevision.ambiguities,
+			assumptions,
+			ambiguities,
 			language
 		});
 
@@ -361,7 +251,10 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 				where: { id: draft.id },
 				data: {
 					status: 'AWAITING_REVIEW',
+					currentUnderstanding: finalUnderstanding,
+					currentIntent: finalIntent,
 					currentSchema: finalValidation.value,
+					currentSchemeDescription: schemeDescription,
 					schemaVersion: finalValidation.version ?? '2.0',
 					revisionCount: revisionIndex
 				}
@@ -373,9 +266,12 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 					revisionIndex,
 					schemaVersion: finalValidation.version ?? '2.0',
 					userNotes: notes,
+					understanding: finalUnderstanding,
+					intent: finalIntent,
 					schema: finalValidation.value,
-					assumptions: finalRevision.assumptions,
-					ambiguities: finalRevision.ambiguities
+					schemeDescription,
+					assumptions,
+					ambiguities
 				}
 			});
 
@@ -386,8 +282,9 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 					role: 'ASSISTANT',
 					content: assistantContent,
 					schemaData: JSON.stringify(finalValidation.value),
+					schemaDescription: schemeDescription,
 					schemaVersion: finalValidation.version ?? '2.0',
-					usedModels: JSON.stringify(finalRevision.usedModels)
+					usedModels: JSON.stringify(usedModels)
 				}
 			});
 
@@ -400,14 +297,16 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 			schemaVersion: finalValidation.version ?? '2.0',
 			revisionIndex,
 			schema: finalValidation.value,
-			assumptions: finalRevision.assumptions,
-			ambiguities: finalRevision.ambiguities,
+			schemeDescription,
+			assumptions,
+			ambiguities,
 			assistantMessage: {
 				id: result.assistantMessage.id,
 				role: result.assistantMessage.role,
 				content: result.assistantMessage.content,
 				schemaData: finalValidation.value,
-				usedModels: finalRevision.usedModels,
+				schemaDescription: schemeDescription,
+				usedModels,
 				draftId: result.assistantMessage.draftId,
 				createdAt: result.assistantMessage.createdAt
 			}

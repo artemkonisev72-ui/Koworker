@@ -8,6 +8,8 @@ import type { SchemaData } from '$lib/schema/schema-data.js';
 import type { SchemaDataV2 } from '$lib/schema/schema-v2.js';
 import type { SchemeIntentV1 } from '$lib/schema/intent.js';
 import { parseSchemeIntentResponse } from '$lib/schema/intent.js';
+import type { SchemeUnderstandingV1 } from '$lib/schema/understanding.js';
+import { parseSchemeUnderstandingResponse } from '$lib/schema/understanding.js';
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -101,6 +103,21 @@ export interface IntentGenerationResult {
 	model: GeminiModel;
 	tokens: number;
 	usedModels: string[];
+}
+
+export interface SchemeUnderstandingGenerationResult {
+	understanding: SchemeUnderstandingV1;
+	assumptions: string[];
+	ambiguities: string[];
+	model: GeminiModel;
+	tokens: number;
+	usedModels: string[];
+}
+
+export interface SchemeDescriptionGenerationResult {
+	description: string;
+	model: GeminiModel;
+	tokens: number;
 }
 
 function buildContext(history: GeminiHistory[], systemPrompt: string, currentQuestion: string): GeminiMessage[] {
@@ -355,6 +372,39 @@ function parseIntentResult(
 	};
 }
 
+function parseUnderstandingResult(
+	rawText: string,
+	options?: { baseUnderstanding?: SchemeUnderstandingV1 }
+): {
+	understanding: SchemeUnderstandingV1;
+	assumptions: string[];
+	ambiguities: string[];
+} {
+	const parsed = parseSchemeUnderstandingResponse(rawText, {
+		baseUnderstanding: options?.baseUnderstanding
+	});
+	return {
+		understanding: parsed.understanding,
+		assumptions: parsed.assumptions,
+		ambiguities: parsed.ambiguities
+	};
+}
+
+function attachInlineImage(
+	messages: GeminiMessage[],
+	imageData?: { base64: string; mimeType: string }
+): GeminiMessage[] {
+	if (!imageData || messages.length === 0) return messages;
+	const next = messages.map((message) => ({
+		...message,
+		parts: [...message.parts]
+	}));
+	next[next.length - 1].parts.push({
+		inlineData: { mimeType: imageData.mimeType, data: imageData.base64 }
+	});
+	return next;
+}
+
 async function generateSchemaStage(
 	history: GeminiHistory[],
 	systemPrompt: string,
@@ -396,10 +446,23 @@ function formatTokenAttribution(model: GeminiModel, stage: string, tokens: numbe
 }
 
 function extractLanguageSignalText(userText: string): string {
-	const approvedSchemaMarker = '[APPROVED_SCHEMA_JSON]';
-	const approvedSchemaIndex = userText.indexOf(approvedSchemaMarker);
-	if (approvedSchemaIndex >= 0) {
-		return userText.slice(0, approvedSchemaIndex).trim();
+	const contextMarkers = [
+		'[APPROVED_SCHEME_DESCRIPTION]',
+		'[ACCEPTED_SCHEMA_REVISIONS]',
+		'[SOLVER_MODEL_JSON]',
+		'[APPROVED_SCHEMA_JSON]'
+	];
+	let earliestMarkerIndex = -1;
+	for (const marker of contextMarkers) {
+		const markerIndex = userText.indexOf(marker);
+		if (markerIndex < 0) continue;
+		if (earliestMarkerIndex < 0 || markerIndex < earliestMarkerIndex) {
+			earliestMarkerIndex = markerIndex;
+		}
+	}
+
+	if (earliestMarkerIndex >= 0) {
+		return userText.slice(0, earliestMarkerIndex).trim();
 	}
 
 	const userTaskMarker = '[USER_TASK]';
@@ -447,6 +510,7 @@ export async function generatePythonCode(
 	forcedModel?: string | null
 ): Promise<{ code: string; model: GeminiModel; tokens: number }> {
 	const isSchemaCheckSolve = userMessage.includes('[APPROVED_SCHEMA_JSON]');
+	const hasApprovedSchemeDescription = userMessage.includes('[APPROVED_SCHEME_DESCRIPTION]');
 	const hasSolverModelContext = userMessage.includes('[SOLVER_MODEL_JSON]');
 	const visualContract = isSchemaCheckSolve
 		? `9. When approved schema context is present, choose ONE visual mode:
@@ -467,7 +531,14 @@ export async function generatePythonCode(
 - for cantilever beam members with axisOrigin="free_end", use x=0 at free end and increase toward fixed support.
 - for frame tasks use requested component semantics (N,Vy,Vz,T,My,Mz) from solverModel.`
 		: '';
+	const schemeDescriptionContract = hasApprovedSchemeDescription
+		? `When [APPROVED_SCHEME_DESCRIPTION] is present, treat it as the primary textual description of the approved scheme.
+- Build equations and sign interpretation from this approved description first.
+- Do not reinterpret topology from visual projection.
+- If a detail is missing in the description, use [SOLVER_MODEL_JSON] and [APPROVED_SCHEMA_JSON] as canonical guardrails.`
+		: '';
 	const solverModelSection = solverModelContract ? `${solverModelContract}\n` : '';
+	const schemeDescriptionSection = schemeDescriptionContract ? `${schemeDescriptionContract}\n` : '';
 
 	const systemPrompt = `You generate Python code for exact scientific computation.
 Rules:
@@ -486,7 +557,7 @@ Rules:
 12. Put primary numeric/text result in key "result".
 13. Prefer sympy for exact math and numpy arrays for sampling points.
 ${visualContract}
-${solverModelSection}${languagePolicy(userMessage)}`;
+${schemeDescriptionSection}${solverModelSection}${languagePolicy(userMessage)}`;
 
 	let userContent = `Task: ${userMessage}`;
 	if (retryContext) userContent += `\n\nFix this error context:\n${retryContext}`;
@@ -535,6 +606,138 @@ export async function analyzeImage(
 	messages[messages.length - 1].parts.push({ inlineData: { mimeType, data: base64Data } });
 	const chain = options?.fastMode ? FAST_VISION_CHAIN : VISION_CHAIN;
 	return generateWithFallback(chain[0], chain, messages, forcedModel);
+}
+
+export async function generateSchemeDescriptionFromFacts(
+	history: GeminiHistory[],
+	params: {
+		factsJson: string;
+		language: 'ru' | 'en';
+		forcedModel?: string | null;
+		fastMode?: boolean;
+	}
+): Promise<SchemeDescriptionGenerationResult> {
+	const languageSeed = params.language === 'ru' ? 'Русский' : 'English';
+	const prompt = `You are a scheme verbalizer.
+You receive canonical scheme facts as JSON.
+Return plain text only (no JSON, no code fences).
+Do not invent new members, supports, loads, axes, signs, or results.
+Keep the structure concise and explicit with sections:
+- Scheme type
+- Members and joints
+- Supports and constraints
+- Loads
+- Requested results
+- Assumptions
+Use the exact language requested: ${languageSeed}.`;
+
+	const question = `[SCHEME_FACTS_JSON]\n${params.factsJson}`;
+	const messages = buildContext(history, prompt, question);
+	const chain = params.fastMode ? FAST_SCHEMA_CHAIN : FLASH_CHAIN;
+	const generation = await generateWithFallback(chain[0], chain, messages, params.forcedModel);
+	const description = generation.text.trim();
+	if (!description) {
+		throw new Error('Scheme description response is empty');
+	}
+	return {
+		description,
+		model: generation.model,
+		tokens: generation.tokens
+	};
+}
+
+export async function generateInitialSchemeUnderstanding(
+	history: GeminiHistory[],
+	userMessage: string,
+	params?: {
+		imageData?: { base64: string; mimeType: string };
+		forcedModel?: string | null;
+		fastMode?: boolean;
+	}
+): Promise<SchemeUnderstandingGenerationResult> {
+	const useFastMode = params?.fastMode === true;
+	const basePrompt = `You extract canonical scheme understanding for engineering mechanics.
+Return STRICT JSON with keys: understanding, assumptions, ambiguities.
+Do NOT return schemaData and do NOT solve the task.
+understanding contract:
+{
+  "version": "understanding-1.0",
+  "taskDomain": "mechanics",
+  "structureKind": "beam|planar_frame|spatial_frame",
+  "modelSpace": "planar|spatial",
+  "confidence": "high|medium|low",
+  "source": { "hasImage": boolean, "language": "ru|en" },
+  "joints": [{ "key": "...", "role": "start|end|corner|free_end|fixed_end|generic", "label": "..." }],
+  "members": [{ "key": "...", "kind": "bar|cable|spring|damper", "startJoint": "...", "endJoint": "...", "relation": "horizontal|vertical|inclined|collinear_with_prev", "lengthHint": 3.5, "angleHintDeg": 30 }],
+  "supports": [{ "key": "...", "kind": "fixed_wall|hinge_fixed|hinge_roller|internal_hinge|slider", "jointKey": "...", "memberKey": "...", "s": 0.5, "sideHint": "left|right|top|bottom", "guideHint": "horizontal|vertical|member_local" }],
+  "loads": [{ "key": "...", "kind": "force|moment|distributed", "target": {"jointKey":"..."} | {"memberKey":"...","s":0.5} | {"memberKey":"...","fromS":0.2,"toS":0.8}, "directionHint": "up|down|left|right|+x|-x|+y|-y|cw|ccw|member_local_positive|member_local_negative", "magnitudeHint": 10, "distributionKind": "uniform|linear|trapezoid" }],
+  "requestedResults": [{ "targetMemberKey": "...", "kind": "N|Q|M|Vy|Vz|T|My|Mz" }],
+  "assumptions": [],
+  "ambiguities": []
+}
+Rules:
+1) Extract semantics from user task and attached image jointly in one pass.
+2) If uncertain, preserve ambiguity explicitly instead of inventing detail.
+3) Keep keys stable and concise.
+4) Keep language of assumptions/ambiguities consistent with user task.
+${languagePolicy(userMessage)}`;
+
+	const question = `Task:\n${userMessage}`;
+	const baseMessages = buildContext(history, basePrompt, question);
+	const messages = attachInlineImage(baseMessages, params?.imageData);
+	const chain = params?.imageData
+		? useFastMode
+			? FAST_VISION_CHAIN
+			: VISION_CHAIN
+		: useFastMode
+			? FAST_SCHEMA_CHAIN
+			: FLASH_CHAIN;
+	const generation = await generateWithFallback(chain[0], chain, messages, params?.forcedModel);
+	const parsed = parseUnderstandingResult(generation.text);
+	return {
+		...parsed,
+		model: generation.model,
+		tokens: generation.tokens,
+		usedModels: [formatTokenAttribution(generation.model, 'UnderstandingGen', generation.tokens)]
+	};
+}
+
+export async function reviseSchemeUnderstanding(
+	history: GeminiHistory[],
+	params: {
+		originalPrompt: string;
+		currentUnderstanding: SchemeUnderstandingV1;
+		revisionNotes: string;
+		forcedModel?: string | null;
+		fastMode?: boolean;
+	}
+): Promise<SchemeUnderstandingGenerationResult> {
+	const languageSeed = `${params.originalPrompt}\n${params.revisionNotes}`;
+	const prompt = `You revise canonical scheme understanding for engineering mechanics.
+Return STRICT JSON with keys: understanding, assumptions, ambiguities.
+Do NOT return schemaData and do NOT solve the task.
+Apply revision notes precisely and preserve valid unchanged semantics.
+If a revision note is ambiguous, keep previous meaning and add ambiguity entry.
+${languagePolicy(languageSeed)}`;
+
+	const question = `Original task:\n${params.originalPrompt}\n\nCurrent understanding JSON:\n${JSON.stringify(
+		params.currentUnderstanding,
+		null,
+		2
+	)}\n\nRevision notes:\n${params.revisionNotes}`;
+
+	const messages = buildContext(history, prompt, question);
+	const chain = params.fastMode ? FLASH_CHAIN : PRO_CHAIN;
+	const generation = await generateWithFallback(chain[0], chain, messages, params.forcedModel);
+	const parsed = parseUnderstandingResult(generation.text, {
+		baseUnderstanding: params.currentUnderstanding
+	});
+	return {
+		...parsed,
+		model: generation.model,
+		tokens: generation.tokens,
+		usedModels: [formatTokenAttribution(generation.model, 'UnderstandingRevision', generation.tokens)]
+	};
 }
 
 export async function generateInitialIntent(

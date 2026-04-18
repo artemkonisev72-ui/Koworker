@@ -58,6 +58,6 @@ export const actions: Actions = {
 
 		const sessionToken = await createSession(user.id);
 		setSessionCookie(cookies, sessionToken);
-		throw redirect(303, '/');
+		throw redirect(303, '/?postLoginInstall=1');
 	}
 };

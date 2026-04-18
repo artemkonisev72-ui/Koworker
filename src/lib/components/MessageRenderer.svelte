@@ -24,6 +24,7 @@
 		content: string;
 		graphData?: GraphData[] | string | null;
 		schemaData?: unknown;
+		schemaDescription?: string | null;
 		schemaVersion?: string | null;
 		usedModels?: string[] | string | null;
 		createdAt?: string;
@@ -146,6 +147,26 @@
 			}
 		}
 		return [] as SchemaDataV2[];
+	});
+
+	let schemeDescription = $derived.by(() => {
+		if (typeof message.schemaDescription !== 'string') return '';
+		const normalized = message.schemaDescription.trim();
+		return normalized.length > 0 ? normalized : '';
+	});
+
+	function isMostlyRussian(text: string): boolean {
+		const cyrillicCount = (text.match(/[А-Яа-яЁё]/g) ?? []).length;
+		const latinCount = (text.match(/[A-Za-z]/g) ?? []).length;
+		if (cyrillicCount === 0 && latinCount === 0) return false;
+		return cyrillicCount >= latinCount * 0.6;
+	}
+
+	let schemeDescriptionTitle = $derived.by(() => {
+		if (schemeDescription) {
+			return isMostlyRussian(schemeDescription) ? 'Описание схемы' : 'Scheme description';
+		}
+		return 'Scheme description';
 	});
 
 	let frameGraphGroups = $derived.by(() => {
@@ -727,6 +748,13 @@
 			</div>
 		{/if}
 
+		{#if schemes.length > 0 && schemeDescription}
+			<div class="scheme-description-card">
+				<div class="scheme-description-title">{schemeDescriptionTitle}</div>
+				<div class="scheme-description-body">{schemeDescription}</div>
+			</div>
+		{/if}
+
 		{#if visibleGraphGroups.length > 0}
 			<div class="graphs-container">
 				{#each visibleGraphGroups as group}
@@ -801,6 +829,30 @@
 		flex-direction: column;
 		gap: 1.5rem;
 		margin-top: 1rem;
+	}
+
+	.scheme-description-card {
+		margin-top: 0.9rem;
+		padding: 0.85rem 0.95rem;
+		border: 1px solid var(--border-medium);
+		background: color-mix(in srgb, var(--bg-surface) 68%, transparent);
+		border-radius: 0.65rem;
+	}
+
+	.scheme-description-title {
+		font-size: 0.76rem;
+		font-weight: 700;
+		color: var(--text-secondary);
+		letter-spacing: 0.03em;
+		text-transform: uppercase;
+		margin-bottom: 0.45rem;
+	}
+
+	.scheme-description-body {
+		white-space: pre-wrap;
+		font-size: 0.9rem;
+		line-height: 1.45;
+		color: var(--text-primary);
 	}
 
 	.models-attribution {

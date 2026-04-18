@@ -30,8 +30,10 @@ The user request is to add a gated mode where the model must first build an init
 3. User can:
    - confirm scheme and continue solving, or
    - request changes by text and regenerate scheme.
-4. User may iterate corrections until satisfied.
-5. Solve phase starts only after scheme confirmation.
+4. After each generated revision, the assistant must show a separate plain-text `schemeDescription` directly under the rendered scheme.
+5. During solve phase, LLM must use approved `schemeDescription` as primary narrative context, while approved schema/solver model remain canonical guardrails.
+6. User may iterate corrections until satisfied.
+7. Solve phase starts only after scheme confirmation.
 
 ## 6. High-level Solution
 Implement a dedicated scheme verification flow with explicit state machine and a new structured `schemaData` DSL.
@@ -70,6 +72,8 @@ model TaskDraft {
   originalImageData  String?     @db.Text
   currentSchema      Json?
   approvedSchema     Json?
+  currentSchemeDescription String? @db.Text
+  approvedSchemeDescription String? @db.Text
   revisionCount      Int         @default(0)
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
@@ -86,6 +90,7 @@ model TaskDraftRevision {
   revisionIndex Int
   userNotes     String?  @db.Text
   schema        Json
+  schemeDescription String? @db.Text
   assumptions   Json?
   createdAt     DateTime @default(now())
 
@@ -166,6 +171,7 @@ Server-side validation must happen before persistence and rendering.
   "draftId": "...",
   "status": "AWAITING_REVIEW",
   "schema": { "...": "..." },
+  "schemeDescription": "...",
   "revisionIndex": 0,
   "assumptions": []
 }
@@ -185,6 +191,7 @@ Server-side validation must happen before persistence and rendering.
   "status": "AWAITING_REVIEW",
   "revisionIndex": 1,
   "schema": { "...": "..." },
+  "schemeDescription": "...",
   "assumptions": []
 }
 ```
@@ -236,6 +243,7 @@ Invalid transitions must return `409 Conflict`.
   - `ambiguities`
 - Solve prompt must include:
   - original task
+  - approved schemeDescription
   - approved schema JSON
   - all accepted revision notes
 
@@ -368,4 +376,3 @@ Risk: higher latency.
 3. Final solve consumes approved scheme as required context.
 4. Existing non-schema flow remains operational.
 5. Tests for new flow are green.
-

@@ -25,7 +25,7 @@ describe('auth utils', () => {
 
 	it('enforces password length policy', () => {
 		expect(isPasswordFormatValid('short')).toBe(false);
-		expect(isPasswordFormatValid('a'.repeat(12))).toBe(true);
+		expect(isPasswordFormatValid('a'.repeat(6))).toBe(true);
 		expect(isPasswordFormatValid('a'.repeat(128))).toBe(true);
 		expect(isPasswordFormatValid('a'.repeat(129))).toBe(false);
 	});
