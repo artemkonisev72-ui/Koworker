@@ -33,6 +33,8 @@ export interface SchemeUnderstandingV1 {
 	};
 	joints: IntentJoint[];
 	members: IntentMember[];
+	components: SchemeIntentV1['components'];
+	kinematicPairs: SchemeIntentV1['kinematicPairs'];
 	supports: SchemeIntentV1['supports'];
 	loads: IntentLoad[];
 	requestedResults?: IntentRequestedResult[];
@@ -134,6 +136,8 @@ function understandingFromIntent(intent: SchemeIntentV1): SchemeUnderstandingV1 
 		source: intent.source,
 		joints: intent.joints,
 		members: intent.members,
+		components: intent.components ?? [],
+		kinematicPairs: intent.kinematicPairs ?? [],
 		supports: intent.supports,
 		loads: intent.loads,
 		...(intent.requestedResults && intent.requestedResults.length > 0
@@ -242,6 +246,8 @@ export function schemeUnderstandingToIntent(understanding: SchemeUnderstandingV1
 		source: understanding.source,
 		joints: understanding.joints,
 		members: understanding.members,
+		components: understanding.components ?? [],
+		kinematicPairs: understanding.kinematicPairs ?? [],
 		supports: understanding.supports,
 		loads: understanding.loads,
 		...(understanding.requestedResults && understanding.requestedResults.length > 0
@@ -302,6 +308,28 @@ function describeMember(member: IntentMember): string {
 	return parts.join(', ');
 }
 
+function describeComponent(component: SchemeIntentV1['components'][number]): string {
+	const parts: string[] = [`${component.key}: center=${component.centerJoint}`, component.kind];
+	if (component.radiusHint !== undefined) parts.push(`R~${component.radiusHint}`);
+	if (component.profileHint) parts.push(`profile=${component.profileHint}`);
+	return parts.join(', ');
+}
+
+function describeKinematicPair(pair: SchemeIntentV1['kinematicPairs'][number]): string {
+	const parts: string[] = [`${pair.key}: ${pair.kind}`];
+	if (pair.jointKey) parts.push(`joint=${pair.jointKey}`);
+	if (pair.memberKeys && pair.memberKeys.length > 0) parts.push(`members=${pair.memberKeys.join('+')}`);
+	if (pair.componentKeys && pair.componentKeys.length > 0) {
+		parts.push(`components=${pair.componentKeys.join('+')}`);
+	}
+	if (pair.guideHint) parts.push(`guide=${pair.guideHint}`);
+	if (pair.meshType) parts.push(`mesh=${pair.meshType}`);
+	if (pair.beltKind) parts.push(`belt=${pair.beltKind}`);
+	if (typeof pair.crossed === 'boolean') parts.push(`crossed=${pair.crossed}`);
+	if (pair.followerType) parts.push(`follower=${pair.followerType}`);
+	return parts.join(', ');
+}
+
 function describeSupport(support: SchemeIntentV1['supports'][number]): string {
 	const target =
 		(support.jointKey && `joint=${support.jointKey}`) ||
@@ -350,10 +378,14 @@ function structureLabel(kind: IntentStructureKind, language: IntentLanguage): st
 	if (language === 'ru') {
 		if (kind === 'beam') return 'Балка';
 		if (kind === 'planar_frame') return 'Плоская рама';
+		if (kind === 'planar_mechanism') return 'Плоский механизм';
+		if (kind === 'spatial_mechanism') return 'Пространственный механизм';
 		return 'Пространственная рама';
 	}
 	if (kind === 'beam') return 'Beam';
 	if (kind === 'planar_frame') return 'Planar frame';
+	if (kind === 'planar_mechanism') return 'Planar mechanism';
+	if (kind === 'spatial_mechanism') return 'Spatial mechanism';
 	return 'Spatial frame';
 }
 
@@ -389,7 +421,11 @@ export function buildSchemeUnderstandingDescription(
 	pushList(
 		lines,
 		sectionTitle('members', language),
-		unique(understanding.members.map(describeMember)),
+		unique([
+			...understanding.members.map(describeMember),
+			...(understanding.components ?? []).map(describeComponent),
+			...(understanding.kinematicPairs ?? []).map(describeKinematicPair)
+		]),
 		language === 'ru' ? 'Не указаны' : 'Not specified'
 	);
 	lines.push('');

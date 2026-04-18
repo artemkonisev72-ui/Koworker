@@ -127,6 +127,11 @@
 - `label: string` (optional)
 - `meta: object` (optional)
 
+### 7.2 Политика подписей
+- Если в текстовом описании упомянуты точки/узлы, эти `node` должны иметь `label`.
+- Если в текстовом описании упомянуты стержни/звенья/компоненты, соответствующие `objects` должны иметь `label`.
+- Для механизмов это правило распространяется и на кинематические пары (`revolute_pair`, `prismatic_pair`, `slot_pair`, `cam_contact`, `gear_pair`, `belt_pair`).
+
 ## 8. Словарь типов объектов
 
 Ниже указан канонический набор. Типы из запроса пользователя являются обязательными.
@@ -242,6 +247,56 @@
 `geometry`:
 - `width?: number`
 - `height?: number`
+
+### `revolute_pair`
+Вращательная кинематическая пара (палец/шарнир) между звеньями.
+
+Обязательные:
+- `nodeRefs: [jointNodeId]`
+
+### `prismatic_pair`
+Поступательная кинематическая пара на направляющей.
+
+Обязательные:
+- `nodeRefs: [nodeId, guideStartNodeId, guideEndNodeId]`
+
+### `slot_pair`
+Пара палец-паз (кулисная связь).
+
+Обязательные:
+- `nodeRefs: [pinNodeId, slotStartNodeId, slotEndNodeId]`
+
+### `cam`
+Кулачок как отдельный компонент механизма.
+
+Обязательные:
+- `nodeRefs: [centerNodeId]`
+- `geometry.radius: number` (> 0)
+
+### `cam_contact`
+Контакт кулачок-толкатель.
+
+Обязательные:
+- `nodeRefs: [camRefNodeId, followerRefNodeId]`
+
+### `gear_pair`
+Зацепление двух зубчатых колес.
+
+Обязательные:
+- `nodeRefs: [centerNodeIdA, centerNodeIdB]`
+
+`geometry`:
+- `meshType?: "external" | "internal"`
+
+### `belt_pair`
+Ременная/цепная связь двух колес.
+
+Обязательные:
+- `nodeRefs: [centerNodeIdA, centerNodeIdB]`
+
+`geometry`:
+- `beltKind?: "belt" | "chain"`
+- `crossed?: boolean`
 
 ## 8.3 Силовые факторы
 

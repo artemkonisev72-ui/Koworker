@@ -1,4 +1,6 @@
 import type {
+	IntentComponent,
+	IntentKinematicPair,
 	IntentLoad,
 	IntentLoadDirectionHint,
 	IntentLoadTarget,
@@ -25,6 +27,13 @@ interface MemberPlacement {
 	start: Vec3;
 	end: Vec3;
 	length: number;
+}
+
+interface ComponentPlacement {
+	intentKey: string;
+	objectId: string;
+	centerNodeId: string;
+	center: Vec3;
 }
 
 export interface CompileSchemaIntentResult {
@@ -100,11 +109,18 @@ function inferLengthHint(member: IntentMember): number {
 	return 4;
 }
 
+function inferComponentRadius(component: IntentComponent): number {
+	const fromHint = toFiniteNumber(component.radiusHint);
+	if (fromHint !== null && fromHint > 1e-6) return fromHint;
+	return component.kind === 'cam' ? 0.7 : 0.6;
+}
+
 function directionFromRelation(
 	member: IntentMember,
 	structureKind: IntentStructureKind,
 	previousDirection: Vec3
 ): Vec3 {
+	const isPlanarKind = structureKind === 'planar_frame' || structureKind === 'planar_mechanism';
 	if (structureKind === 'beam') return { x: 1, y: 0, z: 0 };
 
 	if (member.relation === 'collinear_with_prev') {
@@ -112,7 +128,7 @@ function directionFromRelation(
 		if (normalized) return normalized;
 	}
 
-	if (structureKind === 'planar_frame') {
+	if (isPlanarKind) {
 		if (member.relation === 'vertical') return { x: 0, y: 1, z: 0 };
 		if (member.relation === 'inclined') {
 			const angleRad = ((member.angleHintDeg ?? 45) * Math.PI) / 180;
@@ -165,7 +181,7 @@ function buildInitialJointCoords(intent: SchemeIntentV1): Map<string, Vec3> {
 		for (const [key, value] of coords.entries()) {
 			coords.set(key, { x: value.x, y: 0, z: 0 });
 		}
-	} else if (intent.structureKind === 'planar_frame') {
+	} else if (intent.structureKind === 'planar_frame' || intent.structureKind === 'planar_mechanism') {
 		for (const [key, value] of coords.entries()) {
 			coords.set(key, { x: value.x, y: value.y, z: 0 });
 		}
@@ -205,6 +221,12 @@ function detectTemplate(intent: SchemeIntentV1): string | null {
 	if (intent.structureKind === 'planar_frame') {
 		if (intent.members.length <= 2) return 'L-frame';
 		return 'single-bay_planar_frame';
+	}
+	if (intent.structureKind === 'planar_mechanism') {
+		return 'planar_mechanism';
+	}
+	if (intent.structureKind === 'spatial_mechanism') {
+		return 'spatial_mechanism';
 	}
 	return 'simple_spatial_frame_skeleton';
 }
@@ -311,6 +333,7 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 	const nodeById = new Map(nodes.map((node) => [node.id, node]));
 	const objects: ObjectV2[] = [];
 	const memberByIntentKey = new Map<string, MemberPlacement>();
+	const componentByIntentKey = new Map<string, ComponentPlacement>();
 
 	for (const [index, member] of intent.members.entries()) {
 		const startNodeId = jointToNodeId.get(member.startJoint);
@@ -353,7 +376,7 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 			type: member.kind,
 			nodeRefs: [startNodeId, endNodeId],
 			geometry,
-			...(member.label ? { label: member.label } : {}),
+			label: member.label ?? member.key,
 			meta: {
 				intentKey: member.key,
 				...(member.groupHint ? { groupHint: member.groupHint } : {})
@@ -368,6 +391,48 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 			start,
 			end,
 			length
+		});
+	}
+
+	for (const [index, component] of intent.components.entries()) {
+		const centerNodeId = jointToNodeId.get(component.centerJoint);
+		if (!centerNodeId) {
+			throw new SchemeIntentCompileError(
+				'Cannot compile components with unresolved joints',
+				[`components[${index}] references unknown centerJoint "${component.centerJoint}"`],
+				warnings
+			);
+		}
+		const centerNode = nodeById.get(centerNodeId);
+		if (!centerNode) {
+			throw new SchemeIntentCompileError(
+				'Internal compiler error: node map is inconsistent',
+				[`components[${index}] node lookup failed`],
+				warnings
+			);
+		}
+		const objectId = `${component.kind}_${index + 1}`;
+		const geometry: Record<string, unknown> = {
+			radius: inferComponentRadius(component)
+		};
+		if (component.profileHint) {
+			geometry.profileHint = component.profileHint;
+		}
+		objects.push({
+			id: objectId,
+			type: component.kind,
+			nodeRefs: [centerNodeId],
+			geometry,
+			label: component.label ?? component.key,
+			meta: {
+				intentKey: component.key
+			}
+		});
+		componentByIntentKey.set(component.key, {
+			intentKey: component.key,
+			objectId,
+			centerNodeId,
+			center: { x: centerNode.x, y: centerNode.y, z: centerNode.z ?? 0 }
 		});
 	}
 
@@ -410,6 +475,51 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 		});
 		attachNodeCache.set(cacheKey, nodeId);
 		return nodeId;
+	}
+
+	function resolveGuideDirection(
+		guideHint: IntentKinematicPair['guideHint'] | undefined,
+		memberHint: string | undefined
+	): Vec3 {
+		if (guideHint === 'vertical') return { x: 0, y: 1, z: 0 };
+		if (guideHint === 'member_local' && memberHint) {
+			const placement = memberByIntentKey.get(memberHint);
+			if (placement) {
+				const inferred = normalizeVec(subVec(placement.end, placement.start));
+				if (inferred) return inferred;
+			}
+		}
+		return { x: 1, y: 0, z: 0 };
+	}
+
+	function createGuideNodes(
+		baseNodeId: string,
+		tag: string,
+		guideHint: IntentKinematicPair['guideHint'] | undefined,
+		memberHint: string | undefined
+	): [string, string] {
+		const baseNode = nodeById.get(baseNodeId);
+		if (!baseNode) {
+			throw new SchemeIntentCompileError(
+				'Failed to compile kinematic pair',
+				[`base node "${baseNodeId}" does not exist`],
+				warnings
+			);
+		}
+		const baseCoord: Vec3 = { x: baseNode.x, y: baseNode.y, z: baseNode.z ?? 0 };
+		const direction = resolveGuideDirection(guideHint, memberHint);
+		const guideHalfLength = 0.9;
+		const guideStart = createNode(
+			subVec(baseCoord, scaleVec(direction, guideHalfLength)),
+			`${tag}a`,
+			{ synthetic: true, role: 'pair_guide' }
+		);
+		const guideEnd = createNode(
+			addVec(baseCoord, scaleVec(direction, guideHalfLength)),
+			`${tag}b`,
+			{ synthetic: true, role: 'pair_guide' }
+		);
+		return [guideStart, guideEnd];
 	}
 
 	for (const [index, support] of intent.supports.entries()) {
@@ -462,41 +572,121 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 		};
 
 		if (support.kind === 'slider') {
-			const baseNode = nodeById.get(baseNodeId);
-			if (!baseNode) {
-				throw new SchemeIntentCompileError(
-					'Failed to compile slider support',
-					[`supports[${index}] base node does not exist`],
-					warnings
-				);
-			}
-			const baseCoord: Vec3 = { x: baseNode.x, y: baseNode.y, z: baseNode.z ?? 0 };
-			let direction: Vec3 = { x: 1, y: 0, z: 0 };
-			if (support.guideHint === 'vertical') {
-				direction = { x: 0, y: 1, z: 0 };
-			} else if (support.guideHint === 'member_local' && support.memberKey) {
-				const placement = memberByIntentKey.get(support.memberKey);
-				if (placement) {
-					const inferred = normalizeVec(subVec(placement.end, placement.start));
-					if (inferred) direction = inferred;
-				}
-			}
-
-			const guideHalfLength = 0.9;
-			const guideStart = createNode(
-				subVec(baseCoord, scaleVec(direction, guideHalfLength)),
-				`G${index + 1}a`,
-				{ synthetic: true, role: 'slider_guide' }
-			);
-			const guideEnd = createNode(
-				addVec(baseCoord, scaleVec(direction, guideHalfLength)),
-				`G${index + 1}b`,
-				{ synthetic: true, role: 'slider_guide' }
+			const [guideStart, guideEnd] = createGuideNodes(
+				baseNodeId,
+				`G${index + 1}`,
+				support.guideHint,
+				support.memberKey
 			);
 			supportObject.nodeRefs = [baseNodeId, guideStart, guideEnd];
 		}
 
 		objects.push(supportObject);
+	}
+
+	for (const [index, pair] of intent.kinematicPairs.entries()) {
+		const objectId = `${pair.kind}_${index + 1}`;
+		const geometry: Record<string, unknown> = {};
+		const nodeRefs: string[] = [];
+		const memberHint = pair.memberKeys?.[0];
+
+		let baseNodeId: string | null = null;
+		if (pair.jointKey) {
+			baseNodeId = jointToNodeId.get(pair.jointKey) ?? null;
+		}
+		if (!baseNodeId && memberHint) {
+			const placement = memberByIntentKey.get(memberHint);
+			if (placement) {
+				baseNodeId = placement.startNodeId;
+				geometry.attach = {
+					memberId: placement.objectId,
+					s: 0,
+					side: 'center'
+				};
+			}
+		}
+		if (!baseNodeId && pair.componentKeys && pair.componentKeys.length > 0) {
+			const componentPlacement = componentByIntentKey.get(pair.componentKeys[0]);
+			if (componentPlacement) {
+				baseNodeId = componentPlacement.centerNodeId;
+			}
+		}
+
+		if (pair.kind === 'revolute_pair') {
+			if (!baseNodeId) {
+				throw new SchemeIntentCompileError(
+					'Failed to compile kinematic pairs',
+					[`kinematicPairs[${index}] revolute_pair has unresolved placement`],
+					warnings
+				);
+			}
+			nodeRefs.push(baseNodeId);
+		} else if (pair.kind === 'prismatic_pair' || pair.kind === 'slot_pair') {
+			if (!baseNodeId) {
+				throw new SchemeIntentCompileError(
+					'Failed to compile kinematic pairs',
+					[`kinematicPairs[${index}] ${pair.kind} has unresolved placement`],
+					warnings
+				);
+			}
+			const [guideStart, guideEnd] = createGuideNodes(
+				baseNodeId,
+				`P${index + 1}`,
+				pair.guideHint,
+				memberHint
+			);
+			nodeRefs.push(baseNodeId, guideStart, guideEnd);
+		} else {
+			const candidates: string[] = [];
+			if (pair.componentKeys && pair.componentKeys.length > 0) {
+				for (const key of pair.componentKeys) {
+					const placement = componentByIntentKey.get(key);
+					if (placement && !candidates.includes(placement.centerNodeId)) {
+						candidates.push(placement.centerNodeId);
+					}
+				}
+			}
+			if (pair.memberKeys && pair.memberKeys.length > 0) {
+				for (const key of pair.memberKeys) {
+					const placement = memberByIntentKey.get(key);
+					if (placement && !candidates.includes(placement.startNodeId)) {
+						candidates.push(placement.startNodeId);
+					}
+				}
+			}
+			if (baseNodeId && !candidates.includes(baseNodeId)) {
+				candidates.unshift(baseNodeId);
+			}
+			if (candidates.length < 2) {
+				throw new SchemeIntentCompileError(
+					'Failed to compile kinematic pairs',
+					[`kinematicPairs[${index}] ${pair.kind} requires two reference nodes`],
+					warnings
+				);
+			}
+			nodeRefs.push(candidates[0], candidates[1]);
+		}
+
+		if (pair.meshType) geometry.meshType = pair.meshType;
+		if (pair.beltKind) geometry.beltKind = pair.beltKind;
+		if (typeof pair.crossed === 'boolean') geometry.crossed = pair.crossed;
+		if (pair.followerType) geometry.followerType = pair.followerType;
+		if (pair.guideHint) geometry.guideHint = pair.guideHint;
+		if (pair.grounded !== undefined) geometry.grounded = pair.grounded;
+
+		objects.push({
+			id: objectId,
+			type: pair.kind,
+			nodeRefs,
+			geometry,
+			label: pair.label ?? pair.key,
+			meta: {
+				intentKey: pair.key,
+				...(pair.grounded !== undefined ? { grounded: pair.grounded } : {}),
+				...(pair.memberKeys && pair.memberKeys.length > 0 ? { memberKeys: pair.memberKeys } : {}),
+				...(pair.componentKeys && pair.componentKeys.length > 0 ? { componentKeys: pair.componentKeys } : {})
+			}
+		});
 	}
 
 	for (const [index, load] of intent.loads.entries()) {

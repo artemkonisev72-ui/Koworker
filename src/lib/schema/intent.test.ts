@@ -46,8 +46,10 @@ describe('scheme intent parser', () => {
 			modelSpace: 'planar',
 			confidence: 'medium',
 			source: { hasImage: false, language: 'ru' },
-			joints: [{ key: 'A' }, { key: 'B' }],
-			members: [{ key: 'm1', kind: 'bar', startJoint: 'A', endJoint: 'B' }],
+			joints: [{ key: 'A', label: 'A' }, { key: 'B', label: 'B' }],
+			members: [{ key: 'm1', label: 'm1', kind: 'bar', startJoint: 'A', endJoint: 'B' }],
+			components: [],
+			kinematicPairs: [],
 			supports: [{ key: 's1', kind: 'hinge_fixed', jointKey: 'A' }],
 			loads: [{ key: 'l1', kind: 'force', target: { jointKey: 'B' }, directionHint: 'down' }],
 			assumptions: ['base assumption'],
@@ -174,6 +176,54 @@ describe('scheme intent validation', () => {
 
 		expect(result.ok).toBe(false);
 		expect(result.errors.some((error) => error.includes('requestedResults'))).toBe(true);
+	});
+
+	it('canonicalizes mechanism support aliases into kinematic pairs', () => {
+		const normalized = normalizeSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'planar_mechanism',
+			modelSpace: 'planar',
+			confidence: 'medium',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'O' }, { key: 'A' }, { key: 'B' }],
+			members: [{ key: 'OA', kind: 'bar', startJoint: 'O', endJoint: 'A' }],
+			supports: [
+				{ key: 'h1', kind: 'internal_hinge', jointKey: 'A' },
+				{ key: 'sl1', kind: 'slider', jointKey: 'B', guideHint: 'horizontal' }
+			],
+			loads: [],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		expect(normalized.value.kinematicPairs.some((pair) => pair.kind === 'revolute_pair')).toBe(true);
+		expect(normalized.value.kinematicPairs.some((pair) => pair.kind === 'prismatic_pair')).toBe(true);
+		expect(normalized.value.supports).toHaveLength(0);
+		expect(
+			normalized.warnings.some((warning) => warning.includes('canonicalized to kinematicPairs'))
+		).toBe(true);
+	});
+
+	it('defaults missing joint and member labels to keys', () => {
+		const normalized = normalizeSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'beam',
+			modelSpace: 'planar',
+			confidence: 'medium',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'A' }, { key: 'B' }],
+			members: [{ key: 'm1', kind: 'bar', startJoint: 'A', endJoint: 'B' }],
+			supports: [],
+			loads: [],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		expect(normalized.value.joints.map((joint) => joint.label)).toEqual(['A', 'B']);
+		expect(normalized.value.members[0]?.label).toBe('m1');
+		expect(normalized.warnings.some((warning) => warning.includes('label was missing'))).toBe(true);
 	});
 
 	it('normalizes distributed member+s target into interval and validates it', () => {

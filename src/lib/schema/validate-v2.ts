@@ -12,6 +12,7 @@ export const MAX_SCHEMA_V2_COORD_ABS = 100_000;
 const CONSTRAINT_REQUIRED_TYPES = new Set(['bar', 'cable', 'spring', 'damper']);
 const FRAME_COMPONENTS = new Set(['N', 'Vy', 'Vz', 'T', 'My', 'Mz']);
 const FRAME_STRUCTURE_KINDS = new Set(['planar_frame', 'spatial_frame']);
+const SPATIAL_STRUCTURE_KINDS = new Set(['spatial_frame', 'spatial_mechanism']);
 const ALLOWED_AXIS_ORIGINS = new Set(['auto', 'free_end', 'fixed_end', 'member_start', 'member_end']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -31,10 +32,24 @@ function isFiniteVector3(value: unknown): boolean {
 	);
 }
 
-function normalizeStructureKind(value: unknown): 'beam' | 'planar_frame' | 'spatial_frame' | null {
+function normalizeStructureKind(
+	value: unknown
+):
+	| 'beam'
+	| 'planar_frame'
+	| 'spatial_frame'
+	| 'planar_mechanism'
+	| 'spatial_mechanism'
+	| null {
 	if (typeof value !== 'string') return null;
 	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
-	if (normalized === 'beam' || normalized === 'planar_frame' || normalized === 'spatial_frame') {
+	if (
+		normalized === 'beam' ||
+		normalized === 'planar_frame' ||
+		normalized === 'spatial_frame' ||
+		normalized === 'planar_mechanism' ||
+		normalized === 'spatial_mechanism'
+	) {
 		return normalized;
 	}
 	return null;
@@ -149,6 +164,13 @@ function validateObjectSpecific(object: ObjectV2 | ResultV2, index: number, erro
 		}
 	}
 
+	if (object.type === 'cam') {
+		const radius = geometry.radius;
+		if (!isFiniteNumber(radius) || radius <= 0) {
+			pushError(errors, `${section}[${index}] cam requires geometry.radius > 0`);
+		}
+	}
+
 	if (object.type === 'fixed_wall' && geometry.wallSide !== undefined) {
 		const wallSide = typeof geometry.wallSide === 'string' ? geometry.wallSide.trim().toLowerCase() : '';
 		if (wallSide !== 'left' && wallSide !== 'right' && wallSide !== 'top' && wallSide !== 'bottom') {
@@ -255,6 +277,44 @@ function validateObjectSpecific(object: ObjectV2 | ResultV2, index: number, erro
 			pushError(errors, `${section}[${index}] epure.geometry.compressedFiberSide must be "+n" | "-n"`);
 		}
 	}
+
+	if (object.type === 'prismatic_pair' || object.type === 'slot_pair') {
+		if (nodeRefCount !== 3) {
+			pushError(errors, `${section}[${index}] ${object.type} requires 3 nodeRefs [node, guideStart, guideEnd]`);
+		} else if (object.nodeRefs?.[1] === object.nodeRefs?.[2]) {
+			pushError(errors, `${section}[${index}] ${object.type} guideStart and guideEnd must be different`);
+		}
+	}
+
+	if (object.type === 'cam_contact' || object.type === 'gear_pair' || object.type === 'belt_pair') {
+		if (nodeRefCount !== 2) {
+			pushError(errors, `${section}[${index}] ${object.type} requires 2 nodeRefs`);
+		}
+		if (object.nodeRefs?.[0] === object.nodeRefs?.[1]) {
+			pushError(errors, `${section}[${index}] ${object.type} nodeRefs must reference distinct nodes`);
+		}
+	}
+
+	if (object.type === 'gear_pair' && geometry.meshType !== undefined) {
+		if (geometry.meshType !== 'external' && geometry.meshType !== 'internal') {
+			pushError(errors, `${section}[${index}] gear_pair.geometry.meshType must be "external" | "internal"`);
+		}
+	}
+
+	if (object.type === 'belt_pair') {
+		if (geometry.beltKind !== undefined && geometry.beltKind !== 'belt' && geometry.beltKind !== 'chain') {
+			pushError(errors, `${section}[${index}] belt_pair.geometry.beltKind must be "belt" | "chain"`);
+		}
+		if (geometry.crossed !== undefined && typeof geometry.crossed !== 'boolean') {
+			pushError(errors, `${section}[${index}] belt_pair.geometry.crossed must be boolean`);
+		}
+	}
+
+	if (object.type === 'cam_contact' && geometry.followerType !== undefined) {
+		if (geometry.followerType !== 'knife' && geometry.followerType !== 'roller' && geometry.followerType !== 'flat') {
+			pushError(errors, `${section}[${index}] cam_contact.geometry.followerType must be "knife" | "roller" | "flat"`);
+		}
+	}
 }
 
 function validateCoordinateSystem(schema: SchemaDataV2, errors: string[]): void {
@@ -357,8 +417,8 @@ export function validateSchemaDataV2(input: unknown): SchemaValidationResultV2 {
 	}
 
 	validateCoordinateSystem(schema, errors);
-	if (structureKind === 'spatial_frame' && schema.coordinateSystem?.modelSpace !== 'spatial') {
-		pushError(errors, 'meta.structureKind="spatial_frame" requires coordinateSystem.modelSpace="spatial"');
+	if (SPATIAL_STRUCTURE_KINDS.has(structureKind) && schema.coordinateSystem?.modelSpace !== 'spatial') {
+		pushError(errors, `meta.structureKind="${structureKind}" requires coordinateSystem.modelSpace="spatial"`);
 	}
 
 	const nodeIds = new Set<string>();

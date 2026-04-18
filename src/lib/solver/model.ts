@@ -2,7 +2,12 @@ import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import type { SchemaAny } from '$lib/schema/schema-any.js';
 import type { CoordinateSystemV2, NodeV2, ObjectV2, ResultV2, SchemaDataV2 } from '$lib/schema/schema-v2.js';
 
-type StructureKind = 'beam' | 'planar_frame' | 'spatial_frame';
+type StructureKind =
+	| 'beam'
+	| 'planar_frame'
+	| 'spatial_frame'
+	| 'planar_mechanism'
+	| 'spatial_mechanism';
 type ModelSpace = 'planar' | 'spatial';
 type SolverResultComponent = 'N' | 'Vy' | 'Vz' | 'T' | 'My' | 'Mz';
 
@@ -165,7 +170,13 @@ function projectOntoPlane(vector: Vec3, normal: Vec3): Vec3 {
 function normalizeStructureKind(value: unknown): StructureKind {
 	if (typeof value !== 'string') return 'beam';
 	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
-	if (normalized === 'beam' || normalized === 'planar_frame' || normalized === 'spatial_frame') {
+	if (
+		normalized === 'beam' ||
+		normalized === 'planar_frame' ||
+		normalized === 'spatial_frame' ||
+		normalized === 'planar_mechanism' ||
+		normalized === 'spatial_mechanism'
+	) {
 		return normalized;
 	}
 	return 'beam';
@@ -176,7 +187,9 @@ function normalizeModelSpace(value: unknown, structureKind: StructureKind): Mode
 		const normalized = value.trim().toLowerCase();
 		if (normalized === 'planar' || normalized === 'spatial') return normalized;
 	}
-	return structureKind === 'spatial_frame' ? 'spatial' : 'planar';
+	return structureKind === 'spatial_frame' || structureKind === 'spatial_mechanism'
+		? 'spatial'
+		: 'planar';
 }
 
 function getVector(

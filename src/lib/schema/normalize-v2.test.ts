@@ -597,3 +597,36 @@ describe('normalize-v2 frame epure canonicalization', () => {
 		);
 	});
 });
+
+describe('normalize-v2 mechanism object support', () => {
+	it('normalizes mechanism aliases and validates kinematic pair objects', () => {
+		const validation = validateSchemaDataV2({
+			version: '2.0',
+			meta: { structureKind: 'planar_mechanism' },
+			coordinateSystem: { modelSpace: 'planar' },
+			nodes: [
+				{ id: 'O', x: 0, y: 0, label: 'O' },
+				{ id: 'A', x: 2, y: 0, label: 'A' },
+				{ id: 'B', x: 4, y: 0, label: 'B' },
+				{ id: 'G1', x: 3.5, y: 0 },
+				{ id: 'G2', x: 4.5, y: 0 }
+			],
+			objects: [
+				{ id: 'm1', type: 'bar', nodeRefs: ['O', 'A'], geometry: { length: 2, angleDeg: 0 } },
+				{ id: 'm2', type: 'bar', nodeRefs: ['A', 'B'], geometry: { length: 2, angleDeg: 0 } },
+				{ id: 'pair1', type: 'pin_joint', nodeRefs: ['A'], geometry: {} },
+				{ id: 'pair2', type: 'prismatic_pair', nodeRefs: ['B', 'G1', 'G2'], geometry: {} }
+			],
+			results: []
+		});
+
+		expect(validation.ok).toBe(true);
+		expect(validation.value).toBeTruthy();
+		if (!validation.value) return;
+
+		const pair1 = validation.value.objects.find((object) => object.id === 'pair1');
+		expect(pair1?.type).toBe('revolute_pair');
+		const pair2 = validation.value.objects.find((object) => object.id === 'pair2');
+		expect(pair2?.type).toBe('prismatic_pair');
+	});
+});

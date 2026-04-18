@@ -663,12 +663,14 @@ understanding contract:
 {
   "version": "understanding-1.0",
   "taskDomain": "mechanics",
-  "structureKind": "beam|planar_frame|spatial_frame",
+  "structureKind": "beam|planar_frame|spatial_frame|planar_mechanism|spatial_mechanism",
   "modelSpace": "planar|spatial",
   "confidence": "high|medium|low",
   "source": { "hasImage": boolean, "language": "ru|en" },
   "joints": [{ "key": "...", "role": "start|end|corner|free_end|fixed_end|generic", "label": "..." }],
   "members": [{ "key": "...", "kind": "bar|cable|spring|damper", "startJoint": "...", "endJoint": "...", "relation": "horizontal|vertical|inclined|collinear_with_prev", "lengthHint": 3.5, "angleHintDeg": 30 }],
+  "components": [{ "key": "...", "kind": "rigid_disk|cam", "centerJoint": "...", "radiusHint": 1.0, "profileHint": "...", "label": "..." }],
+  "kinematicPairs": [{ "key": "...", "kind": "revolute_pair|prismatic_pair|slot_pair|cam_contact|gear_pair|belt_pair", "jointKey": "...", "memberKeys": ["..."], "componentKeys": ["..."], "guideHint": "horizontal|vertical|member_local", "meshType": "external|internal", "beltKind": "belt|chain", "crossed": false, "followerType": "knife|roller|flat", "label": "..." }],
   "supports": [{ "key": "...", "kind": "fixed_wall|hinge_fixed|hinge_roller|internal_hinge|slider", "jointKey": "...", "memberKey": "...", "s": 0.5, "sideHint": "left|right|top|bottom", "guideHint": "horizontal|vertical|member_local" }],
   "loads": [{ "key": "...", "kind": "force|moment|distributed", "target": {"jointKey":"..."} | {"memberKey":"...","s":0.5} | {"memberKey":"...","fromS":0.2,"toS":0.8}, "directionHint": "up|down|left|right|+x|-x|+y|-y|cw|ccw|member_local_positive|member_local_negative", "magnitudeHint": 10, "distributionKind": "uniform|linear|trapezoid" }],
   "requestedResults": [{ "targetMemberKey": "...", "kind": "N|Q|M|Vy|Vz|T|My|Mz" }],
@@ -680,6 +682,8 @@ Rules:
 2) If uncertain, preserve ambiguity explicitly instead of inventing detail.
 3) Keep keys stable and concise.
 4) Keep language of assumptions/ambiguities consistent with user task.
+5) Every joint/member/component/kinematic pair must have a non-empty label. If the task uses names like A, B, OA, AB, preserve them in labels.
+6) For slider-crank, connect crank and rod with revolute_pair and connect slider with prismatic_pair.
 ${languagePolicy(userMessage)}`;
 
 	const question = `Task:\n${userMessage}`;
@@ -773,12 +777,14 @@ intent contract:
 {
   "version": "intent-1.0",
   "taskDomain": "mechanics",
-  "structureKind": "beam|planar_frame|spatial_frame",
+  "structureKind": "beam|planar_frame|spatial_frame|planar_mechanism|spatial_mechanism",
   "modelSpace": "planar|spatial",
   "confidence": "high|medium|low",
   "source": { "hasImage": boolean, "language": "ru|en" },
   "joints": [{ "key": "...", "role": "start|end|corner|free_end|fixed_end|generic", "label": "..." }],
   "members": [{ "key": "...", "kind": "bar|cable|spring|damper", "startJoint": "...", "endJoint": "...", "relation": "horizontal|vertical|inclined|collinear_with_prev", "lengthHint": 3.5, "angleHintDeg": 30 }],
+  "components": [{ "key": "...", "kind": "rigid_disk|cam", "centerJoint": "...", "radiusHint": 1.0, "profileHint": "...", "label": "..." }],
+  "kinematicPairs": [{ "key": "...", "kind": "revolute_pair|prismatic_pair|slot_pair|cam_contact|gear_pair|belt_pair", "jointKey": "...", "memberKeys": ["..."], "componentKeys": ["..."], "guideHint": "horizontal|vertical|member_local", "meshType": "external|internal", "beltKind": "belt|chain", "crossed": false, "followerType": "knife|roller|flat", "label": "..." }],
   "supports": [{ "key": "...", "kind": "fixed_wall|hinge_fixed|hinge_roller|internal_hinge|slider", "jointKey": "...", "memberKey": "...", "s": 0.5, "sideHint": "left|right|top|bottom", "guideHint": "horizontal|vertical|member_local" }],
   "loads": [{ "key": "...", "kind": "force|moment|distributed", "target": {"jointKey":"..."} | {"memberKey":"...","s":0.5} | {"memberKey":"...","fromS":0.2,"toS":0.8}, "directionHint": "up|down|left|right|+x|-x|+y|-y|cw|ccw|member_local_positive|member_local_negative", "magnitudeHint": 10, "distributionKind": "uniform|linear|trapezoid" }],
   "requestedResults": [{ "targetMemberKey": "...", "kind": "N|Q|M|Vy|Vz|T|My|Mz" }],
@@ -790,7 +796,9 @@ Rules:
 2) If uncertain, put uncertainty into ambiguities instead of guessing.
 3) Keep assumptions/ambiguities concise and language-consistent with the user.
 4) Beam default result set is N/Q/M, planar frame N/Vy/Mz, spatial frame N/Vy/Vz/T/My/Mz.
-5) Spatial frame must set modelSpace="spatial"; beam/planar frame must set modelSpace="planar".
+5) Spatial frame/mechanism must set modelSpace="spatial"; beam/planar frame/mechanism must set modelSpace="planar".
+6) Every joint/member/component/kinematic pair must include label.
+7) For slider-crank, always use revolute_pair between crank and rod.
 ${languagePolicy(userMessage)}`;
 
 	if (useFastMode) {
@@ -994,7 +1002,7 @@ Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 schemaData MUST be version "2.0" with root keys:
 {
   "version":"2.0",
-  "meta":{"taskDomain":"mechanics","catalogVersion":"2026-04-11","layoutPipeline":"topology-first","structureKind":"beam|planar_frame|spatial_frame"},
+  "meta":{"taskDomain":"mechanics","catalogVersion":"2026-04-11","layoutPipeline":"topology-first","structureKind":"beam|planar_frame|spatial_frame|planar_mechanism|spatial_mechanism"},
   "coordinateSystem":{"xUnit":"m","yUnit":"m","zUnit":"m","origin":{"x":0,"y":0},"modelSpace":"planar|spatial","axisOrientation":"right-handed","originPolicy":"auto|left_support|fixed_support|centroid","planeNormal":{"x":0,"y":0,"z":1},"referenceUp":{"x":0,"y":0,"z":1},"secondaryReference":{"x":1,"y":0,"z":0},"projectionPreset":"auto_isometric|xy|xz|yz"},
   "nodes": [],
   "objects": [],
@@ -1003,7 +1011,7 @@ schemaData MUST be version "2.0" with root keys:
   "assumptions": [],
   "ambiguities": []
 }
-Allowed object types for schemaData.objects: bar, cable, spring, damper, rigid_disk, fixed_wall, hinge_fixed, hinge_roller, internal_hinge, slider, force, moment, distributed, velocity, acceleration, angular_velocity, angular_acceleration, trajectory, label, dimension, axis, ground.
+Allowed object types for schemaData.objects: bar, cable, spring, damper, rigid_disk, cam, fixed_wall, hinge_fixed, hinge_roller, internal_hinge, slider, revolute_pair, prismatic_pair, slot_pair, cam_contact, gear_pair, belt_pair, force, moment, distributed, velocity, acceleration, angular_velocity, angular_acceleration, trajectory, label, dimension, axis, ground.
 Result types for schemaData.results: epure, trajectory, label, dimension, axis.
 Do NOT place epure into schemaData.objects; epure must be in schemaData.results only.
 Every object MUST contain non-empty id, type, geometry object.
@@ -1012,12 +1020,15 @@ Topology-first policy: your primary responsibility is structure and constraints,
 Coordinates are only a coarse scaffold and may be overridden by deterministic backend layout.
 For linear members (bar/cable/spring/damper/axis/ground), include geometry.length and geometry.angleDeg or geometry.constraints.
 geometry.constraints object may include: collinearWith[], parallelTo[], perpendicularTo[], mirrorOf.
-For frame problems, set meta.structureKind and coordinateSystem.modelSpace explicitly:
+For frame/mechanism problems, set meta.structureKind and coordinateSystem.modelSpace explicitly:
 - beam -> structureKind="beam", modelSpace="planar"
 - planar frame -> structureKind="planar_frame", modelSpace="planar", include planeNormal
 - spatial frame -> structureKind="spatial_frame", modelSpace="spatial", include referenceUp (and secondaryReference fallback)
+- planar mechanism -> structureKind="planar_mechanism", modelSpace="planar"
+- spatial mechanism -> structureKind="spatial_mechanism", modelSpace="spatial", include referenceUp
 For spatial frame nodes include z coordinates where needed.
 For supports and loads, always bind to existing member nodes via nodeRefs (never default to origin).
+For mechanism kinematic pairs, use canonical objects: revolute_pair, prismatic_pair, slot_pair, cam_contact, gear_pair, belt_pair.
 For force/distributed/velocity/acceleration ALWAYS provide explicit direction:
 - prefer geometry.directionAngle in degrees
 - or geometry.direction vector {x,y}
@@ -1037,6 +1048,7 @@ For spatial_frame do not use legacy Q/M as the primary contract; provide explici
 For a simple cantilever beam with one fixed_wall at one bar end, epure geometry.axisOrigin MUST be "free_end" and geometry.values/baseLine must run from the free end toward the fixed support.
 Do NOT place all supports/loads at (0,0) by default.
 Preserve language of assumptions/ambiguities according to user request.
+If a joint/member/component/pair is mentioned in textual description, it must have visible label in schema.
 ${languagePolicy(userMessage)}`;
 
 	if (useFastMode) {
@@ -1082,14 +1094,18 @@ Fill canonical geometry per type:
 - fixed_wall/hinge_fixed/hinge_roller/internal_hinge/label: use nodeRefs [node]
 - fixed_wall may include wallSide left|right|top|bottom
 - slider: nodeRefs [node, guideStart, guideEnd]
+- revolute_pair: nodeRefs [node]
+- prismatic_pair/slot_pair: nodeRefs [node, guideStart, guideEnd]
+- rigid_disk/cam: nodeRefs [center] + radius
+- cam_contact/gear_pair/belt_pair: nodeRefs [firstRefNode, secondRefNode]
 - force/velocity/acceleration: nodeRefs [node] + direction (+ attach for member-relative placement)
 - moment: nodeRefs [node] + direction cw|ccw (+ optional magnitude or label)
 - distributed: nodeRefs [start,end] + kind + intensity + direction
-- rigid_disk: nodeRefs [center] + radius
 - trajectory: geometry.points array
 - epure (if present): put into results with baseLine + values + fillHatch + showSigns
 - beam epure: include kind + axisOrigin (+ compressedFiberSide for kind "M")
-- frame epure: include component (N|Vy|Vz|T|My|Mz) + axisOrigin="member_start"`;
+- frame epure: include component (N|Vy|Vz|T|My|Mz) + axisOrigin="member_start"
+- if textual description names points/members/components/pairs, preserve matching labels in nodes/objects`;
 	const stageBQuestion = `Task context:\n${contextMessage}\n\nStage A schema JSON:\n${stageASchemaJson}\n\nNow return finalized schemaData v2.`;
 	const stageB = await generateSchemaStage(history, stageBPrompt, stageBQuestion, params?.forcedModel);
 	usedModels.push(formatTokenAttribution(stageB.model, 'SchemaGen-B', stageB.tokens));
@@ -1136,7 +1152,7 @@ Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 Preserve correct existing elements and update only what is needed per revision notes.
 Keep schemaData.version = "2.0" and finite numbers.
 Use ONLY object types from catalog v2:
-bar, cable, spring, damper, rigid_disk, fixed_wall, hinge_fixed, hinge_roller, internal_hinge, slider, force, moment, distributed, velocity, acceleration, angular_velocity, angular_acceleration, trajectory, epure, label, dimension, axis, ground.
+bar, cable, spring, damper, rigid_disk, cam, fixed_wall, hinge_fixed, hinge_roller, internal_hinge, slider, revolute_pair, prismatic_pair, slot_pair, cam_contact, gear_pair, belt_pair, force, moment, distributed, velocity, acceleration, angular_velocity, angular_acceleration, trajectory, epure, label, dimension, axis, ground.
 Use nodeRefs to bind all objects to nodes.
 If epure is needed, place it in schemaData.results, not in schemaData.objects.
 For epure visuals, default to geometry.fillHatch=true and geometry.showSigns=true unless the task explicitly asks otherwise.
@@ -1159,6 +1175,7 @@ For moment/angular include direction "cw" | "ccw".
 Preserve existing coordinates unless revision notes explicitly request moving elements.
 Do NOT collapse supports/loads/moments to (0,0) unless the user explicitly requests coincidence at the origin.
 Every object MUST include geometry object and non-empty unique id.
+When textual description names points or members, keep corresponding node/object labels visible and consistent.
 ${languagePolicy(languageSeed)}`;
 
 	const currentSchemaJson = JSON.stringify(params.currentSchema, null, 2);

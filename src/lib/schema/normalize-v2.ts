@@ -33,7 +33,12 @@ interface NodeRefBounds {
 }
 
 type OriginPolicy = 'auto' | 'left_support' | 'fixed_support' | 'centroid';
-type StructureKind = 'beam' | 'planar_frame' | 'spatial_frame';
+type StructureKind =
+	| 'beam'
+	| 'planar_frame'
+	| 'spatial_frame'
+	| 'planar_mechanism'
+	| 'spatial_mechanism';
 type ModelSpace = 'planar' | 'spatial';
 type EpureAxisOrigin = 'auto' | 'free_end' | 'fixed_end' | 'member_start' | 'member_end';
 type FrameComponent = 'N' | 'Vy' | 'Vz' | 'T' | 'My' | 'Mz';
@@ -65,7 +70,13 @@ function toFiniteNumber(value: unknown): number | null {
 function normalizeStructureKind(value: unknown): StructureKind | null {
 	if (typeof value !== 'string') return null;
 	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
-	if (normalized === 'beam' || normalized === 'planar_frame' || normalized === 'spatial_frame') {
+	if (
+		normalized === 'beam' ||
+		normalized === 'planar_frame' ||
+		normalized === 'spatial_frame' ||
+		normalized === 'planar_mechanism' ||
+		normalized === 'spatial_mechanism'
+	) {
 		return normalized;
 	}
 	return null;
@@ -367,7 +378,8 @@ function normalizeAttachGeometry(geometry: Record<string, unknown>): void {
 
 function normalizeType(value: unknown): SchemaObjectTypeV2 {
 	const raw = typeof value === 'string' ? value.trim() : 'label';
-	const mapped = TYPE_ALIASES_V1_TO_V2[raw] ?? raw;
+	const lowered = raw.toLowerCase();
+	const mapped = TYPE_ALIASES_V1_TO_V2[raw] ?? TYPE_ALIASES_V1_TO_V2[lowered] ?? lowered;
 	if (SCHEMA_OBJECT_TYPES_V2_SET.has(mapped as SchemaObjectTypeV2)) {
 		return mapped as SchemaObjectTypeV2;
 	}
@@ -612,9 +624,42 @@ function normalizeObjectGeometry(
 		}
 	}
 
-	if (type === 'rigid_disk') {
+	if (type === 'rigid_disk' || type === 'cam') {
 		const radius = toFiniteNumber(geometry.radius) ?? toFiniteNumber(geometry.r);
 		if (radius !== null) geometry.radius = Math.abs(radius);
+	}
+
+	if (type === 'cam_contact') {
+		const followerTypeCandidate =
+			typeof geometry.followerType === 'string' ? geometry.followerType.trim().toLowerCase() : '';
+		if (
+			followerTypeCandidate === 'knife' ||
+			followerTypeCandidate === 'roller' ||
+			followerTypeCandidate === 'flat'
+		) {
+			geometry.followerType = followerTypeCandidate;
+		}
+	}
+
+	if (type === 'gear_pair') {
+		const meshTypeCandidate =
+			typeof geometry.meshType === 'string' ? geometry.meshType.trim().toLowerCase() : '';
+		if (meshTypeCandidate === 'external' || meshTypeCandidate === 'internal') {
+			geometry.meshType = meshTypeCandidate;
+		}
+	}
+
+	if (type === 'belt_pair') {
+		const beltKindCandidate =
+			typeof geometry.beltKind === 'string' ? geometry.beltKind.trim().toLowerCase() : '';
+		if (beltKindCandidate === 'belt' || beltKindCandidate === 'chain') {
+			geometry.beltKind = beltKindCandidate;
+		}
+		if (typeof geometry.crossed === 'string') {
+			const compact = geometry.crossed.trim().toLowerCase();
+			if (compact === 'true' || compact === 'yes' || compact === '1') geometry.crossed = true;
+			if (compact === 'false' || compact === 'no' || compact === '0') geometry.crossed = false;
+		}
 	}
 
 	if (type === 'distributed') {
@@ -927,6 +972,9 @@ const PAIR_TYPES = new Set<SchemaObjectTypeV2>([
 	'spring',
 	'damper',
 	'distributed',
+	'cam_contact',
+	'gear_pair',
+	'belt_pair',
 	'dimension',
 	'axis',
 	'ground'
@@ -937,6 +985,7 @@ const SINGLE_TYPES = new Set<SchemaObjectTypeV2>([
 	'hinge_fixed',
 	'hinge_roller',
 	'internal_hinge',
+	'revolute_pair',
 	'force',
 	'moment',
 	'velocity',
@@ -944,6 +993,7 @@ const SINGLE_TYPES = new Set<SchemaObjectTypeV2>([
 	'angular_velocity',
 	'angular_acceleration',
 	'rigid_disk',
+	'cam',
 	'label'
 ]);
 
@@ -1034,7 +1084,7 @@ function candidatePointsForNodeRefs(type: SchemaObjectTypeV2, geometry: Record<s
 	const guideStart = pickPoint(geometry, ['guideStart', 'trackStart', 'railStart']);
 	const guideEnd = pickPoint(geometry, ['guideEnd', 'trackEnd', 'railEnd']);
 
-	if (type === 'slider') {
+	if (type === 'slider' || type === 'prismatic_pair' || type === 'slot_pair') {
 		return [point ?? start, guideStart ?? start ?? point, guideEnd ?? end]
 			.filter((entry): entry is Point => Boolean(entry));
 	}
@@ -1233,7 +1283,7 @@ function deriveMemberLocalFrame(
 	});
 	if (!ex) return null;
 
-	if (structureKind === 'spatial_frame') {
+	if (structureKind === 'spatial_frame' || structureKind === 'spatial_mechanism') {
 		return deriveSpatialLocalFrame(
 			ex,
 			isFiniteVector3(coordinateSystem.referenceUp) ? coordinateSystem.referenceUp : null,
@@ -1680,7 +1730,8 @@ export function normalizeSchemaDataV2(input: unknown): SchemaNormalizeResultV2 {
 		structureKindFromMeta ??
 		(requestedModelSpace === 'spatial' ? 'spatial_frame' : requestedModelSpace === 'planar' ? 'planar_frame' : 'beam');
 	const modelSpace: ModelSpace =
-		requestedModelSpace ?? (structureKind === 'spatial_frame' ? 'spatial' : 'planar');
+		requestedModelSpace ??
+		(structureKind === 'spatial_frame' || structureKind === 'spatial_mechanism' ? 'spatial' : 'planar');
 	const meta = {
 		...rawMeta,
 		structureKind

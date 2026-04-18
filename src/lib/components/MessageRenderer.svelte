@@ -31,7 +31,12 @@
 		isStreaming?: boolean;
 	}
 
-	type StructureKind = 'beam' | 'planar_frame' | 'spatial_frame';
+	type StructureKind =
+		| 'beam'
+		| 'planar_frame'
+		| 'spatial_frame'
+		| 'planar_mechanism'
+		| 'spatial_mechanism';
 	const FRAME_COMPONENT_ORDER = ['N', 'Vy', 'Vz', 'T', 'My', 'Mz'] as const;
 
 	type ExportActionId = 'pdf';
@@ -91,7 +96,13 @@
 	function normalizeStructureKind(value: unknown): StructureKind {
 		if (typeof value !== 'string') return 'beam';
 		const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
-		if (normalized === 'beam' || normalized === 'planar_frame' || normalized === 'spatial_frame') {
+		if (
+			normalized === 'beam' ||
+			normalized === 'planar_frame' ||
+			normalized === 'spatial_frame' ||
+			normalized === 'planar_mechanism' ||
+			normalized === 'spatial_mechanism'
+		) {
 			return normalized;
 		}
 		return 'beam';

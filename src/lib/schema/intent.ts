@@ -1,6 +1,11 @@
 export const SCHEME_INTENT_V1_VERSION = 'intent-1.0' as const;
 
-export type IntentStructureKind = 'beam' | 'planar_frame' | 'spatial_frame';
+export type IntentStructureKind =
+	| 'beam'
+	| 'planar_frame'
+	| 'spatial_frame'
+	| 'planar_mechanism'
+	| 'spatial_mechanism';
 export type IntentModelSpace = 'planar' | 'spatial';
 export type IntentConfidence = 'high' | 'medium' | 'low';
 export type IntentLanguage = 'ru' | 'en';
@@ -22,6 +27,17 @@ export type IntentSupportKind =
 export type IntentSupportSideHint = 'left' | 'right' | 'top' | 'bottom';
 export type IntentSupportGuideHint = 'horizontal' | 'vertical' | 'member_local';
 export type IntentLoadKind = 'force' | 'moment' | 'distributed';
+export type IntentComponentKind = 'rigid_disk' | 'cam';
+export type IntentKinematicPairKind =
+	| 'revolute_pair'
+	| 'prismatic_pair'
+	| 'slot_pair'
+	| 'cam_contact'
+	| 'gear_pair'
+	| 'belt_pair';
+export type IntentMeshType = 'external' | 'internal';
+export type IntentBeltKind = 'belt' | 'chain';
+export type IntentFollowerType = 'knife' | 'roller' | 'flat';
 export type IntentLoadDirectionHint =
 	| 'up'
 	| 'down'
@@ -66,6 +82,30 @@ export interface IntentSupport {
 	guideHint?: IntentSupportGuideHint;
 }
 
+export interface IntentComponent {
+	key: string;
+	kind: IntentComponentKind;
+	centerJoint: string;
+	radiusHint?: number | string;
+	profileHint?: string;
+	label?: string;
+}
+
+export interface IntentKinematicPair {
+	key: string;
+	kind: IntentKinematicPairKind;
+	jointKey?: string;
+	memberKeys?: string[];
+	componentKeys?: string[];
+	grounded?: boolean;
+	guideHint?: IntentSupportGuideHint;
+	meshType?: IntentMeshType;
+	beltKind?: IntentBeltKind;
+	crossed?: boolean;
+	followerType?: IntentFollowerType;
+	label?: string;
+}
+
 export type IntentLoadTarget =
 	| { jointKey: string }
 	| { memberKey: string; s: number }
@@ -98,6 +138,8 @@ export interface SchemeIntentV1 {
 	};
 	joints: IntentJoint[];
 	members: IntentMember[];
+	components: IntentComponent[];
+	kinematicPairs: IntentKinematicPair[];
 	supports: IntentSupport[];
 	loads: IntentLoad[];
 	requestedResults?: IntentRequestedResult[];
@@ -153,6 +195,18 @@ const SUPPORT_KINDS = new Set<IntentSupportKind>([
 ]);
 const SUPPORT_SIDE_HINTS = new Set<IntentSupportSideHint>(['left', 'right', 'top', 'bottom']);
 const SUPPORT_GUIDE_HINTS = new Set<IntentSupportGuideHint>(['horizontal', 'vertical', 'member_local']);
+const COMPONENT_KINDS = new Set<IntentComponentKind>(['rigid_disk', 'cam']);
+const KINEMATIC_PAIR_KINDS = new Set<IntentKinematicPairKind>([
+	'revolute_pair',
+	'prismatic_pair',
+	'slot_pair',
+	'cam_contact',
+	'gear_pair',
+	'belt_pair'
+]);
+const MESH_TYPES = new Set<IntentMeshType>(['external', 'internal']);
+const BELT_KINDS = new Set<IntentBeltKind>(['belt', 'chain']);
+const FOLLOWER_TYPES = new Set<IntentFollowerType>(['knife', 'roller', 'flat']);
 const LOAD_KINDS = new Set<IntentLoadKind>(['force', 'moment', 'distributed']);
 const LOAD_DIRECTION_HINTS = new Set<IntentLoadDirectionHint>([
 	'up',
@@ -224,7 +278,9 @@ function normalizeStructureKind(value: unknown): IntentStructureKind | null {
 	if (
 		normalized === 'beam' ||
 		normalized === 'planar_frame' ||
-		normalized === 'spatial_frame'
+		normalized === 'spatial_frame' ||
+		normalized === 'planar_mechanism' ||
+		normalized === 'spatial_mechanism'
 	) {
 		return normalized;
 	}
@@ -263,6 +319,8 @@ function normalizeSupportKind(value: unknown): IntentSupportKind | null {
 	if (normalized === 'support_pin') return 'hinge_fixed';
 	if (normalized === 'support_roller') return 'hinge_roller';
 	if (normalized === 'hinge') return 'internal_hinge';
+	if (normalized === 'revolute_pair') return 'internal_hinge';
+	if (normalized === 'prismatic_pair' || normalized === 'slot_pair') return 'slider';
 	return SUPPORT_KINDS.has(normalized as IntentSupportKind)
 		? (normalized as IntentSupportKind)
 		: null;
@@ -278,6 +336,48 @@ function normalizeSupportGuideHint(value: unknown): IntentSupportGuideHint | und
 	if (typeof value !== 'string') return undefined;
 	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_') as IntentSupportGuideHint;
 	return SUPPORT_GUIDE_HINTS.has(normalized) ? normalized : undefined;
+}
+
+function normalizeComponentKind(value: unknown): IntentComponentKind | null {
+	if (typeof value !== 'string') return null;
+	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_') as IntentComponentKind;
+	return COMPONENT_KINDS.has(normalized) ? normalized : null;
+}
+
+function normalizeKinematicPairKind(value: unknown): IntentKinematicPairKind | null {
+	if (typeof value !== 'string') return null;
+	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+	if (normalized === 'pin_joint' || normalized === 'revolute_joint' || normalized === 'turning_pair') {
+		return 'revolute_pair';
+	}
+	if (normalized === 'slider' || normalized === 'sliding_pair' || normalized === 'prismatic_joint') {
+		return 'prismatic_pair';
+	}
+	if (normalized === 'slot_joint') return 'slot_pair';
+	if (normalized === 'cam_follower') return 'cam_contact';
+	if (normalized === 'gear_mesh') return 'gear_pair';
+	if (normalized === 'belt_drive') return 'belt_pair';
+	return KINEMATIC_PAIR_KINDS.has(normalized as IntentKinematicPairKind)
+		? (normalized as IntentKinematicPairKind)
+		: null;
+}
+
+function normalizeMeshType(value: unknown): IntentMeshType | undefined {
+	if (typeof value !== 'string') return undefined;
+	const normalized = value.trim().toLowerCase() as IntentMeshType;
+	return MESH_TYPES.has(normalized) ? normalized : undefined;
+}
+
+function normalizeBeltKind(value: unknown): IntentBeltKind | undefined {
+	if (typeof value !== 'string') return undefined;
+	const normalized = value.trim().toLowerCase() as IntentBeltKind;
+	return BELT_KINDS.has(normalized) ? normalized : undefined;
+}
+
+function normalizeFollowerType(value: unknown): IntentFollowerType | undefined {
+	if (typeof value !== 'string') return undefined;
+	const normalized = value.trim().toLowerCase() as IntentFollowerType;
+	return FOLLOWER_TYPES.has(normalized) ? normalized : undefined;
 }
 
 function normalizeLoadKind(value: unknown): IntentLoadKind | null {
@@ -401,6 +501,91 @@ function normalizeSupportCandidate(raw: unknown, index: number): IntentSupport |
 	return support;
 }
 
+function normalizeComponentCandidate(raw: unknown, index: number): IntentComponent | null {
+	if (!isRecord(raw)) return null;
+	const kind = normalizeComponentKind(raw.kind ?? raw.type ?? raw.componentType);
+	if (!kind) return null;
+	const key = normalizeKey(raw.key ?? raw.id ?? raw.name, `component_${index + 1}`);
+	const centerJoint = normalizeKey(
+		raw.centerJoint ?? raw.centerNode ?? raw.jointKey ?? raw.nodeKey ?? raw.node,
+		''
+	);
+	if (!centerJoint) return null;
+	const radiusHintNumber =
+		toFiniteNumber(raw.radiusHint ?? raw.radius ?? raw.r ?? raw.diameter) ?? undefined;
+	const radiusHintString =
+		typeof raw.radiusHint === 'string' && raw.radiusHint.trim() ? raw.radiusHint.trim() : undefined;
+	const profileHint =
+		typeof raw.profileHint === 'string' && raw.profileHint.trim() ? raw.profileHint.trim() : undefined;
+	const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : undefined;
+	return {
+		key,
+		kind,
+		centerJoint,
+		...(radiusHintNumber !== undefined
+			? { radiusHint: radiusHintNumber }
+			: radiusHintString
+				? { radiusHint: radiusHintString }
+				: {}),
+		...(profileHint ? { profileHint } : {}),
+		...(label ? { label } : {})
+	};
+}
+
+function normalizeRefArray(value: unknown, singularFallback: unknown): string[] {
+	const fromArray = Array.isArray(value)
+		? value
+			.filter((item): item is string => typeof item === 'string')
+			.map((item) => item.trim())
+			.filter(Boolean)
+		: [];
+	if (fromArray.length > 0) return uniqueStrings(fromArray);
+	if (typeof singularFallback === 'string' && singularFallback.trim()) {
+		return [singularFallback.trim()];
+	}
+	return [];
+}
+
+function normalizeKinematicPairCandidate(raw: unknown, index: number): IntentKinematicPair | null {
+	if (!isRecord(raw)) return null;
+	const kind = normalizeKinematicPairKind(raw.kind ?? raw.type ?? raw.pairType);
+	if (!kind) return null;
+	const key = normalizeKey(raw.key ?? raw.id ?? raw.name, `pair_${index + 1}`);
+	const jointKey = normalizeKey(raw.jointKey ?? raw.joint ?? raw.nodeKey ?? raw.node, '');
+	const memberKeys = normalizeRefArray(raw.memberKeys, raw.memberKey ?? raw.member);
+	const componentKeys = normalizeRefArray(raw.componentKeys, raw.componentKey ?? raw.component);
+	const grounded = typeof raw.grounded === 'boolean' ? raw.grounded : undefined;
+	const guideHint = normalizeSupportGuideHint(raw.guideHint ?? raw.guide ?? raw.orientation);
+	const meshType = normalizeMeshType(raw.meshType);
+	const beltKind = normalizeBeltKind(raw.beltKind);
+	const followerType = normalizeFollowerType(raw.followerType);
+	let crossed: boolean | undefined;
+	if (typeof raw.crossed === 'boolean') {
+		crossed = raw.crossed;
+	} else if (typeof raw.crossed === 'string') {
+		const compact = raw.crossed.trim().toLowerCase();
+		if (compact === 'true' || compact === 'yes' || compact === '1') crossed = true;
+		if (compact === 'false' || compact === 'no' || compact === '0') crossed = false;
+	}
+	const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : undefined;
+
+	const pair: IntentKinematicPair = {
+		key,
+		kind
+	};
+	if (jointKey) pair.jointKey = jointKey;
+	if (memberKeys.length > 0) pair.memberKeys = memberKeys;
+	if (componentKeys.length > 0) pair.componentKeys = componentKeys;
+	if (grounded !== undefined) pair.grounded = grounded;
+	if (guideHint) pair.guideHint = guideHint;
+	if (meshType) pair.meshType = meshType;
+	if (beltKind) pair.beltKind = beltKind;
+	if (crossed !== undefined) pair.crossed = crossed;
+	if (followerType) pair.followerType = followerType;
+	if (label) pair.label = label;
+	return pair;
+}
+
 function normalizeMagnitudeHint(value: unknown): IntentLoad['magnitudeHint'] | undefined {
 	if (value === undefined || value === null) return undefined;
 	const numberValue = toFiniteNumber(value);
@@ -516,6 +701,8 @@ function mergeIntentWithBase(
 	normalizedCandidate: SchemeIntentV1,
 	baseIntent: SchemeIntentV1
 ): SchemeIntentV1 {
+	const baseComponents = Array.isArray(baseIntent.components) ? baseIntent.components : [];
+	const baseKinematicPairs = Array.isArray(baseIntent.kinematicPairs) ? baseIntent.kinematicPairs : [];
 	const usesCandidateStructureKind = hasOwnKey(candidatePayload, 'structureKind');
 	const usesCandidateModelSpace = hasOwnKey(candidatePayload, 'modelSpace');
 
@@ -525,7 +712,7 @@ function mergeIntentWithBase(
 	const modelSpace = usesCandidateModelSpace
 		? normalizedCandidate.modelSpace
 		: usesCandidateStructureKind
-			? (structureKind === 'spatial_frame' ? 'spatial' : 'planar')
+			? (structureKind === 'spatial_frame' || structureKind === 'spatial_mechanism' ? 'spatial' : 'planar')
 			: baseIntent.modelSpace;
 
 	const confidence = hasOwnKey(candidatePayload, 'confidence')
@@ -543,6 +730,12 @@ function mergeIntentWithBase(
 		normalizedCandidate.members.length > 0
 			? normalizedCandidate.members
 			: baseIntent.members;
+	const components = hasOwnKey(candidatePayload, 'components')
+		? normalizedCandidate.components
+		: baseComponents;
+	const kinematicPairs = hasOwnKey(candidatePayload, 'kinematicPairs')
+		? normalizedCandidate.kinematicPairs
+		: baseKinematicPairs;
 	const supports = hasOwnKey(candidatePayload, 'supports')
 		? normalizedCandidate.supports
 		: baseIntent.supports;
@@ -568,6 +761,8 @@ function mergeIntentWithBase(
 		source,
 		joints,
 		members,
+		components,
+		kinematicPairs,
 		supports,
 		loads,
 		...(requestedResults && requestedResults.length > 0 ? { requestedResults } : {}),
@@ -639,7 +834,9 @@ export function normalizeSchemeIntent(input: unknown): SchemeIntentNormalizeResu
 	const structureKind = normalizeStructureKind(rootPayload.structureKind) ?? 'beam';
 	const modelSpace =
 		normalizeModelSpace(rootPayload.modelSpace) ??
-		(structureKind === 'spatial_frame' ? 'spatial' : 'planar');
+		(structureKind === 'spatial_frame' || structureKind === 'spatial_mechanism'
+			? 'spatial'
+			: 'planar');
 	const confidence = normalizeConfidence(rootPayload.confidence);
 	const sourceRecord = isRecord(rootPayload.source) ? rootPayload.source : {};
 	const source = {
@@ -649,6 +846,8 @@ export function normalizeSchemeIntent(input: unknown): SchemeIntentNormalizeResu
 
 	const jointsRaw = Array.isArray(rootPayload.joints) ? rootPayload.joints : [];
 	const membersRaw = Array.isArray(rootPayload.members) ? rootPayload.members : [];
+	const componentsRaw = Array.isArray(rootPayload.components) ? rootPayload.components : [];
+	const kinematicPairsRaw = Array.isArray(rootPayload.kinematicPairs) ? rootPayload.kinematicPairs : [];
 	const supportsRaw = Array.isArray(rootPayload.supports) ? rootPayload.supports : [];
 	const loadsRaw = Array.isArray(rootPayload.loads) ? rootPayload.loads : [];
 	const requestedRaw = Array.isArray(rootPayload.requestedResults) ? rootPayload.requestedResults : [];
@@ -659,7 +858,11 @@ export function normalizeSchemeIntent(input: unknown): SchemeIntentNormalizeResu
 		const normalized = normalizeJointCandidate(rawJoint, index);
 		if (!normalized) continue;
 		const key = ensureUniqueKey(normalized.key, usedJointKeys, 'J');
-		joints.push({ ...normalized, key });
+		const label = normalized.label?.trim() || key;
+		if (!normalized.label) {
+			warnings.push(`joints["${key}"] label was missing and defaulted to key`);
+		}
+		joints.push({ ...normalized, key, label });
 	}
 
 	const usedMemberKeys = new Set<string>();
@@ -668,7 +871,11 @@ export function normalizeSchemeIntent(input: unknown): SchemeIntentNormalizeResu
 		const normalized = normalizeMemberCandidate(rawMember, index);
 		if (!normalized) continue;
 		const key = ensureUniqueKey(normalized.key, usedMemberKeys, 'm');
-		members.push({ ...normalized, key });
+		const label = normalized.label?.trim() || key;
+		if (!normalized.label) {
+			warnings.push(`members["${key}"] label was missing and defaulted to key`);
+		}
+		members.push({ ...normalized, key, label });
 	}
 
 	if (joints.length === 0 && members.length > 0) {
@@ -677,7 +884,7 @@ export function normalizeSchemeIntent(input: unknown): SchemeIntentNormalizeResu
 		);
 		for (const key of autoJointKeys) {
 			const unique = ensureUniqueKey(key, usedJointKeys, 'J');
-			joints.push({ key: unique });
+			joints.push({ key: unique, label: unique });
 		}
 		warnings.push('Intent joints were inferred from member endpoints.');
 	} else if (joints.length > 0 && members.length > 0) {
@@ -689,12 +896,38 @@ export function normalizeSchemeIntent(input: unknown): SchemeIntentNormalizeResu
 		if (missingJointKeys.length > 0) {
 			for (const key of missingJointKeys) {
 				const unique = ensureUniqueKey(key, usedJointKeys, 'J');
-				joints.push({ key: unique });
+				joints.push({ key: unique, label: unique });
 			}
 			warnings.push(
 				`Intent joints were extended from member endpoints: ${missingJointKeys.join(', ')}`
 			);
 		}
+	}
+
+	const usedComponentKeys = new Set<string>();
+	const components: IntentComponent[] = [];
+	for (const [index, rawComponent] of componentsRaw.entries()) {
+		const normalized = normalizeComponentCandidate(rawComponent, index);
+		if (!normalized) continue;
+		const key = ensureUniqueKey(normalized.key, usedComponentKeys, 'component');
+		const label = normalized.label?.trim() || key;
+		if (!normalized.label) {
+			warnings.push(`components["${key}"] label was missing and defaulted to key`);
+		}
+		components.push({ ...normalized, key, label });
+	}
+
+	const usedPairKeys = new Set<string>();
+	const kinematicPairs: IntentKinematicPair[] = [];
+	for (const [index, rawPair] of kinematicPairsRaw.entries()) {
+		const normalized = normalizeKinematicPairCandidate(rawPair, index);
+		if (!normalized) continue;
+		const key = ensureUniqueKey(normalized.key, usedPairKeys, 'pair');
+		const label = normalized.label?.trim() || key;
+		if (!normalized.label) {
+			warnings.push(`kinematicPairs["${key}"] label was missing and defaulted to key`);
+		}
+		kinematicPairs.push({ ...normalized, key, label });
 	}
 
 	const usedSupportKeys = new Set<string>();
@@ -704,6 +937,42 @@ export function normalizeSchemeIntent(input: unknown): SchemeIntentNormalizeResu
 		if (!normalized) continue;
 		const key = ensureUniqueKey(normalized.key, usedSupportKeys, 'support');
 		supports.push({ ...normalized, key });
+	}
+
+	if (structureKind === 'planar_mechanism' || structureKind === 'spatial_mechanism') {
+		const convertedPairs: IntentKinematicPair[] = [];
+		const keptSupports: IntentSupport[] = [];
+		for (const support of supports) {
+			if (support.kind === 'internal_hinge') {
+				const pairKey = ensureUniqueKey(`pair_${support.key}`, usedPairKeys, 'pair');
+				convertedPairs.push({
+					key: pairKey,
+					kind: 'revolute_pair',
+					...(support.jointKey ? { jointKey: support.jointKey } : {}),
+					...(support.memberKey ? { memberKeys: [support.memberKey] } : {}),
+					label: pairKey
+				});
+				warnings.push(`supports["${support.key}"] internal_hinge was canonicalized to kinematicPairs as revolute_pair`);
+				continue;
+			}
+			if (support.kind === 'slider') {
+				const pairKey = ensureUniqueKey(`pair_${support.key}`, usedPairKeys, 'pair');
+				convertedPairs.push({
+					key: pairKey,
+					kind: 'prismatic_pair',
+					...(support.jointKey ? { jointKey: support.jointKey } : {}),
+					...(support.memberKey ? { memberKeys: [support.memberKey] } : {}),
+					...(support.guideHint ? { guideHint: support.guideHint } : {}),
+					label: pairKey
+				});
+				warnings.push(`supports["${support.key}"] slider was canonicalized to kinematicPairs as prismatic_pair`);
+				continue;
+			}
+			keptSupports.push(support);
+		}
+		supports.length = 0;
+		supports.push(...keptSupports);
+		kinematicPairs.push(...convertedPairs);
 	}
 
 	const usedLoadKeys = new Set<string>();
@@ -728,7 +997,7 @@ export function normalizeSchemeIntent(input: unknown): SchemeIntentNormalizeResu
 		...rootAmbiguities
 	]);
 
-	if (modelSpace === 'spatial' && structureKind !== 'spatial_frame') {
+	if (modelSpace === 'spatial' && structureKind !== 'spatial_frame' && structureKind !== 'spatial_mechanism') {
 		warnings.push('Intent modelSpace="spatial" was paired with non-spatial structure kind.');
 	}
 
@@ -742,6 +1011,8 @@ export function normalizeSchemeIntent(input: unknown): SchemeIntentNormalizeResu
 			source,
 			joints: sortByAppearance(joints),
 			members: sortByAppearance(members),
+			components: sortByAppearance(components),
+			kinematicPairs: sortByAppearance(kinematicPairs),
 			supports: sortByAppearance(supports),
 			loads: sortByAppearance(loads),
 			...(requestedResults.length > 0 ? { requestedResults } : {}),
@@ -761,6 +1032,7 @@ function validateRequestedResults(
 	// Backward compatibility: allow legacy Q/M for planar frames.
 	const allowedPlanarFrame = new Set<IntentResultKind>(['N', 'Vy', 'Mz', 'Q', 'M']);
 	const allowedSpatialFrame = new Set<IntentResultKind>(['N', 'Vy', 'Vz', 'T', 'My', 'Mz']);
+	const allowedMechanism = new Set<IntentResultKind>(['N', 'Q', 'M', 'Vy', 'Vz', 'T', 'My', 'Mz']);
 
 	for (const [index, result] of intent.requestedResults.entries()) {
 		const allowed =
@@ -768,7 +1040,9 @@ function validateRequestedResults(
 				? allowedBeam
 				: intent.structureKind === 'planar_frame'
 					? allowedPlanarFrame
-					: allowedSpatialFrame;
+					: intent.structureKind === 'spatial_frame'
+						? allowedSpatialFrame
+						: allowedMechanism;
 		if (!allowed.has(result.kind)) {
 			errors.push(
 				`requestedResults[${index}].kind "${result.kind}" is not valid for structureKind="${intent.structureKind}"`
@@ -781,6 +1055,8 @@ export function validateSchemeIntent(input: unknown): SchemeIntentValidationResu
 	const normalized = normalizeSchemeIntent(input);
 	const intent = normalized.value;
 	const errors: string[] = [];
+	const isSpatialKind =
+		intent.structureKind === 'spatial_frame' || intent.structureKind === 'spatial_mechanism';
 
 	if (intent.version !== SCHEME_INTENT_V1_VERSION) {
 		errors.push(`intent.version must be "${SCHEME_INTENT_V1_VERSION}"`);
@@ -788,22 +1064,28 @@ export function validateSchemeIntent(input: unknown): SchemeIntentValidationResu
 	if (intent.taskDomain !== 'mechanics') {
 		errors.push('intent.taskDomain must be "mechanics"');
 	}
-	if (intent.structureKind === 'spatial_frame' && intent.modelSpace !== 'spatial') {
-		errors.push('structureKind="spatial_frame" requires modelSpace="spatial"');
+	if (isSpatialKind && intent.modelSpace !== 'spatial') {
+		errors.push(`structureKind="${intent.structureKind}" requires modelSpace="spatial"`);
 	}
-	if (intent.structureKind !== 'spatial_frame' && intent.modelSpace === 'spatial') {
-		errors.push('modelSpace="spatial" is allowed only for structureKind="spatial_frame"');
+	if (!isSpatialKind && intent.modelSpace === 'spatial') {
+		errors.push(
+			'modelSpace="spatial" is allowed only for structureKind="spatial_frame" | "spatial_mechanism"'
+		);
 	}
 
 	if (!Array.isArray(intent.joints) || intent.joints.length === 0) {
 		errors.push('Intent must contain at least one joint');
 	}
-	if (!Array.isArray(intent.members) || intent.members.length === 0) {
-		errors.push('Intent must contain at least one member');
+	if (
+		(!Array.isArray(intent.members) || intent.members.length === 0) &&
+		(!Array.isArray(intent.components) || intent.components.length === 0)
+	) {
+		errors.push('Intent must contain at least one member or component');
 	}
 
 	const jointKeys = new Set(intent.joints.map((joint) => joint.key));
 	const memberKeys = new Set(intent.members.map((member) => member.key));
+	const componentKeys = new Set(intent.components.map((component) => component.key));
 
 	for (const [index, joint] of intent.joints.entries()) {
 		if (!joint.key.trim()) errors.push(`joints[${index}].key must be non-empty`);
@@ -822,6 +1104,13 @@ export function validateSchemeIntent(input: unknown): SchemeIntentValidationResu
 		}
 	}
 
+	for (const [index, component] of intent.components.entries()) {
+		if (!component.key.trim()) errors.push(`components[${index}].key must be non-empty`);
+		if (!jointKeys.has(component.centerJoint)) {
+			errors.push(`components[${index}].centerJoint "${component.centerJoint}" is unknown`);
+		}
+	}
+
 	for (const [index, support] of intent.supports.entries()) {
 		const hasJoint = typeof support.jointKey === 'string' && support.jointKey.trim().length > 0;
 		const hasMember = typeof support.memberKey === 'string' && support.memberKey.trim().length > 0;
@@ -837,6 +1126,43 @@ export function validateSchemeIntent(input: unknown): SchemeIntentValidationResu
 		}
 		if (hasMember && typeof support.s !== 'number') {
 			errors.push(`supports[${index}] with memberKey must define numeric s in [0,1]`);
+		}
+	}
+
+	for (const [index, pair] of intent.kinematicPairs.entries()) {
+		if (!pair.key.trim()) errors.push(`kinematicPairs[${index}].key must be non-empty`);
+		const hasJoint = typeof pair.jointKey === 'string' && pair.jointKey.trim().length > 0;
+		const memberRefList = Array.isArray(pair.memberKeys) ? pair.memberKeys : [];
+		const componentRefList = Array.isArray(pair.componentKeys) ? pair.componentKeys : [];
+
+		if (hasJoint && pair.jointKey && !jointKeys.has(pair.jointKey)) {
+			errors.push(`kinematicPairs[${index}].jointKey "${pair.jointKey}" is unknown`);
+		}
+		for (const memberKey of memberRefList) {
+			if (!memberKeys.has(memberKey)) {
+				errors.push(`kinematicPairs[${index}] references unknown member "${memberKey}"`);
+			}
+		}
+		for (const componentKey of componentRefList) {
+			if (!componentKeys.has(componentKey)) {
+				errors.push(`kinematicPairs[${index}] references unknown component "${componentKey}"`);
+			}
+		}
+
+		if (pair.kind === 'revolute_pair' || pair.kind === 'prismatic_pair' || pair.kind === 'slot_pair') {
+			if (!hasJoint) {
+				errors.push(`kinematicPairs[${index}] kind "${pair.kind}" requires jointKey`);
+			}
+		}
+		if (pair.kind === 'gear_pair' || pair.kind === 'belt_pair') {
+			if (componentRefList.length !== 2) {
+				errors.push(`kinematicPairs[${index}] kind "${pair.kind}" requires exactly 2 componentKeys`);
+			}
+		}
+		if (pair.kind === 'cam_contact') {
+			if (!hasJoint && componentRefList.length === 0 && memberRefList.length === 0) {
+				errors.push(`kinematicPairs[${index}] kind "cam_contact" requires jointKey or component/member references`);
+			}
 		}
 	}
 

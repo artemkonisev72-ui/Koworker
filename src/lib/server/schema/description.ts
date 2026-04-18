@@ -3,11 +3,16 @@ import type { SchemaAny } from '$lib/schema/schema-any.js';
 
 export type SchemeDescriptionLanguage = 'ru' | 'en';
 
-type StructureKind = 'beam' | 'planar_frame' | 'spatial_frame';
+type StructureKindExtended =
+	| 'beam'
+	| 'planar_frame'
+	| 'spatial_frame'
+	| 'planar_mechanism'
+	| 'spatial_mechanism';
 type ModelSpace = 'planar' | 'spatial';
 
 export interface SchemeDescriptionFacts {
-	structureKind: StructureKind;
+	structureKind: StructureKindExtended;
 	modelSpace: ModelSpace;
 	hasImageSource: boolean;
 	joints: string[];
@@ -25,7 +30,28 @@ interface BuildFactsParams {
 }
 
 const MEMBER_TYPES = new Set(['bar', 'cable', 'spring', 'damper']);
-const SUPPORT_TYPES = new Set(['fixed_wall', 'hinge_fixed', 'hinge_roller', 'internal_hinge', 'slider']);
+const COMPONENT_TYPES = new Set(['rigid_disk', 'cam']);
+const KINEMATIC_PAIR_TYPES = new Set([
+	'revolute_pair',
+	'prismatic_pair',
+	'slot_pair',
+	'cam_contact',
+	'gear_pair',
+	'belt_pair'
+]);
+const SUPPORT_TYPES = new Set([
+	'fixed_wall',
+	'hinge_fixed',
+	'hinge_roller',
+	'internal_hinge',
+	'slider',
+	'revolute_pair',
+	'prismatic_pair',
+	'slot_pair',
+	'cam_contact',
+	'gear_pair',
+	'belt_pair'
+]);
 const LOAD_TYPES = new Set([
 	'force',
 	'moment',
@@ -67,9 +93,15 @@ function unique(items: string[]): string[] {
 	return out;
 }
 
-function normalizeStructureKind(value: unknown): StructureKind | null {
+function normalizeStructureKind(value: unknown): StructureKindExtended | null {
 	const normalized = normalizeString(value)?.toLowerCase().replace(/[\s-]+/g, '_');
-	if (normalized === 'beam' || normalized === 'planar_frame' || normalized === 'spatial_frame') {
+	if (
+		normalized === 'beam' ||
+		normalized === 'planar_frame' ||
+		normalized === 'spatial_frame' ||
+		normalized === 'planar_mechanism' ||
+		normalized === 'spatial_mechanism'
+	) {
 		return normalized;
 	}
 	return null;
@@ -87,14 +119,57 @@ function formatHintValue(value: unknown): string | null {
 	return null;
 }
 
-function formatIntentMember(member: SchemeIntentV1['members'][number]): string {
-	const parts: string[] = [`${member.key}: ${member.startJoint} -> ${member.endJoint}`, member.kind];
+function displayLabel(label: string | undefined, key: string): string {
+	const normalized = typeof label === 'string' ? label.trim() : '';
+	return normalized || key;
+}
+
+function formatIntentMember(
+	member: SchemeIntentV1['members'][number],
+	jointLabelByKey: Map<string, string>
+): string {
+	const memberLabel = displayLabel(member.label, member.key);
+	const startLabel = jointLabelByKey.get(member.startJoint) ?? member.startJoint;
+	const endLabel = jointLabelByKey.get(member.endJoint) ?? member.endJoint;
+	const parts: string[] = [`${memberLabel}: ${startLabel} -> ${endLabel}`, member.kind];
 	if (member.relation) parts.push(`relation=${member.relation}`);
 	const lengthHint = formatHintValue(member.lengthHint);
 	if (lengthHint) parts.push(`L~${lengthHint}`);
 	if (typeof member.angleHintDeg === 'number' && Number.isFinite(member.angleHintDeg)) {
 		parts.push(`angle~${member.angleHintDeg}deg`);
 	}
+	return parts.join(', ');
+}
+
+function formatIntentComponent(
+	component: SchemeIntentV1['components'][number],
+	jointLabelByKey: Map<string, string>
+): string {
+	const componentLabel = displayLabel(component.label, component.key);
+	const centerLabel = jointLabelByKey.get(component.centerJoint) ?? component.centerJoint;
+	const parts: string[] = [`${componentLabel}: center=${centerLabel}`, component.kind];
+	const radiusHint = formatHintValue(component.radiusHint);
+	if (radiusHint) parts.push(`R~${radiusHint}`);
+	if (component.profileHint) parts.push(`profile=${component.profileHint}`);
+	return parts.join(', ');
+}
+
+function formatIntentKinematicPair(
+	pair: SchemeIntentV1['kinematicPairs'][number],
+	jointLabelByKey: Map<string, string>
+): string {
+	const pairLabel = displayLabel(pair.label, pair.key);
+	const parts: string[] = [`${pairLabel}: ${pair.kind}`];
+	if (pair.jointKey) parts.push(`joint=${jointLabelByKey.get(pair.jointKey) ?? pair.jointKey}`);
+	if (pair.memberKeys && pair.memberKeys.length > 0) parts.push(`members=${pair.memberKeys.join('+')}`);
+	if (pair.componentKeys && pair.componentKeys.length > 0) {
+		parts.push(`components=${pair.componentKeys.join('+')}`);
+	}
+	if (pair.guideHint) parts.push(`guide=${pair.guideHint}`);
+	if (pair.meshType) parts.push(`mesh=${pair.meshType}`);
+	if (pair.beltKind) parts.push(`belt=${pair.beltKind}`);
+	if (typeof pair.crossed === 'boolean') parts.push(`crossed=${pair.crossed}`);
+	if (pair.followerType) parts.push(`follower=${pair.followerType}`);
 	return parts.join(', ');
 }
 
@@ -155,7 +230,10 @@ function inferFromSchema(schema: SchemaAny): Pick<
 	const joints = nodes.length > 0
 		? unique(
 			nodes
-				.map((entry: unknown) => (isRecord(entry) ? normalizeString(entry.id) : null))
+				.map((entry: unknown) => {
+					if (!isRecord(entry)) return null;
+					return normalizeString(entry.label) ?? normalizeString(entry.id);
+				})
 				.filter((entry): entry is string => Boolean(entry))
 		)
 		: [];
@@ -167,7 +245,7 @@ function inferFromSchema(schema: SchemaAny): Pick<
 	const objects = Array.isArray(root.objects) ? (root.objects as unknown[]) : [];
 	for (const entry of objects) {
 		if (!isRecord(entry)) continue;
-		const id = normalizeString(entry.id) ?? 'object';
+		const id = normalizeString(entry.label) ?? normalizeString(entry.id) ?? 'object';
 		const type = normalizeString(entry.type) ?? 'unknown';
 		const nodeRefs = Array.isArray(entry.nodeRefs)
 			? entry.nodeRefs
@@ -181,6 +259,12 @@ function inferFromSchema(schema: SchemaAny): Pick<
 
 		if (MEMBER_TYPES.has(type)) {
 			const jointText = nodeRefs.length >= 2 ? `${nodeRefs[0]} -> ${nodeRefs[1]}` : nodeRefs.join(', ');
+			members.push(`${id}: ${type}${jointText ? `, ${jointText}` : ''}`);
+			continue;
+		}
+
+		if (COMPONENT_TYPES.has(type) || KINEMATIC_PAIR_TYPES.has(type)) {
+			const jointText = nodeRefs.length > 0 ? nodeRefs.join(', ') : '';
 			members.push(`${id}: ${type}${jointText ? `, ${jointText}` : ''}`);
 			continue;
 		}
@@ -243,8 +327,15 @@ export function buildSchemeDescriptionFacts(params: BuildFactsParams): SchemeDes
 	}
 
 	const intent = params.intent;
-	const joints = unique(intent.joints.map((joint) => joint.key).filter(Boolean));
-	const members = unique(intent.members.map(formatIntentMember));
+	const jointLabelByKey = new Map(
+		intent.joints.map((joint) => [joint.key, displayLabel(joint.label, joint.key)])
+	);
+	const joints = unique(intent.joints.map((joint) => displayLabel(joint.label, joint.key)).filter(Boolean));
+	const members = unique([
+		...intent.members.map((member) => formatIntentMember(member, jointLabelByKey)),
+		...(intent.components ?? []).map((component) => formatIntentComponent(component, jointLabelByKey)),
+		...(intent.kinematicPairs ?? []).map((pair) => formatIntentKinematicPair(pair, jointLabelByKey))
+	]);
 	const supports = unique(intent.supports.map(formatIntentSupport));
 	const loads = unique(intent.loads.map(formatIntentLoad));
 	const requestedResults = unique(
@@ -270,14 +361,18 @@ export function serializeSchemeDescriptionFacts(facts: SchemeDescriptionFacts): 
 	return JSON.stringify(facts, null, 2);
 }
 
-function structureKindLabel(kind: StructureKind, language: SchemeDescriptionLanguage): string {
+function structureKindLabel(kind: StructureKindExtended, language: SchemeDescriptionLanguage): string {
 	if (language === 'ru') {
 		if (kind === 'beam') return 'Балка';
 		if (kind === 'planar_frame') return 'Плоская рама';
+		if (kind === 'planar_mechanism') return 'Плоский механизм';
+		if (kind === 'spatial_mechanism') return 'Пространственный механизм';
 		return 'Пространственная рама';
 	}
 	if (kind === 'beam') return 'Beam';
 	if (kind === 'planar_frame') return 'Planar frame';
+	if (kind === 'planar_mechanism') return 'Planar mechanism';
+	if (kind === 'spatial_mechanism') return 'Spatial mechanism';
 	return 'Spatial frame';
 }
 

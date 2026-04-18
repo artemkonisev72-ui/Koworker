@@ -103,10 +103,18 @@
 		return isRecord(value) && isFiniteNumber(value.x) && isFiniteNumber(value.y);
 	}
 
-	function normalizeStructureKind(value: unknown): 'beam' | 'planar_frame' | 'spatial_frame' {
+	function normalizeStructureKind(
+		value: unknown
+	): 'beam' | 'planar_frame' | 'spatial_frame' | 'planar_mechanism' | 'spatial_mechanism' {
 		if (typeof value !== 'string') return 'beam';
 		const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
-		if (normalized === 'beam' || normalized === 'planar_frame' || normalized === 'spatial_frame') {
+		if (
+			normalized === 'beam' ||
+			normalized === 'planar_frame' ||
+			normalized === 'spatial_frame' ||
+			normalized === 'planar_mechanism' ||
+			normalized === 'spatial_mechanism'
+		) {
 			return normalized;
 		}
 		return 'beam';
@@ -143,7 +151,9 @@
 		return projectSpatialPoint(node, preset);
 	}
 
-	function resolveStructureKind(schema: SchemaDataV2): 'beam' | 'planar_frame' | 'spatial_frame' {
+	function resolveStructureKind(
+		schema: SchemaDataV2
+	): 'beam' | 'planar_frame' | 'spatial_frame' | 'planar_mechanism' | 'spatial_mechanism' {
 		const fromMeta = normalizeStructureKind(schema.meta?.structureKind);
 		if (fromMeta !== 'beam') return fromMeta;
 		if (schema.coordinateSystem?.modelSpace === 'spatial') return 'spatial_frame';
@@ -417,6 +427,16 @@
 		return fallback;
 	}
 
+	function drawLinearObjectLabel(object: ObjectV2, a: SchemaPoint, b: SchemaPoint): void {
+		const label = labelText(object, '');
+		if (!label) return;
+		drawText(
+			{ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 + 0.14 },
+			label,
+			{ anchorX: 'middle', strokeColor: COLOR.text }
+		);
+	}
+
 	function drawSegment(a: SchemaPoint, b: SchemaPoint, options: Record<string, unknown>): void {
 		board.create(
 			'segment',
@@ -477,6 +497,7 @@
 				: 4,
 			dash: object.geometry.lineType === 'dashed' ? 2 : 0
 		});
+		drawLinearObjectLabel(object, pair[0], pair[1]);
 	}
 
 	function drawCable(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
@@ -498,6 +519,7 @@
 				strokeWidth: 2
 			}
 		);
+		drawLinearObjectLabel(object, a, b);
 	}
 
 	function drawSpring(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
@@ -535,6 +557,7 @@
 			strokeColor: COLOR.base,
 			strokeWidth: 2
 		});
+		drawLinearObjectLabel(object, a, b);
 	}
 
 	function drawDamper(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
@@ -585,6 +608,7 @@
 				strokeWidth: 1.5
 			}
 		);
+		drawLinearObjectLabel(object, a, b);
 	}
 
 	function drawDisk(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
@@ -753,6 +777,86 @@
 				strokeColor: COLOR.base,
 				strokeWidth: 1.2
 			}
+		);
+	}
+
+	function drawRevolutePair(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
+		drawInternalHinge(object, nodeMap);
+	}
+
+	function drawPrismaticPair(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
+		drawSlider(object, nodeMap);
+	}
+
+	function drawSlotPair(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
+		const node = getNode(nodeMap, object.nodeRefs?.[0]);
+		const guideStart = getNode(nodeMap, object.nodeRefs?.[1]);
+		const guideEnd = getNode(nodeMap, object.nodeRefs?.[2]);
+		if (!node || !guideStart || !guideEnd) return;
+		drawSegment(guideStart, guideEnd, { strokeColor: COLOR.muted, strokeWidth: 1.2, dash: 2 });
+		board.create('circle', [[node.x, node.y], 0.075], {
+			fixed: true,
+			highlight: false,
+			strokeColor: COLOR.base,
+			fillColor: 'var(--bg-surface)',
+			fillOpacity: 1
+		});
+	}
+
+	function drawCam(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
+		const center = getNode(nodeMap, object.nodeRefs?.[0]);
+		if (!center) return;
+		const radius = isFiniteNumber(object.geometry.radius)
+			? Math.max(0.1, object.geometry.radius)
+			: 0.6;
+		board.create('circle', [[center.x, center.y], radius], {
+			fixed: true,
+			highlight: false,
+			strokeColor: COLOR.base,
+			strokeWidth: 2,
+			dash: 2,
+			fillColor: 'transparent'
+		});
+	}
+
+	function drawCamContact(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
+		const pair = getPair(nodeMap, object.nodeRefs);
+		if (!pair) return;
+		drawSegment(pair[0], pair[1], { strokeColor: COLOR.kinematic, strokeWidth: 1.2, dash: 2 });
+		board.create('circle', [[pair[1].x, pair[1].y], 0.06], {
+			fixed: true,
+			highlight: false,
+			strokeColor: COLOR.kinematic,
+			fillColor: 'var(--bg-surface)',
+			fillOpacity: 1
+		});
+	}
+
+	function drawGearPair(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
+		const pair = getPair(nodeMap, object.nodeRefs);
+		if (!pair) return;
+		drawSegment(pair[0], pair[1], { strokeColor: COLOR.kinematic, strokeWidth: 1.2, dash: 1 });
+	}
+
+	function drawBeltPair(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
+		const pair = getPair(nodeMap, object.nodeRefs);
+		if (!pair) return;
+		const [a, b] = pair;
+		const dx = b.x - a.x;
+		const dy = b.y - a.y;
+		const len = Math.hypot(dx, dy) || 1;
+		const nx = -dy / len;
+		const ny = dx / len;
+		const offset = 0.08;
+		drawSegment(
+			{ x: a.x + nx * offset, y: a.y + ny * offset },
+			{ x: b.x + nx * offset, y: b.y + ny * offset },
+			{ strokeColor: COLOR.kinematic, strokeWidth: 1.2 }
+		);
+		drawSegment(
+			{ x: a.x - nx * offset, y: a.y - ny * offset },
+			{ x: b.x - nx * offset, y: b.y - ny * offset },
+			{ strokeColor: COLOR.kinematic, strokeWidth: 1.2 }
 		);
 	}
 
@@ -930,6 +1034,19 @@
 		if (p) drawText(p, labelText(object, 'label'));
 	}
 
+	function drawNodeLabels(schema: SchemaDataV2, nodeMap: Map<string, NodeV2>): void {
+		for (const node of schema.nodes) {
+			if (typeof node.label !== 'string' || !node.label.trim()) continue;
+			const projectedNode = getNode(nodeMap, node.id);
+			if (!projectedNode) continue;
+			drawText(
+				{ x: projectedNode.x + 0.08, y: projectedNode.y + 0.08 },
+				node.label.trim(),
+				{ strokeColor: COLOR.text }
+			);
+		}
+	}
+
 	function drawDebugLayer(schema: SchemaDataV2, nodeMap: Map<string, NodeV2>): void {
 		for (const node of schema.nodes) {
 			const projectedNode = getNode(nodeMap, node.id) ?? node;
@@ -1084,11 +1201,18 @@
 		spring: drawSpring,
 		damper: drawDamper,
 		rigid_disk: drawDisk,
+		cam: drawCam,
 		fixed_wall: drawFixedWall,
 		hinge_fixed: drawHingeFixed,
 		hinge_roller: drawHingeRoller,
 		internal_hinge: drawInternalHinge,
 		slider: drawSlider,
+		revolute_pair: drawRevolutePair,
+		prismatic_pair: drawPrismaticPair,
+		slot_pair: drawSlotPair,
+		cam_contact: drawCamContact,
+		gear_pair: drawGearPair,
+		belt_pair: drawBeltPair,
 		force: (o, m) => drawVectorLike(o, m, COLOR.load, 'F'),
 		moment: (o, m) => drawMomentLike(o, m, COLOR.load, 'M'),
 		distributed: drawDistributed,
@@ -1115,7 +1239,7 @@
 	function renderResult(
 		result: ResultV2,
 		nodeMap: Map<string, NodeV2>,
-		structureKind: 'beam' | 'planar_frame' | 'spatial_frame'
+		structureKind: 'beam' | 'planar_frame' | 'spatial_frame' | 'planar_mechanism' | 'spatial_mechanism'
 	): void {
 		if (result.type === 'epure') {
 			if (structureKind === 'beam') {
@@ -1268,6 +1392,7 @@
 				console.warn('[SchemeView] Failed to render result:', result.id, err);
 			}
 		}
+		drawNodeLabels(schema, nodeMap);
 
 		if (debug) {
 			drawDebugLayer(schema, nodeMap);

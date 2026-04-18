@@ -8,11 +8,18 @@ export const SCHEMA_OBJECT_TYPES_V2 = [
 	'spring',
 	'damper',
 	'rigid_disk',
+	'cam',
 	'fixed_wall',
 	'hinge_fixed',
 	'hinge_roller',
 	'internal_hinge',
 	'slider',
+	'revolute_pair',
+	'prismatic_pair',
+	'slot_pair',
+	'cam_contact',
+	'gear_pair',
+	'belt_pair',
 	'force',
 	'moment',
 	'distributed',
@@ -34,7 +41,12 @@ export interface SchemaMetaV2 {
 	taskDomain?: string;
 	catalogVersion?: string;
 	language?: string;
-	structureKind?: 'beam' | 'planar_frame' | 'spatial_frame';
+	structureKind?:
+		| 'beam'
+		| 'planar_frame'
+		| 'spatial_frame'
+		| 'planar_mechanism'
+		| 'spatial_mechanism';
 	layoutMetrics?: Record<string, unknown>;
 	layoutCorrections?: string[];
 	layoutAutoCorrected?: boolean;

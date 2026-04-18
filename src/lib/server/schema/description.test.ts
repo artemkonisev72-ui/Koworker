@@ -18,6 +18,8 @@ describe('scheme description helper', () => {
 			source: { hasImage: false, language: 'ru' },
 			joints: [{ key: 'A' }, { key: 'B' }],
 			members: [{ key: 'm1', kind: 'bar', startJoint: 'A', endJoint: 'B', relation: 'horizontal' }],
+			components: [],
+			kinematicPairs: [],
 			supports: [{ key: 's1', kind: 'fixed_wall', jointKey: 'A', sideHint: 'left' }],
 			loads: [{ key: 'q1', kind: 'distributed', target: { memberKey: 'm1', fromS: 0, toS: 1 }, directionHint: 'down' }],
 			requestedResults: [{ targetMemberKey: 'm1', kind: 'Q' }],
@@ -73,5 +75,38 @@ describe('scheme description helper', () => {
 		expect(descriptionRu).toContain('Тип схемы');
 		expect(descriptionRu).toContain('Пространственная рама');
 		expect(descriptionRu).toContain('Нагрузки');
+	});
+
+	it('prefers labels from intent for joints and members', () => {
+		const facts = buildSchemeDescriptionFacts({
+			schema: {
+				version: '2.0',
+				nodes: [
+					{ id: 'n1', x: 0, y: 0, label: 'A' },
+					{ id: 'n2', x: 1, y: 0, label: 'B' }
+				],
+				objects: [{ id: 'bar_1', type: 'bar', nodeRefs: ['n1', 'n2'], geometry: { length: 1, angleDeg: 0 } }],
+				results: []
+			},
+			intent: {
+				version: 'intent-1.0',
+				taskDomain: 'mechanics',
+				structureKind: 'beam',
+				modelSpace: 'planar',
+				confidence: 'high',
+				source: { hasImage: false, language: 'ru' },
+				joints: [{ key: 'J1', label: 'A' }, { key: 'J2', label: 'B' }],
+				members: [{ key: 'm1', label: 'AB', kind: 'bar', startJoint: 'J1', endJoint: 'J2' }],
+				components: [],
+				kinematicPairs: [],
+				supports: [],
+				loads: [],
+				assumptions: [],
+				ambiguities: []
+			}
+		});
+
+		expect(facts.joints).toEqual(['A', 'B']);
+		expect(facts.members.some((line) => line.includes('AB: A -> B'))).toBe(true);
 	});
 });

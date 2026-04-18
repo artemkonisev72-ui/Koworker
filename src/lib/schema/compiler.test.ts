@@ -80,4 +80,45 @@ describe('scheme compiler', () => {
 		const second = compileSchemeIntent(intent);
 		expect(first.schemaData).toEqual(second.schemaData);
 	});
+
+	it('compiles planar slider-crank mechanism with explicit kinematic pairs', () => {
+		const result = compileSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'planar_mechanism',
+			modelSpace: 'planar',
+			confidence: 'medium',
+			source: { hasImage: false, language: 'ru' },
+			joints: [
+				{ key: 'O', label: 'O' },
+				{ key: 'A', label: 'A' },
+				{ key: 'B', label: 'B' }
+			],
+			members: [
+				{ key: 'OA', label: 'OA', kind: 'bar', startJoint: 'O', endJoint: 'A' },
+				{ key: 'AB', label: 'AB', kind: 'bar', startJoint: 'A', endJoint: 'B' }
+			],
+			components: [],
+			kinematicPairs: [
+				{ key: 'pO', kind: 'revolute_pair', jointKey: 'O', label: 'O-pair' },
+				{ key: 'pA', kind: 'revolute_pair', jointKey: 'A', label: 'A-pair' },
+				{
+					key: 'pB',
+					kind: 'prismatic_pair',
+					jointKey: 'B',
+					guideHint: 'horizontal',
+					label: 'B-slider'
+				}
+			],
+			supports: [],
+			loads: [],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		expect(result.schemaData.meta?.structureKind).toBe('planar_mechanism');
+		expect(result.schemaData.objects.some((object) => object.type === 'revolute_pair')).toBe(true);
+		expect(result.schemaData.objects.some((object) => object.type === 'prismatic_pair')).toBe(true);
+		expect(result.schemaData.objects.some((object) => object.label === 'OA')).toBe(true);
+	});
 });
