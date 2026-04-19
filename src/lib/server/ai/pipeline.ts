@@ -640,7 +640,7 @@ export async function runPipelineWithApprovedSchema(
 		solverModel?: SolverModelV1;
 	},
 	history: GeminiHistory[],
-	onStatus: (event: PipelineStatus) => void,
+	onStatus: (event: PipelineStatus) => void | Promise<void>,
 	imageData?: { base64: string; mimeType: string },
 	forcedModel?: string | null
 ): Promise<void> {
@@ -678,7 +678,7 @@ export async function runPipelineWithApprovedSchema(
 export async function runPipeline(
 	userMessage: string,
 	history: GeminiHistory[],
-	onStatus: (event: PipelineStatus) => void,
+	onStatus: (event: PipelineStatus) => void | Promise<void>,
 	imageData?: { base64: string; mimeType: string },
 	forcedModel?: string | null,
 	options?: {
@@ -690,12 +690,13 @@ export async function runPipeline(
 	const usedModelsList: string[] = [];
 	const approvedSchema = options?.approvedSchema ?? null;
 	const effectiveHistory = approvedSchema ? [] : history;
+	const emitStatus = (event: PipelineStatus) => Promise.resolve(onStatus(event));
 
 	try {
 		// ── Шаг 0: Анализ изображения (Vision) ──────────────────────────────
 		if (imageData && !approvedSchema) {
 			console.log('[Pipeline] Analyzing image...');
-			onStatus({ type: 'status', message: 'Анализ изображения...' });
+			await emitStatus({ type: 'status', message: 'Анализ изображения...' });
 			const { text: visionDescription, model: visionModel, tokens: visionTokens } = await analyzeImage(
 				effectiveHistory,
 				imageData.base64,
@@ -711,7 +712,7 @@ export async function runPipeline(
 
 		// ── Шаг 1: Маршрутизация (Flash) ─────────────────────────────────────
 		console.log('[Pipeline] Step 1: routing...');
-		onStatus({ type: 'status', message: 'Анализ задачи...' });
+		await emitStatus({ type: 'status', message: 'Анализ задачи...' });
 		const { result: needsComputation, model: routerModel, tokens: routerTokens } = await routeQuestion(
 			effectiveHistory,
 			currentContext,
@@ -722,20 +723,20 @@ export async function runPipeline(
 
 		if (!needsComputation) {
 			console.log('[Pipeline] General question — calling answerGeneralQuestion');
-			onStatus({ type: 'status', message: 'Формирование ответа...' });
+			await emitStatus({ type: 'status', message: 'Формирование ответа...' });
 			const { text: answer, model: flashModel, tokens: textTokens } = await answerGeneralQuestion(
 				effectiveHistory,
 				currentContext,
 				forcedModel
 			);
 			usedModelsList.push(`${flashModel} (Text): ${textTokens.toLocaleString('ru-RU')} токенов`);
-			onStatus({ type: 'result', content: answer, usedModels: usedModelsList });
+			await emitStatus({ type: 'result', content: answer, usedModels: usedModelsList });
 			return;
 		}
 
 		// ── Шаг 2: Генерация кода (Pro) ──────────────────────────────────────
 		console.log('[Pipeline] Step 2: generating Python code...');
-		onStatus({ type: 'status', message: 'Генерация кода решения...' });
+		await emitStatus({ type: 'status', message: 'Генерация кода решения...' });
 		let { code: pythonCode, model: codeModel, tokens: codeTokens } = await generatePythonCode(
 			effectiveHistory,
 			currentContext,
@@ -755,7 +756,7 @@ export async function runPipeline(
 		for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
 			if (attempt > 0) {
 				console.log(`[Pipeline] Retry ${attempt}/${MAX_RETRIES}, lastError:`, lastError?.slice(0, 200));
-				onStatus({ type: 'status', message: `Исправление ошибки (попытка ${attempt}/${MAX_RETRIES})...` });
+				await emitStatus({ type: 'status', message: `Исправление ошибки (попытка ${attempt}/${MAX_RETRIES})...` });
 				const retryRes = await generatePythonCode(
 					effectiveHistory,
 					currentContext,
@@ -767,7 +768,7 @@ export async function runPipeline(
 			}
 
 			console.log(`[Pipeline] Step 3: sandbox execute, attempt ${attempt}`);
-			onStatus({
+			await emitStatus({
 				type: 'status',
 				message: attempt === 0 ? 'Выполнение вычислений...' : `Выполнение исправленного кода...`
 			});
@@ -793,7 +794,7 @@ export async function runPipeline(
 					lastError = `Graph contract violation: ${graphNormalization.issues.join('; ')}`;
 					console.warn('[Pipeline] Graph contract violation:', graphNormalization.issues);
 					if (attempt >= MAX_RETRIES) {
-						onStatus({
+						await emitStatus({
 							type: 'error',
 							message:
 								`Не удалось получить корректные эпюры по стержням после ${MAX_RETRIES + 1} попыток:\n` +
@@ -816,7 +817,7 @@ export async function runPipeline(
 					lastError = `Schema patch contract violation: ${schemaNormalization.issues.join('; ')}`;
 					console.warn('[Pipeline] Schema patch contract violation:', schemaNormalization.issues);
 					if (attempt >= MAX_RETRIES) {
-						onStatus({
+						await emitStatus({
 							type: 'error',
 							message:
 								`Не удалось получить корректный schemaPatch после ${MAX_RETRIES + 1} попыток:\n` +
@@ -842,7 +843,7 @@ export async function runPipeline(
 				if (err instanceof SandboxError) {
 					lastError = err.message;
 					if (attempt >= MAX_RETRIES) {
-						onStatus({
+						await emitStatus({
 							type: 'error',
 							message: `Не удалось выполнить вычисления после ${MAX_RETRIES + 1} попыток:\n${lastError}`
 						});
@@ -856,7 +857,7 @@ export async function runPipeline(
 
 		// ── Шаг 4: Сборка ответа (Flash/Pro по tier) ─────────────────────────
 		console.log('[Pipeline] Step 4: assembling final answer...');
-		onStatus({ type: 'status', message: 'Формирование ответа...' });
+		await emitStatus({ type: 'status', message: 'Формирование ответа...' });
 
 		const finalizerHistory = trimHistoryForFinalizer(effectiveHistory);
 		const finalizerTask = truncateText(
@@ -912,7 +913,7 @@ export async function runPipeline(
 				? sandboxOutput.graphs
 				: undefined;
 
-		onStatus({
+		await emitStatus({
 			type: 'result',
 			content: finalAnswer,
 			generatedCode: pythonCode,
@@ -927,6 +928,6 @@ export async function runPipeline(
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		console.error('[Pipeline] UNCAUGHT ERROR:', err);
-		onStatus({ type: 'error', message: `Внутренняя ошибка: ${message}` });
+		await emitStatus({ type: 'error', message: `Внутренняя ошибка: ${message}` });
 	}
 }

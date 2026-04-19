@@ -182,21 +182,70 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const stream = new ReadableStream({
 		start(controller) {
 			const encoder = new TextEncoder();
+			let streamClosed = false;
+			let pingInterval: ReturnType<typeof setInterval> | null = null;
+
+			function safeEnqueue(chunk: Uint8Array): boolean {
+				if (streamClosed || request.signal.aborted) {
+					streamClosed = true;
+					return false;
+				}
+
+				try {
+					controller.enqueue(chunk);
+					return true;
+				} catch (enqueueError) {
+					streamClosed = true;
+					if (
+						enqueueError instanceof TypeError &&
+						enqueueError.message.includes('Controller is already closed')
+					) {
+						console.warn('[SSE] Skip enqueue because stream is already closed');
+						return false;
+					}
+					console.warn('[SSE] Failed to enqueue SSE chunk:', enqueueError);
+					return false;
+				}
+			}
 
 			function send(event: PipelineStatus) {
 				const data = `data: ${JSON.stringify(event)}\n\n`;
-				controller.enqueue(encoder.encode(data));
+				return safeEnqueue(encoder.encode(data));
 			}
 
 			function sendDone() {
-				controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-				controller.close();
+				if (streamClosed) return;
+				safeEnqueue(encoder.encode('data: [DONE]\n\n'));
+				try {
+					controller.close();
+				} catch (closeError) {
+					if (
+						!(closeError instanceof TypeError) ||
+						!closeError.message.includes('Controller is already closed')
+					) {
+						console.warn('[SSE] Failed to close stream:', closeError);
+					}
+				} finally {
+					streamClosed = true;
+				}
 			}
+
+			request.signal.addEventListener(
+				'abort',
+				() => {
+					streamClosed = true;
+					if (pingInterval) {
+						clearInterval(pingInterval);
+						pingInterval = null;
+					}
+				},
+				{ once: true }
+			);
 
 			send({ type: 'ack', userMessageId: persistedUserMessageId });
 
 			// PING каждые 5 секунд — держит соединение через балансировщик
-			const pingInterval = setInterval(() => {
+			pingInterval = setInterval(() => {
 				send({ type: 'ping' });
 			}, 5000);
 
@@ -261,7 +310,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 					send({ type: 'error', message: String(pipelineErr) });
 				})
 				.finally(() => {
-					clearInterval(pingInterval);
+					if (pingInterval) {
+						clearInterval(pingInterval);
+						pingInterval = null;
+					}
 					processingHandle.release();
 					sendDone();
 				});
