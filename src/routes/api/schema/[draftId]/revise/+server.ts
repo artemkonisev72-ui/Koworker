@@ -21,6 +21,11 @@ import {
 } from '$lib/schema/understanding.js';
 import { buildAdaptiveSchemeDescription } from '$lib/server/schema/description.js';
 import {
+	acquireChatProcessing,
+	ChatProcessingConflictError,
+	type ChatProcessingHandle
+} from '$lib/server/chat-processing.js';
+import {
 	detectPromptLanguage,
 	formatSchemaAssistantContent,
 	getSchemaLayoutLogDetails,
@@ -97,16 +102,31 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 		forcedModel
 	});
 
-	await db.message.create({
-		data: {
+	let processingHandle: ChatProcessingHandle;
+	try {
+		processingHandle = acquireChatProcessing({
+			userId: locals.user.id,
 			chatId: draft.chatId,
-			draftId: draft.id,
-			role: 'USER',
-			content: `Schema revision request:\n${notes}`
+			kind: 'schema_revise',
+			statusMessage: 'Applying scheme revisions...'
+		});
+	} catch (processingError) {
+		if (processingError instanceof ChatProcessingConflictError) {
+			return error(429, 'Another task is already being processed. Please wait for completion.');
 		}
-	});
+		throw processingError;
+	}
 
 	try {
+		await db.message.create({
+			data: {
+				chatId: draft.chatId,
+				draftId: draft.id,
+				role: 'USER',
+				content: `Schema revision request:\n${notes}`
+			}
+		});
+
 		const revisionIndex = draft.revisionCount + 1;
 		const language = detectPromptLanguage(`${draft.originalPrompt}\n${notes}`);
 
@@ -224,6 +244,7 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 			logSchemaCheck('revise.schema_invalid', { draftId: draft.id, errors: finalValidation.errors });
 			return error(422, `Revised schema validation failed: ${finalValidation.errors.join('; ')}`);
 		}
+		processingHandle.updateStatus('Saving revised scheme...');
 
 		const layoutDetails = getSchemaLayoutLogDetails(finalValidation.value);
 		if (layoutDetails) {
@@ -337,6 +358,7 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 		});
 		return error(500, `Failed to revise schema: ${messageText}`);
 	} finally {
+		processingHandle.release();
 		logSchemaCheck('revise.finished', {
 			draftId: params.draftId,
 			durationMs: Date.now() - startedAt

@@ -44,6 +44,16 @@
 		isPinned: boolean;
 		modelPreference: string;
 		isPublic: boolean;
+		isProcessing?: boolean;
+		processingKind?: string | null;
+		processingStatus?: string | null;
+	}
+	type ChatProcessingKind = 'chat' | 'schema_start' | 'schema_revise' | 'schema_confirm' | null;
+	interface ChatProcessingState {
+		isBusy: boolean;
+		kind: ChatProcessingKind;
+		statusMessage: string;
+		placeholderId: string | null;
 	}
 	type ThemeMode = 'light' | 'dark';
 
@@ -51,10 +61,12 @@
 
 	let chats = $state<Chat[]>([]);
 	let activeChatId = $state<string | null>(null);
-	let messages = $state<ChatMessage[]>([]);
+	let messagesByChatId = $state<Record<string, ChatMessage[]>>({});
+	let draftsByChatId = $state<Record<string, ActiveDraftState | null>>({});
+	let processingByChatId = $state<Record<string, ChatProcessingState>>({});
+	let messageLoadVersionByChatId = $state<Record<string, number>>({});
+	let abortableChatIds = $state<Record<string, boolean>>({});
 	let inputValue = $state('');
-	let isLoading = $state(false);
-	let statusMessage = $state('');
 	let sidebarOpen = $state(true);
 	let isMobileView = $state(false);
 	let mobileToolsOpen = $state(false);
@@ -74,19 +86,222 @@
 	let pinnedChats = $derived(chats.filter((c) => c.isPinned));
 	let otherChats = $derived(chats.filter((c) => !c.isPinned));
 	let activeChat = $derived(chats.find((c) => c.id === activeChatId));
+	let messages = $derived(activeChatId ? messagesByChatId[activeChatId] ?? [] : []);
+	let activeDraft = $derived(activeChatId ? draftsByChatId[activeChatId] ?? null : null);
+	let activeChatProcessing = $derived(
+		activeChatId
+			? processingByChatId[activeChatId] ?? {
+					isBusy: false,
+					kind: null,
+					statusMessage: '',
+					placeholderId: null
+				}
+			: {
+					isBusy: false,
+					kind: null,
+					statusMessage: '',
+					placeholderId: null
+				}
+	);
+	let hasAnyProcessing = $derived(
+		Object.values(processingByChatId).some((processing) => processing?.isBusy)
+	);
+	let busyChat = $derived(
+		chats.find((chat) => processingByChatId[chat.id]?.isBusy) ??
+			chats.find((chat) => chat.isProcessing)
+	);
+	let isLoading = $derived(activeChatProcessing.isBusy && activeChatProcessing.kind === 'chat');
+	let isSchemaActionLoading = $derived(
+		activeChatProcessing.isBusy &&
+			activeChatProcessing.kind !== null &&
+			activeChatProcessing.kind !== 'chat'
+	);
+	let statusMessage = $derived(activeChatProcessing.statusMessage);
+	let canCancelActiveGeneration = $derived(
+		Boolean(activeChatId && abortableChatIds[activeChatId])
+	);
 
 	let selectedImage = $state<{ base64: string; mimeType: string } | null>(null);
 	let schemaCheckEnabled = $state(false);
 	let schemeDebugEnabled = $state(false);
-	let activeDraft = $state<ActiveDraftState | null>(null);
 	let revisionNotes = $state('');
 	let showRevisionBox = $state(false);
-	let isSchemaActionLoading = $state(false);
 	let selectedModelPreference = $state('auto');
 	let themeMode = $state<ThemeMode>('light');
 	let welcomeGreeting = $state('Над чем работаем сегодня?');
+	let messageLoadSequence = 0;
+
+	const abortControllersByChatId = new Map<string, AbortController>();
 
 	const THEME_STORAGE_KEY = 'coworker-theme';
+	const PROCESSING_POLL_INTERVAL_MS = 2000;
+
+	function idleProcessingState(): ChatProcessingState {
+		return {
+			isBusy: false,
+			kind: null,
+			statusMessage: '',
+			placeholderId: null
+		};
+	}
+
+	function getProcessingState(chatId: string | null | undefined): ChatProcessingState {
+		if (!chatId) return idleProcessingState();
+		return processingByChatId[chatId] ?? idleProcessingState();
+	}
+
+	function setMessagesForChat(chatId: string, nextMessages: ChatMessage[]) {
+		messagesByChatId = {
+			...messagesByChatId,
+			[chatId]: dedupeMessagesById(nextMessages)
+		};
+	}
+
+	function patchMessagesForChat(
+		chatId: string,
+		updater: (currentMessages: ChatMessage[]) => ChatMessage[]
+	) {
+		setMessagesForChat(chatId, updater(messagesByChatId[chatId] ?? []));
+	}
+
+	function setDraftState(chatId: string, nextDraft: ActiveDraftState | null) {
+		draftsByChatId = {
+			...draftsByChatId,
+			[chatId]: nextDraft
+		};
+	}
+
+	function setProcessingState(chatId: string, nextState: ChatProcessingState) {
+		processingByChatId = {
+			...processingByChatId,
+			[chatId]: nextState
+		};
+		chats = chats.map((chat) =>
+			chat.id === chatId
+				? {
+						...chat,
+						isProcessing: nextState.isBusy,
+						processingKind: nextState.kind,
+						processingStatus: nextState.statusMessage || null
+					}
+				: chat
+		);
+	}
+
+	function patchProcessingState(
+		chatId: string,
+		updater: (currentState: ChatProcessingState) => ChatProcessingState
+	) {
+		setProcessingState(chatId, updater(getProcessingState(chatId)));
+	}
+
+	function setProcessingActive(chatId: string, patch: Partial<ChatProcessingState>) {
+		patchProcessingState(chatId, (currentState) => ({
+			...currentState,
+			isBusy: true,
+			kind: patch.kind ?? currentState.kind,
+			statusMessage: patch.statusMessage ?? currentState.statusMessage,
+			placeholderId:
+				patch.placeholderId !== undefined ? patch.placeholderId : currentState.placeholderId
+		}));
+	}
+
+	function clearProcessingState(chatId: string) {
+		setProcessingState(chatId, idleProcessingState());
+		abortControllersByChatId.delete(chatId);
+		abortableChatIds = {
+			...abortableChatIds,
+			[chatId]: false
+		};
+		removeProcessingPlaceholder(chatId);
+	}
+
+	function setMessageLoadVersion(chatId: string, version: number) {
+		messageLoadVersionByChatId = {
+			...messageLoadVersionByChatId,
+			[chatId]: version
+		};
+	}
+
+	function getBusyChatTitle(): string {
+		return busyChat?.title || 'другом чате';
+	}
+
+	function canSubmitMessages(): boolean {
+		if (!hasAnyProcessing) return true;
+		alert(`Дождитесь завершения обработки в чате "${getBusyChatTitle()}".`);
+		return false;
+	}
+
+	function removeProcessingPlaceholder(chatId: string) {
+		const processingState = getProcessingState(chatId);
+		if (!processingState.placeholderId) return;
+		patchMessagesForChat(chatId, (currentMessages) =>
+			currentMessages.filter(
+				(message) =>
+					message.id !== processingState.placeholderId ||
+					(!message.isStreaming && !message.isOptimistic)
+			)
+		);
+	}
+
+	function ensureProcessingPlaceholder(chatId: string, explicitPlaceholderId?: string | null) {
+		const processingState = getProcessingState(chatId);
+		const placeholderId =
+			explicitPlaceholderId ?? processingState.placeholderId ?? `processing-${chatId}`;
+		const currentMessages = messagesByChatId[chatId] ?? [];
+		if (currentMessages.some((message) => message.id === placeholderId || message.isStreaming)) {
+			if (processingState.placeholderId !== placeholderId) {
+				patchProcessingState(chatId, (currentState) => ({
+					...currentState,
+					placeholderId
+				}));
+			}
+			return placeholderId;
+		}
+
+		const placeholder: ChatMessage = {
+			id: placeholderId,
+			role: 'ASSISTANT',
+			content: '',
+			isStreaming: true,
+			isOptimistic: true,
+			createdAt: new Date().toISOString()
+		};
+
+		setMessagesForChat(chatId, [...currentMessages, placeholder]);
+		patchProcessingState(chatId, (currentState) => ({
+			...currentState,
+			placeholderId
+		}));
+		return placeholderId;
+	}
+
+	function syncProcessingStateFromChats(previousChats: Chat[], nextChats: Chat[]) {
+		const previousBusyByChatId = new Map(previousChats.map((chat) => [chat.id, Boolean(chat.isProcessing)]));
+
+		for (const chat of nextChats) {
+			const serverProcessing = Boolean(chat.isProcessing);
+			if (serverProcessing) {
+				const placeholderId = ensureProcessingPlaceholder(chat.id);
+				setProcessingState(chat.id, {
+					isBusy: true,
+					kind:
+						(chat.processingKind as ChatProcessingKind | null | undefined) ??
+						getProcessingState(chat.id).kind,
+					statusMessage: chat.processingStatus ?? getProcessingState(chat.id).statusMessage,
+					placeholderId
+				});
+				continue;
+			}
+
+			const wasBusy = previousBusyByChatId.get(chat.id) ?? getProcessingState(chat.id).isBusy;
+			clearProcessingState(chat.id);
+			if (wasBusy) {
+				void loadMessages(chat.id);
+			}
+		}
+	}
 
 	function resolveDisplayName(): string | null {
 		const rawName = data.user?.name?.trim();
@@ -206,10 +421,25 @@
 		};
 	});
 
+	$effect(() => {
+		if (typeof window === 'undefined' || !hasAnyProcessing) return;
+		const pollId = window.setInterval(() => {
+			void loadChats();
+		}, PROCESSING_POLL_INTERVAL_MS);
+		return () => {
+			window.clearInterval(pollId);
+		};
+	});
+
 	async function loadChats() {
 		try {
 			const res = await fetch('/api/chats');
-			if (res.ok) chats = await res.json();
+			if (res.ok) {
+				const nextChats = (await res.json()) as Chat[];
+				const previousChats = chats;
+				chats = nextChats;
+				syncProcessingStateFromChats(previousChats, nextChats);
+			}
 		} catch (e) {
 			console.error('Failed to load chats', e);
 		}
@@ -234,11 +464,8 @@
 
 	async function startNewChat() {
 		activeChatId = null;
-		messages = [];
-		activeDraft = null;
 		showRevisionBox = false;
 		revisionNotes = '';
-		statusMessage = '';
 		isSharing = false;
 		copySuccess = false;
 		editingChatId = null;
@@ -261,10 +488,17 @@
 			const res = await fetch(`/api/chats/${id}`, { method: 'DELETE' });
 			if (res.ok) {
 				chats = chats.filter((c) => c.id !== id);
+				const { [id]: _removedMessages, ...restMessages } = messagesByChatId;
+				messagesByChatId = restMessages;
+				const { [id]: _removedDraft, ...restDrafts } = draftsByChatId;
+				draftsByChatId = restDrafts;
+				const { [id]: _removedProcessing, ...restProcessing } = processingByChatId;
+				processingByChatId = restProcessing;
+				abortControllersByChatId.delete(id);
+				const { [id]: _removedAbortable, ...restAbortable } = abortableChatIds;
+				abortableChatIds = restAbortable;
 				if (activeChatId === id) {
 					activeChatId = null;
-					messages = [];
-					activeDraft = null;
 					pickWelcomeGreeting();
 				}
 			}
@@ -392,11 +626,10 @@
 		const selectedChat = chats.find((c) => c.id === chatId);
 		selectedModelPreference = selectedChat?.modelPreference || 'auto';
 		activeChatId = chatId;
-		messages = [];
-		activeDraft = null;
 		showRevisionBox = false;
 		revisionNotes = '';
 		inputSettingsOpen = false;
+		ensureProcessingPlaceholder(chatId);
 		await loadMessages(chatId);
 		if (messages.length === 0) {
 			pickWelcomeGreeting();
@@ -416,24 +649,35 @@
 		}
 	}
 
-	async function hydrateDraftStateFromMessage(messageDraftId: string | null | undefined) {
+	async function hydrateDraftStateFromMessage(
+		chatId: string,
+		messageDraftId: string | null | undefined,
+		requestVersion: number
+	) {
 		if (!messageDraftId) {
-			activeDraft = null;
+			if (messageLoadVersionByChatId[chatId] === requestVersion) {
+				setDraftState(chatId, null);
+			}
 			return;
 		}
 		try {
 			const res = await fetch(`/api/schema/${messageDraftId}`);
 			if (!res.ok) {
-				activeDraft = null;
+				if (messageLoadVersionByChatId[chatId] === requestVersion) {
+					setDraftState(chatId, null);
+				}
 				return;
 			}
 			const payload = await res.json();
 			if (payload.status !== 'AWAITING_REVIEW' || !payload.currentSchema) {
-				activeDraft = null;
+				if (messageLoadVersionByChatId[chatId] === requestVersion) {
+					setDraftState(chatId, null);
+				}
 				showRevisionBox = false;
 				return;
 			}
-			activeDraft = {
+			if (messageLoadVersionByChatId[chatId] !== requestVersion) return;
+			setDraftState(chatId, {
 				draftId: payload.draftId,
 				status: payload.status,
 				revisionIndex: payload.revisionCount,
@@ -450,18 +694,24 @@
 				ambiguities: Array.isArray(payload.latestRevision?.ambiguities)
 					? payload.latestRevision.ambiguities.filter((item: unknown) => typeof item === 'string')
 					: []
-			};
+			});
 		} catch {
-			activeDraft = null;
+			if (messageLoadVersionByChatId[chatId] === requestVersion) {
+				setDraftState(chatId, null);
+			}
 		}
 	}
 
 	async function loadMessages(chatId: string) {
+		const requestVersion = messageLoadSequence + 1;
+		messageLoadSequence = requestVersion;
+		setMessageLoadVersion(chatId, requestVersion);
 		try {
 			const res = await fetch(`/api/chat?chatId=${chatId}`);
 			if (res.ok) {
 				const data = await res.json();
-				messages = data.map((m: any) => ({
+				if (messageLoadVersionByChatId[chatId] !== requestVersion) return;
+				const nextMessages = data.map((m: any) => ({
 					...m,
 					graphData: typeof m.graphData === 'string' ? JSON.parse(m.graphData) : m.graphData,
 					schemaData: parseMaybeJson(m.schemaData),
@@ -470,11 +720,17 @@
 					usedModels: typeof m.usedModels === 'string' ? JSON.parse(m.usedModels) : m.usedModels,
 					draftId: m.draftId ?? null
 				}));
-				const latestDraftMessage = [...messages]
+				setMessagesForChat(chatId, nextMessages);
+				if (getProcessingState(chatId).isBusy) {
+					ensureProcessingPlaceholder(chatId);
+				}
+				const latestDraftMessage = [...nextMessages]
 					.reverse()
 					.find((m) => m.draftId && m.role === 'ASSISTANT');
-				await hydrateDraftStateFromMessage(latestDraftMessage?.draftId);
-				await scrollToBottom();
+				await hydrateDraftStateFromMessage(chatId, latestDraftMessage?.draftId, requestVersion);
+				if (activeChatId === chatId) {
+					await scrollToBottom();
+				}
 			}
 		} catch (e) {
 			console.error('Failed to load messages', e);
@@ -522,27 +778,41 @@
 		return `temp-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 	}
 
-	function patchMessageById(messageId: string, patch: Partial<ChatMessage>) {
-		messages = messages.map((message) =>
-			message.id === messageId
-				? {
-						...message,
-						...patch
-					}
-				: message
+	function patchMessageById(chatId: string, messageId: string, patch: Partial<ChatMessage>) {
+		patchMessagesForChat(chatId, (currentMessages) =>
+			currentMessages.map((message) =>
+				message.id === messageId
+					? {
+							...message,
+							...patch
+						}
+					: message
+			)
 		);
 	}
 
 	function applyMessageIdReconciliation(
+		chatId: string,
 		currentId: string,
 		persistedId: string | null | undefined
 	): string {
 		if (!persistedId || currentId === persistedId) return currentId;
-		messages = reconcileMessageId(messages, currentId, persistedId);
+		patchMessagesForChat(chatId, (currentMessages) =>
+			reconcileMessageId(currentMessages, currentId, persistedId)
+		);
+		patchProcessingState(chatId, (currentState) => ({
+			...currentState,
+			placeholderId:
+				currentState.placeholderId === currentId ? persistedId : currentState.placeholderId
+		}));
 		return persistedId;
 	}
 
-	function appendOptimisticExchange(text: string, imageData: { base64: string; mimeType: string } | null) {
+	function appendOptimisticExchange(
+		chatId: string,
+		text: string,
+		imageData: { base64: string; mimeType: string } | null
+	) {
 		const userTempId = generateSafeId();
 		const assistantTempId = generateSafeId();
 
@@ -560,10 +830,18 @@
 			role: 'ASSISTANT',
 			content: '',
 			isStreaming: true,
-			isOptimistic: true
+			isOptimistic: true,
+			createdAt: new Date().toISOString()
 		};
 
-		messages = dedupeMessagesById([...messages, userMessage, assistantPlaceholder]);
+		setMessagesForChat(chatId, [
+			...(messagesByChatId[chatId] ?? []),
+			userMessage,
+			assistantPlaceholder
+		]);
+		setProcessingActive(chatId, {
+			placeholderId: assistantTempId
+		});
 		return { userTempId, assistantTempId };
 	}
 
@@ -594,12 +872,16 @@
 		}
 	}
 
-	let abortController: AbortController | null = null;
-
 	function cancelGeneration() {
-		if (abortController) {
-			abortController.abort();
-			abortController = null;
+		if (!activeChatId) return;
+		const controller = abortControllersByChatId.get(activeChatId);
+		if (controller) {
+			controller.abort();
+			abortControllersByChatId.delete(activeChatId);
+			abortableChatIds = {
+				...abortableChatIds,
+				[activeChatId]: false
+			};
 		}
 	}
 
@@ -621,6 +903,18 @@
 		});
 	}
 
+	function setDraftStateFromPayload(chatId: string, payload: Record<string, any>) {
+		setDraftState(chatId, {
+			draftId: payload.draftId,
+			status: payload.status,
+			revisionIndex: payload.revisionIndex,
+			schema: payload.schema,
+			schemeDescription: typeof payload.schemeDescription === 'string' ? payload.schemeDescription : '',
+			assumptions: Array.isArray(payload.assumptions) ? payload.assumptions : [],
+			ambiguities: Array.isArray(payload.ambiguities) ? payload.ambiguities : []
+		});
+	}
+
 	async function waitForSchemaSolveResult(draftId: string, chatId: string): Promise<void> {
 		const startedAt = Date.now();
 		const timeoutMs = 8 * 60_000;
@@ -632,11 +926,13 @@
 				const status = typeof payload.status === 'string' ? payload.status : '';
 
 				if (status === 'SOLVED') {
+					clearProcessingState(chatId);
 					await loadMessages(chatId);
 					await loadChats();
 					return;
 				}
 				if (status === 'FAILED' || status === 'CANCELED') {
+					clearProcessingState(chatId);
 					await loadMessages(chatId);
 					await loadChats();
 					throw new Error(`Solve finished with status: ${status}`);
@@ -650,26 +946,29 @@
 	}
 
 	async function startSchemaCheckFlow(
+		chatId: string,
 		text: string,
 		imageData: { base64: string; mimeType: string } | null,
 		optimisticExchange: { userTempId: string; assistantTempId: string }
 	) {
-		if (!activeChatId) return;
 		const modelPreference = currentModelPreference();
 		console.log('[ModelPreference:UI] schema start submit', {
-			chatId: activeChatId,
+			chatId,
 			modelPreference,
 			messageLength: text.length,
 			hasImage: Boolean(imageData)
 		});
-		statusMessage = 'Building initial scheme...';
-		isSchemaActionLoading = true;
+		setProcessingActive(chatId, {
+			kind: 'schema_start',
+			statusMessage: 'Building initial scheme...',
+			placeholderId: optimisticExchange.assistantTempId
+		});
 		try {
 			const res = await fetch('/api/schema/start', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					chatId: activeChatId,
+					chatId,
 					message: text,
 					imageData,
 					modelPreference,
@@ -685,15 +984,17 @@
 			const persistedAssistantId =
 				typeof payload.assistantMessage?.id === 'string' ? payload.assistantMessage.id : null;
 			const resolvedUserId = applyMessageIdReconciliation(
+				chatId,
 				optimisticExchange.userTempId,
 				persistedUserId
 			);
 			const resolvedAssistantId = applyMessageIdReconciliation(
+				chatId,
 				optimisticExchange.assistantTempId,
 				persistedAssistantId
 			);
-			patchMessageById(resolvedUserId, { isOptimistic: false });
-			patchMessageById(resolvedAssistantId, {
+			patchMessageById(chatId, resolvedUserId, { isOptimistic: false });
+			patchMessageById(chatId, resolvedAssistantId, {
 				content: typeof payload.assistantMessage?.content === 'string' ? payload.assistantMessage.content : '',
 				schemaData: payload.schema ?? null,
 				schemaDescription:
@@ -701,32 +1002,28 @@
 				isStreaming: false,
 				isOptimistic: false
 			});
-			activeDraft = {
-				draftId: payload.draftId,
-				status: payload.status,
-				revisionIndex: payload.revisionIndex,
-				schema: payload.schema,
-				schemeDescription:
-					typeof payload.schemeDescription === 'string' ? payload.schemeDescription : '',
-				assumptions: payload.assumptions ?? [],
-				ambiguities: payload.ambiguities ?? []
-			};
+			setDraftStateFromPayload(chatId, payload);
 			showRevisionBox = false;
 			revisionNotes = '';
-			await loadMessages(activeChatId);
+			clearProcessingState(chatId);
+			await loadMessages(chatId);
 			await loadChats();
 		} finally {
-			isSchemaActionLoading = false;
-			statusMessage = '';
+			if (!getProcessingState(chatId).isBusy) {
+				removeProcessingPlaceholder(chatId);
+			}
 		}
 	}
 
 	async function submitSchemaRevision() {
 		if (!activeDraft || !activeChatId) return;
 		const notes = revisionNotes.trim();
-		if (!notes || isSchemaActionLoading || isLoading) return;
-		statusMessage = 'Applying scheme revisions...';
-		isSchemaActionLoading = true;
+		if (!notes || isSchemaActionLoading || isLoading || hasAnyProcessing) return;
+		setProcessingActive(activeChatId, {
+			kind: 'schema_revise',
+			statusMessage: 'Applying scheme revisions...'
+		});
+		ensureProcessingPlaceholder(activeChatId);
 		try {
 			const res = await fetch(`/api/schema/${activeDraft.draftId}/revise`, {
 				method: 'POST',
@@ -737,32 +1034,26 @@
 				throw new Error(await parseErrorMessage(res));
 			}
 			const payload = await res.json();
-			activeDraft = {
-				draftId: payload.draftId,
-				status: payload.status,
-				revisionIndex: payload.revisionIndex,
-				schema: payload.schema,
-				schemeDescription:
-					typeof payload.schemeDescription === 'string' ? payload.schemeDescription : '',
-				assumptions: payload.assumptions ?? [],
-				ambiguities: payload.ambiguities ?? []
-			};
+			setDraftStateFromPayload(activeChatId, payload);
 			revisionNotes = '';
 			showRevisionBox = false;
 			await loadMessages(activeChatId);
+			await loadChats();
 		} catch (err) {
 			console.error('Schema revision failed:', err);
 			alert(err instanceof Error ? err.message : String(err));
 		} finally {
-			isSchemaActionLoading = false;
-			statusMessage = '';
+			clearProcessingState(activeChatId);
 		}
 	}
 
 	async function confirmDraftAndSolve() {
-		if (!activeDraft || !activeChatId || isSchemaActionLoading || isLoading) return;
-		statusMessage = 'Solving using approved scheme...';
-		isSchemaActionLoading = true;
+		if (!activeDraft || !activeChatId || isSchemaActionLoading || isLoading || hasAnyProcessing) return;
+		setProcessingActive(activeChatId, {
+			kind: 'schema_confirm',
+			statusMessage: 'Solving using approved scheme...'
+		});
+		ensureProcessingPlaceholder(activeChatId);
 		const draftId = activeDraft.draftId;
 		const chatId = activeChatId;
 		try {
@@ -776,41 +1067,49 @@
 			}
 			const payload = await res.json();
 			if (payload.status === 'SOLVED') {
-				activeDraft = null;
+				setDraftState(chatId, null);
 				showRevisionBox = false;
 				revisionNotes = '';
+				clearProcessingState(chatId);
 				await loadMessages(chatId);
 				await loadChats();
 				return;
 			}
-			activeDraft = null;
+			setDraftState(chatId, null);
 			showRevisionBox = false;
 			revisionNotes = '';
-			statusMessage = 'Solve started. Waiting for result...';
+			setProcessingActive(chatId, {
+				kind: 'schema_confirm',
+				statusMessage: 'Solve started. Waiting for result...'
+			});
 			await waitForSchemaSolveResult(draftId, chatId);
 		} catch (err) {
 			console.error('Schema confirm failed:', err);
 			alert(err instanceof Error ? err.message : String(err));
 		} finally {
-			isSchemaActionLoading = false;
-			statusMessage = '';
+			if (!chats.find((chat) => chat.id === chatId)?.isProcessing) {
+				clearProcessingState(chatId);
+			}
 		}
 	}
 
 	async function sendMessage() {
 		const text = inputValue.trim();
-		if (!text || isLoading || isSchemaActionLoading) return;
+		if (!text) return;
+		if (!canSubmitMessages()) return;
+		if (isLoading || isSchemaActionLoading) return;
 		const modelPreference = currentModelPreference();
 
 		if (activeDraft && activeDraft.status === 'AWAITING_REVIEW') {
-			statusMessage = 'Confirm or revise the current scheme before sending a new task.';
+			alert('Confirm or revise the current scheme before sending a new task.');
 			return;
 		}
 
 		if (!activeChatId) await createPersistedChat();
 		if (!activeChatId) return;
+		const originChatId = activeChatId;
 		console.log('[ModelPreference:UI] send submit', {
-			chatId: activeChatId,
+			chatId: originChatId,
 			modelPreference,
 			schemaCheckEnabled,
 			messageLength: text.length,
@@ -823,41 +1122,49 @@
 		inputValue = '';
 		if (isMobileView) mobileToolsOpen = false;
 
-		const optimisticExchange = appendOptimisticExchange(text, imageData);
+		const optimisticExchange = appendOptimisticExchange(originChatId, text, imageData);
 		await scrollToBottom();
 
 		if (schemaCheckEnabled) {
 			try {
-				await startSchemaCheckFlow(text, imageData, optimisticExchange);
+				await startSchemaCheckFlow(originChatId, text, imageData, optimisticExchange);
 			} catch (err) {
 				console.error('Schema check start failed:', err);
 				alert(err instanceof Error ? err.message : String(err));
-				patchMessageById(optimisticExchange.assistantTempId, {
+				patchMessageById(originChatId, optimisticExchange.assistantTempId, {
 					content: `Error: ${err instanceof Error ? err.message : String(err)}`,
 					isStreaming: false,
 					isOptimistic: false
 				});
-				if (activeChatId) {
-					await loadMessages(activeChatId);
-				}
-				statusMessage = '';
+				clearProcessingState(originChatId);
+				await loadMessages(originChatId);
 			}
-			await scrollToBottom();
+			if (activeChatId === originChatId) {
+				await scrollToBottom();
+			}
 			return;
 		}
 
-		isLoading = true;
-		statusMessage = '';
+		setProcessingActive(originChatId, {
+			kind: 'chat',
+			statusMessage: '',
+			placeholderId: optimisticExchange.assistantTempId
+		});
 		let userMessageId = optimisticExchange.userTempId;
 		let assistantMessageId = optimisticExchange.assistantTempId;
 
 		try {
-			abortController = new AbortController();
+			const abortController = new AbortController();
+			abortControllersByChatId.set(originChatId, abortController);
+			abortableChatIds = {
+				...abortableChatIds,
+				[originChatId]: true
+			};
 			const res = await fetch('/api/chat', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					chatId: activeChatId,
+					chatId: originChatId,
 					message: text,
 					imageData,
 					modelPreference
@@ -901,16 +1208,25 @@
 						};
 
 						if (event.type === 'ack') {
-							userMessageId = applyMessageIdReconciliation(userMessageId, event.userMessageId ?? null);
-							patchMessageById(userMessageId, { isOptimistic: false });
+							userMessageId = applyMessageIdReconciliation(
+								originChatId,
+								userMessageId,
+								event.userMessageId ?? null
+							);
+							patchMessageById(originChatId, userMessageId, { isOptimistic: false });
 						} else if (event.type === 'status') {
-							statusMessage = event.message ?? '';
+							setProcessingActive(originChatId, {
+								kind: 'chat',
+								statusMessage: event.message ?? '',
+								placeholderId: assistantMessageId
+							});
 						} else if (event.type === 'result') {
 							assistantMessageId = applyMessageIdReconciliation(
+								originChatId,
 								assistantMessageId,
 								event.messageId ?? null
 							);
-							patchMessageById(assistantMessageId, {
+							patchMessageById(originChatId, assistantMessageId, {
 								content: event.content ?? '',
 								graphData: event.graphData ?? null,
 								schemaData: event.schemaData ?? null,
@@ -920,17 +1236,21 @@
 								isStreaming: false,
 								isOptimistic: false
 							});
-							statusMessage = '';
+							clearProcessingState(originChatId);
 							await loadChats();
-							await scrollToBottom();
+							if (activeChatId === originChatId) {
+								await scrollToBottom();
+							}
 						} else if (event.type === 'error') {
-							patchMessageById(assistantMessageId, {
+							patchMessageById(originChatId, assistantMessageId, {
 								content: `Error: ${event.message}`,
 								isStreaming: false,
 								isOptimistic: false
 							});
-							statusMessage = '';
-							await scrollToBottom();
+							clearProcessingState(originChatId);
+							if (activeChatId === originChatId) {
+								await scrollToBottom();
+							}
 						}
 					} catch {
 						// ignore malformed SSE line
@@ -940,26 +1260,31 @@
 		} catch (chatError) {
 			if (chatError instanceof Error && chatError.name === 'AbortError') {
 				console.log('Request aborted by user');
-				patchMessageById(assistantMessageId, {
+				patchMessageById(originChatId, assistantMessageId, {
 					isStreaming: false,
 					isOptimistic: false
 				});
 			} else {
 				console.error('Chat error:', chatError);
-				patchMessageById(assistantMessageId, {
+				patchMessageById(originChatId, assistantMessageId, {
 					content: `Network error: ${chatError instanceof Error ? chatError.message : String(chatError)}`,
 					isStreaming: false,
 					isOptimistic: false
 				});
 			}
 		} finally {
-			isLoading = false;
-			statusMessage = '';
-			abortController = null;
-			if (activeChatId && (isTempMessageId(userMessageId) || isTempMessageId(assistantMessageId))) {
-				await loadMessages(activeChatId);
+			abortControllersByChatId.delete(originChatId);
+			abortableChatIds = {
+				...abortableChatIds,
+				[originChatId]: false
+			};
+			clearProcessingState(originChatId);
+			if (isTempMessageId(userMessageId) || isTempMessageId(assistantMessageId)) {
+				await loadMessages(originChatId);
 			}
-			await scrollToBottom();
+			if (activeChatId === originChatId) {
+				await scrollToBottom();
+			}
 		}
 	}
 
@@ -1121,6 +1446,11 @@
 						/>
 					{:else}
 						<span class="chat-title">{chat.title}</span>
+						{#if chat.isProcessing}
+							<span class="chat-processing-marker" title={chat.processingStatus ?? 'Идет обработка'}>
+								<span></span><span></span><span></span>
+							</span>
+						{/if}
 					{/if}
 				</button>
 
@@ -1220,8 +1550,8 @@
 			<div class="header-title">
 				<h1>{activeChat?.title || 'Новый диалог'}</h1>
 			</div>
-			<div class="header-status" class:active={isLoading || isSchemaActionLoading}>
-				{#if isLoading || isSchemaActionLoading}
+			<div class="header-status" class:active={activeChatProcessing.isBusy}>
+				{#if activeChatProcessing.isBusy}
 					<span class="typing-indicator">
 						<span></span><span></span><span></span>
 					</span>
@@ -1344,7 +1674,7 @@
 					value={currentModelPreference()}
 					onchange={(e) => updateModelPreference(e.currentTarget.value)}
 					class="model-select desktop-only"
-					disabled={isLoading || isSchemaActionLoading}
+					disabled={hasAnyProcessing}
 				>
 					<option value="auto">✨ Авто-режим</option>
 					<optgroup label="Gemini 3.1">
@@ -1451,13 +1781,6 @@
 
 		<!-- Input area -->
 		<div class="input-area">
-			{#if statusMessage && (isLoading || isSchemaActionLoading)}
-				<div class="status-bar">
-					<span class="status-spinner"></span>
-					{statusMessage}
-				</div>
-			{/if}
-
 			{#if activeDraft}
 				<div class="schema-review-card">
 					<div class="schema-review-header">
@@ -1469,14 +1792,14 @@
 							<button
 								class="schema-action-btn primary"
 								onclick={confirmDraftAndSolve}
-								disabled={isLoading || isSchemaActionLoading}
+								disabled={hasAnyProcessing}
 							>
 								Confirm scheme
 							</button>
 							<button
 								class="schema-action-btn"
 								onclick={() => (showRevisionBox = !showRevisionBox)}
-								disabled={isLoading || isSchemaActionLoading}
+								disabled={hasAnyProcessing}
 							>
 								{showRevisionBox ? 'Hide edit' : 'Revise scheme'}
 							</button>
@@ -1511,13 +1834,13 @@
 								bind:value={revisionNotes}
 								rows="3"
 								placeholder="Describe what should be corrected in the scheme..."
-								disabled={isLoading || isSchemaActionLoading}
+								disabled={hasAnyProcessing}
 							></textarea>
 							<div class="schema-revision-actions">
 								<button
 									class="schema-action-btn primary"
 									onclick={submitSchemaRevision}
-									disabled={!revisionNotes.trim() || isLoading || isSchemaActionLoading}
+									disabled={!revisionNotes.trim() || hasAnyProcessing}
 								>
 									Submit revision
 								</button>
@@ -1527,7 +1850,7 @@
 										showRevisionBox = false;
 										revisionNotes = '';
 									}}
-									disabled={isLoading || isSchemaActionLoading}
+									disabled={hasAnyProcessing}
 								>
 									Cancel
 								</button>
@@ -1542,7 +1865,7 @@
 					<button
 						class="input-settings-btn"
 						onclick={() => (inputSettingsOpen = !inputSettingsOpen)}
-						disabled={isLoading || isSchemaActionLoading}
+						disabled={hasAnyProcessing}
 					>
 						<span>Режимы</span>
 						<span class="input-settings-chevron" class:open={inputSettingsOpen}>⌄</span>
@@ -1553,9 +1876,7 @@
 								<input
 									type="checkbox"
 									bind:checked={schemaCheckEnabled}
-									disabled={isLoading ||
-										isSchemaActionLoading ||
-										(!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
+									disabled={hasAnyProcessing || (!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
 								/>
 								<span>Проверка схемы</span>
 							</label>
@@ -1563,7 +1884,7 @@
 								<input
 									type="checkbox"
 									bind:checked={schemeDebugEnabled}
-									disabled={isLoading || isSchemaActionLoading}
+									disabled={hasAnyProcessing}
 								/>
 								<span>Scheme debug</span>
 							</label>
@@ -1576,7 +1897,7 @@
 				<button
 					class="mobile-tools-toggle"
 					onclick={toggleMobileTools}
-					disabled={isLoading || isSchemaActionLoading}
+					disabled={hasAnyProcessing}
 				>
 					<span>Режимы и модель</span>
 					<span class="mobile-tools-chevron" class:open={mobileToolsOpen}>⌄</span>
@@ -1590,9 +1911,7 @@
 							<input
 								type="checkbox"
 								bind:checked={schemaCheckEnabled}
-								disabled={isLoading ||
-									isSchemaActionLoading ||
-									(!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
+								disabled={hasAnyProcessing || (!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
 							/>
 							<span>Проверка схемы</span>
 						</label>
@@ -1600,7 +1919,7 @@
 							<input
 								type="checkbox"
 								bind:checked={schemeDebugEnabled}
-								disabled={isLoading || isSchemaActionLoading}
+								disabled={hasAnyProcessing}
 							/>
 							<span>Scheme debug</span>
 						</label>
@@ -1612,7 +1931,7 @@
 						value={currentModelPreference()}
 						onchange={(e) => updateModelPreference(e.currentTarget.value)}
 						class="model-select mobile-model-select"
-						disabled={isLoading || isSchemaActionLoading}
+						disabled={hasAnyProcessing}
 					>
 						<option value="auto">✨ Авто-режим</option>
 						<optgroup label="Gemini 3.1">
@@ -1640,7 +1959,7 @@
 				<button
 					class="attach-btn"
 					onclick={() => fileInputEl?.click()}
-					disabled={isLoading || isSchemaActionLoading}
+					disabled={hasAnyProcessing}
 					title="Прикрепить фото задачи"
 				>
 					<svg
@@ -1684,12 +2003,12 @@
 						onpaste={handlePaste}
 						placeholder="Опишите задачу или прикрепите фото..."
 						rows="1"
-						disabled={isLoading || isSchemaActionLoading}
+						disabled={hasAnyProcessing}
 						class="message-input"
 					></textarea>
 				</div>
 
-				{#if isLoading}
+				{#if canCancelActiveGeneration}
 					<button class="send-btn stop-btn" onclick={cancelGeneration} title="Остановить генерацию">
 						<span class="stop-icon"></span>
 					</button>
@@ -1698,7 +2017,7 @@
 						class="send-btn"
 						onclick={sendMessage}
 						disabled={!inputValue.trim() ||
-							isSchemaActionLoading ||
+							hasAnyProcessing ||
 							(!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
 						title="Отправить"
 					>
@@ -1995,6 +2314,32 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.chat-processing-marker {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.18rem;
+		margin-left: auto;
+		padding-left: 0.2rem;
+		flex-shrink: 0;
+	}
+
+	.chat-processing-marker span {
+		width: 0.26rem;
+		height: 0.26rem;
+		border-radius: 999px;
+		background: var(--accent-primary);
+		opacity: 0.45;
+		animation: typing-dot 1.2s infinite;
+	}
+
+	.chat-processing-marker span:nth-child(2) {
+		animation-delay: 0.18s;
+	}
+
+	.chat-processing-marker span:nth-child(3) {
+		animation-delay: 0.36s;
 	}
 
 	.chat-actions {
@@ -2423,16 +2768,6 @@
 		z-index: 22;
 	}
 
-	.status-bar {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		font-size: 0.78rem;
-		color: var(--accent-secondary);
-		margin-bottom: 0.55rem;
-		padding: 0 0.26rem;
-	}
-
 	.schema-review-card {
 		margin-bottom: 0.78rem;
 		padding: 0.78rem;
@@ -2782,16 +3117,6 @@
 		display: block;
 		cursor: zoom-in;
 		border: 1px solid var(--border-subtle);
-	}
-
-	.status-spinner {
-		width: 0.75rem;
-		height: 0.75rem;
-		border: 2px solid var(--accent-primary);
-		border-top-color: transparent;
-		border-radius: 999px;
-		animation: spin 0.8s linear infinite;
-		flex-shrink: 0;
 	}
 
 	.message-input {

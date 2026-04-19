@@ -6,6 +6,7 @@
 import type { RequestHandler } from './$types';
 import { prisma } from '$lib/server/db.js';
 import { isModelPreference, normalizeModelPreference } from '$lib/server/ai/model-preference.js';
+import { getChatProcessingForUser } from '$lib/server/chat-processing.js';
 import { json, error } from '@sveltejs/kit';
 
 export const POST: RequestHandler = async ({ locals, request }) => {
@@ -41,6 +42,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 export const GET: RequestHandler = async ({ locals }) => {
 	if (!locals.user) return error(401, 'Unauthorized');
+	const activeProcessing = getChatProcessingForUser(locals.user.id);
 
 	const chats = await prisma.chat.findMany({
 		where: { userId: locals.user.id },
@@ -61,7 +63,10 @@ export const GET: RequestHandler = async ({ locals }) => {
 	return json(
 		chats.map((chat) => ({
 			...chat,
-			modelPreference: normalizeModelPreference(chat.modelPreference)
+			modelPreference: normalizeModelPreference(chat.modelPreference),
+			isProcessing: activeProcessing?.chatId === chat.id,
+			processingKind: activeProcessing?.chatId === chat.id ? activeProcessing.kind : null,
+			processingStatus: activeProcessing?.chatId === chat.id ? activeProcessing.statusMessage : null
 		}))
 	);
 };

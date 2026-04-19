@@ -18,6 +18,11 @@ import {
 } from '$lib/schema/understanding.js';
 import { buildAdaptiveSchemeDescription } from '$lib/server/schema/description.js';
 import {
+	acquireChatProcessing,
+	ChatProcessingConflictError,
+	type ChatProcessingHandle
+} from '$lib/server/chat-processing.js';
+import {
 	detectPromptLanguage,
 	formatSchemaAssistantContent,
 	getSchemaLayoutLogDetails,
@@ -103,39 +108,58 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		forcedModel
 	});
 
-	const userMessage = await db.message.create({
-		data: {
-			chatId,
-			role: 'USER',
-			content: message,
-			imageData: imageData ? JSON.stringify(imageData) : null
-		}
-	});
-
-	const draft = await db.taskDraft.create({
-		data: {
-			chatId,
+	let processingHandle: ChatProcessingHandle;
+	try {
+		processingHandle = acquireChatProcessing({
 			userId: locals.user.id,
-			mode: 'schema_check',
-			status: 'DRAFT',
-			schemaVersion: '2.0',
-			originalPrompt: message,
-			originalImageData: imageData ? JSON.stringify(imageData) : null
+			chatId,
+			kind: 'schema_start',
+			statusMessage: 'Building initial scheme...'
+		});
+	} catch (processingError) {
+		if (processingError instanceof ChatProcessingConflictError) {
+			return error(429, 'Another task is already being processed. Please wait for completion.');
 		}
-	});
-	logSchemaCheck('start.draft_created', {
-		userId: locals.user.id,
-		chatId,
-		draftId: draft.id,
-		status: draft.status
-	});
+		throw processingError;
+	}
+
+	let userMessage: any;
+	let draft: any;
 
 	try {
+		userMessage = await db.message.create({
+			data: {
+				chatId,
+				role: 'USER',
+				content: message,
+				imageData: imageData ? JSON.stringify(imageData) : null
+			}
+		});
+
+		draft = await db.taskDraft.create({
+			data: {
+				chatId,
+				userId: locals.user.id,
+				mode: 'schema_check',
+				status: 'DRAFT',
+				schemaVersion: '2.0',
+				originalPrompt: message,
+				originalImageData: imageData ? JSON.stringify(imageData) : null
+			}
+		});
+		logSchemaCheck('start.draft_created', {
+			userId: locals.user.id,
+			chatId,
+			draftId: draft.id,
+			status: draft.status
+		});
+
 		const generatedUnderstanding = await generateInitialSchemeUnderstanding([], message, {
 			imageData,
 			forcedModel,
 			fastMode: false
 		});
+		processingHandle.updateStatus('Compiling initial scheme...');
 		logSchemaCheck('start.understanding_generated', {
 			draftId: draft.id,
 			model: generatedUnderstanding.model,
@@ -228,6 +252,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			forcedModel,
 			fastMode: true
 		});
+		processingHandle.updateStatus('Saving scheme draft...');
 		const schemeDescription = descriptionResult.description;
 		if (
 			descriptionResult.source === 'llm' &&
@@ -319,17 +344,20 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			}
 		});
 	} catch (err) {
-		await db.taskDraft.update({ where: { id: draft.id }, data: { status: 'FAILED' } }).catch(() => undefined);
+		if (draft?.id) {
+			await db.taskDraft.update({ where: { id: draft.id }, data: { status: 'FAILED' } }).catch(() => undefined);
+		}
 		const messageText = err instanceof Error ? err.message : String(err);
 		logSchemaCheck('start.failed', {
-			draftId: draft.id,
+			draftId: draft?.id ?? null,
 			error: messageText,
 			durationMs: Date.now() - startedAt
 		});
 		return error(500, `Failed to generate schema: ${messageText}`);
 	} finally {
+		processingHandle.release();
 		logSchemaCheck('start.finished', {
-			draftId: draft.id,
+			draftId: draft?.id ?? null,
 			durationMs: Date.now() - startedAt
 		});
 	}

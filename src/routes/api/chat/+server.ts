@@ -19,6 +19,11 @@ import {
 	normalizeModelPreference,
 	toForcedModel
 } from '$lib/server/ai/model-preference.js';
+import {
+	acquireChatProcessing,
+	ChatProcessingConflictError,
+	type ChatProcessingHandle
+} from '$lib/server/chat-processing.js';
 import { prisma } from '$lib/server/db.js';
 import { json, error } from '@sveltejs/kit';
 
@@ -27,12 +32,10 @@ const MAX_IMAGE_BASE64_LENGTH = 2_800_000; // ~2 MB binary payload in base64
 const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const RATE_WINDOW_MS = 60_000;
 const MAX_REQUESTS_PER_WINDOW = 20;
-const MAX_CONCURRENT_PIPELINES_PER_USER = 1;
 
 type RateEntry = {
 	windowStart: number;
 	requestCount: number;
-	activePipelines: number;
 };
 
 const globalRate = globalThis as unknown as { _chatRateMap?: Map<string, RateEntry> };
@@ -130,8 +133,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const now = Date.now();
 	const userRate = chatRateMap.get(locals.user.id) ?? {
 		windowStart: now,
-		requestCount: 0,
-		activePipelines: 0
+		requestCount: 0
 	};
 	if (now - userRate.windowStart >= RATE_WINDOW_MS) {
 		userRate.windowStart = now;
@@ -140,19 +142,23 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (userRate.requestCount >= MAX_REQUESTS_PER_WINDOW) {
 		return error(429, 'Too many requests. Please wait and try again.');
 	}
-	if (userRate.activePipelines >= MAX_CONCURRENT_PIPELINES_PER_USER) {
-		return error(429, 'Too many concurrent requests. Please wait for completion.');
-	}
 	userRate.requestCount += 1;
-	userRate.activePipelines += 1;
 	chatRateMap.set(locals.user.id, userRate);
 
-	const releasePipelineSlot = () => {
-		const entry = chatRateMap.get(locals.user!.id);
-		if (!entry) return;
-		entry.activePipelines = Math.max(0, entry.activePipelines - 1);
-		chatRateMap.set(locals.user!.id, entry);
-	};
+	let processingHandle: ChatProcessingHandle;
+	try {
+		processingHandle = acquireChatProcessing({
+			userId: locals.user.id,
+			chatId,
+			kind: 'chat',
+			statusMessage: 'Подготавливаю ответ...'
+		});
+	} catch (processingError) {
+		if (processingError instanceof ChatProcessingConflictError) {
+			return error(429, 'Another task is already being processed. Please wait for completion.');
+		}
+		throw processingError;
+	}
 
 	let persistedUserMessageId: string;
 
@@ -168,7 +174,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		});
 		persistedUserMessageId = userMessage.id;
 	} catch (err) {
-		releasePipelineSlot();
+		processingHandle.release();
 		throw err;
 	}
 
@@ -199,6 +205,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				message,
 				history,
 				async (event) => {
+					if (event.type === 'status') {
+						processingHandle.updateStatus(event.message);
+					}
 					if (event.type !== 'result') {
 						send(event);
 						return;
@@ -209,6 +218,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 							console.log('[SSE] Request aborted, skipping DB save for result');
 							return;
 					}
+					processingHandle.updateStatus('Сохраняю ответ...');
 					try {
 						const assistantMessage = await (prisma as any).message.create({
 								data: {
@@ -247,11 +257,12 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			)
 				.catch((pipelineErr) => {
 					console.error('[SSE] Pipeline error:', pipelineErr);
+					processingHandle.updateStatus('Обработка завершилась с ошибкой');
 					send({ type: 'error', message: String(pipelineErr) });
 				})
 				.finally(() => {
 					clearInterval(pingInterval);
-					releasePipelineSlot();
+					processingHandle.release();
 					sendDone();
 				});
 		}

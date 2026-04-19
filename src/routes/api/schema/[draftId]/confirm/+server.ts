@@ -17,6 +17,11 @@ import {
 } from '$lib/schema/understanding.js';
 import { buildAdaptiveSchemeDescription } from '$lib/server/schema/description.js';
 import { buildSolverModelFromSchema, type SolverModelV1 } from '$lib/solver/model.js';
+import {
+	acquireChatProcessing,
+	ChatProcessingConflictError,
+	type ChatProcessingHandle
+} from '$lib/server/chat-processing.js';
 import { canConfirmStatus, loadGeminiHistory, logSchemaCheck } from '$lib/server/schema/flow.js';
 
 function isResultEvent(event: PipelineStatus): event is Extract<PipelineStatus, { type: 'result' }> {
@@ -31,6 +36,7 @@ async function runSolveWithGate(params: {
 	revisionNotes: string[];
 	history: Awaited<ReturnType<typeof loadGeminiHistory>>;
 	forcedModel?: string | null;
+	onStatus?: (status: string) => void;
 }): Promise<Extract<PipelineStatus, { type: 'result' }>> {
 	let lastError: string | null = null;
 	let finalResult: Extract<PipelineStatus, { type: 'result' }> | null = null;
@@ -45,6 +51,7 @@ async function runSolveWithGate(params: {
 		},
 		params.history,
 		(event) => {
+			if (event.type === 'status') params.onStatus?.(event.message);
 			if (event.type === 'error') lastError = event.message;
 			if (isResultEvent(event)) finalResult = event;
 		},
@@ -78,9 +85,11 @@ function launchSchemaSolveInBackground(params: {
 	revisionNotes: string[];
 	forcedModel?: string | null;
 	startedAt: number;
+	processingHandle: ChatProcessingHandle;
 }): void {
 	if (schemaSolveTasks.has(params.draftId)) {
 		logSchemaCheck('confirm.background_skip_existing', { draftId: params.draftId });
+		params.processingHandle.release();
 		return;
 	}
 
@@ -95,8 +104,10 @@ function launchSchemaSolveInBackground(params: {
 				solverModel: params.solverModel,
 				revisionNotes: params.revisionNotes,
 				history,
-				forcedModel: params.forcedModel
+				forcedModel: params.forcedModel,
+				onStatus: (status) => params.processingHandle.updateStatus(status)
 			});
+			params.processingHandle.updateStatus('Сохраняю результат решения...');
 			logSchemaCheck('confirm.pipeline_result', {
 				draftId: params.draftId,
 				contentLength: resultEvent.content.length,
@@ -128,6 +139,7 @@ function launchSchemaSolveInBackground(params: {
 			});
 		} catch (err) {
 			const messageText = err instanceof Error ? err.message : String(err);
+			params.processingHandle.updateStatus('Решение завершилось с ошибкой');
 			logSchemaCheck('confirm.failed', {
 				draftId: params.draftId,
 				error: messageText,
@@ -146,6 +158,7 @@ function launchSchemaSolveInBackground(params: {
 				})
 				.catch(() => undefined);
 		} finally {
+			params.processingHandle.release();
 			logSchemaCheck('confirm.finished', {
 				draftId: params.draftId,
 				durationMs: Date.now() - params.startedAt
@@ -215,144 +228,172 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 		return error(409, 'No current schema to approve');
 	}
 
-	let approvedIntent: unknown = null;
-	let approvedUnderstanding: unknown = null;
-	let approvedSchemaValue: SchemaAny | null = null;
-	let approvedSchemaVersion: string = '2.0';
+	let processingHandle: ChatProcessingHandle;
+	try {
+		processingHandle = acquireChatProcessing({
+			userId: locals.user.id,
+			chatId: draft.chatId,
+			kind: 'schema_confirm',
+			statusMessage: 'Solving using approved scheme...'
+		});
+	} catch (processingError) {
+		if (processingError instanceof ChatProcessingConflictError) {
+			return error(429, 'Another task is already being processed. Please wait for completion.');
+		}
+		throw processingError;
+	}
 
-	if (draft.currentIntent) {
-		const intentValidation = validateSchemeIntent(draft.currentIntent);
-		if (intentValidation.ok && intentValidation.value) {
-			try {
-				const compiled = compileSchemeIntent(intentValidation.value);
-				approvedIntent = intentValidation.value;
-				approvedUnderstanding = schemeUnderstandingFromIntent(intentValidation.value);
-				approvedSchemaValue = compiled.schemaData;
-				approvedSchemaVersion = '2.0';
-				logSchemaCheck('confirm.intent_compiled', {
+	let releaseProcessing = true;
+	try {
+		let approvedIntent: unknown = null;
+		let approvedUnderstanding: unknown = null;
+		let approvedSchemaValue: SchemaAny | null = null;
+		let approvedSchemaVersion = '2.0';
+
+		if (draft.currentIntent) {
+			const intentValidation = validateSchemeIntent(draft.currentIntent);
+			if (intentValidation.ok && intentValidation.value) {
+				try {
+					const compiled = compileSchemeIntent(intentValidation.value);
+					approvedIntent = intentValidation.value;
+					approvedUnderstanding = schemeUnderstandingFromIntent(intentValidation.value);
+					approvedSchemaValue = compiled.schemaData;
+					approvedSchemaVersion = '2.0';
+					logSchemaCheck('confirm.intent_compiled', {
+						draftId: draft.id,
+						compileWarnings: compiled.warnings.length
+					});
+				} catch (compileErr) {
+					logSchemaCheck('confirm.intent_compile_failed', {
+						draftId: draft.id,
+						error: compileErr instanceof Error ? compileErr.message : String(compileErr)
+					});
+				}
+			} else {
+				logSchemaCheck('confirm.intent_invalid', {
 					draftId: draft.id,
-					compileWarnings: compiled.warnings.length
-				});
-			} catch (compileErr) {
-				logSchemaCheck('confirm.intent_compile_failed', {
-					draftId: draft.id,
-					error: compileErr instanceof Error ? compileErr.message : String(compileErr)
+					errors: intentValidation.errors
 				});
 			}
-		} else {
-			logSchemaCheck('confirm.intent_invalid', {
+		}
+
+		if (!approvedUnderstanding && draft.currentUnderstanding) {
+			const understandingValidation = validateSchemeUnderstanding(draft.currentUnderstanding);
+			if (understandingValidation.ok && understandingValidation.value) {
+				approvedUnderstanding = understandingValidation.value;
+			}
+		}
+
+		if (!approvedSchemaValue) {
+			const schemaValidation = validateSchemaAny(draft.currentSchema);
+			if (!schemaValidation.ok || !schemaValidation.value) {
+				logSchemaCheck('confirm.schema_invalid', {
+					draftId: draft.id,
+					errors: schemaValidation.errors
+				});
+				return error(422, `Approved schema validation failed: ${schemaValidation.errors.join('; ')}`);
+			}
+			approvedSchemaValue = schemaValidation.value;
+			approvedSchemaVersion = schemaValidation.version ?? '2.0';
+		}
+		if (!approvedSchemaValue) {
+			return error(422, 'Approved schema is missing after confirmation checks');
+		}
+
+		let solverModel: SolverModelV1;
+		try {
+			const built = buildSolverModelFromSchema(approvedSchemaValue);
+			solverModel = built.solverModel;
+			if (built.warnings.length > 0) {
+				logSchemaCheck('confirm.solver_model_warnings', {
+					draftId: draft.id,
+					warnings: built.warnings.slice(0, 6)
+				});
+			}
+		} catch (buildErr) {
+			const messageText = buildErr instanceof Error ? buildErr.message : String(buildErr);
+			logSchemaCheck('confirm.solver_model_failed', {
 				draftId: draft.id,
-				errors: intentValidation.errors
+				error: messageText
 			});
+			return error(422, `Solver model build failed: ${messageText}`);
 		}
-	}
 
-	if (!approvedUnderstanding && draft.currentUnderstanding) {
-		const understandingValidation = validateSchemeUnderstanding(draft.currentUnderstanding);
-		if (understandingValidation.ok && understandingValidation.value) {
-			approvedUnderstanding = understandingValidation.value;
-		}
-	}
-
-	if (!approvedSchemaValue) {
-		const schemaValidation = validateSchemaAny(draft.currentSchema);
-		if (!schemaValidation.ok || !schemaValidation.value) {
-			logSchemaCheck('confirm.schema_invalid', { draftId: draft.id, errors: schemaValidation.errors });
-			return error(422, `Approved schema validation failed: ${schemaValidation.errors.join('; ')}`);
-		}
-		approvedSchemaValue = schemaValidation.value;
-		approvedSchemaVersion = schemaValidation.version ?? '2.0';
-	}
-	if (!approvedSchemaValue) {
-		return error(422, 'Approved schema is missing after confirmation checks');
-	}
-
-	let solverModel: SolverModelV1;
-	try {
-		const built = buildSolverModelFromSchema(approvedSchemaValue);
-		solverModel = built.solverModel;
-		if (built.warnings.length > 0) {
-			logSchemaCheck('confirm.solver_model_warnings', {
-				draftId: draft.id,
-				warnings: built.warnings.slice(0, 6)
-			});
-		}
-	} catch (buildErr) {
-		const messageText = buildErr instanceof Error ? buildErr.message : String(buildErr);
-		logSchemaCheck('confirm.solver_model_failed', {
+		const effectiveModelPreference =
+			requestedModelPreference !== undefined
+				? normalizeModelPreference(requestedModelPreference)
+				: normalizeModelPreference(draft.chat.modelPreference);
+		const forcedModel = toForcedModel(effectiveModelPreference);
+		logSchemaCheck('confirm.model_resolved', {
 			draftId: draft.id,
-			error: messageText
+			chatId: draft.chatId,
+			modelPreference: draft.chat.modelPreference,
+			requestModelPreference: requestedModelPreference ?? null,
+			effectiveModelPreference,
+			forcedModel
 		});
-		return error(422, `Solver model build failed: ${messageText}`);
-	}
-
-	const effectiveModelPreference =
-		requestedModelPreference !== undefined
-			? normalizeModelPreference(requestedModelPreference)
-			: normalizeModelPreference(draft.chat.modelPreference);
-	const forcedModel = toForcedModel(effectiveModelPreference);
-	logSchemaCheck('confirm.model_resolved', {
-		draftId: draft.id,
-		chatId: draft.chatId,
-		modelPreference: draft.chat.modelPreference,
-		requestModelPreference: requestedModelPreference ?? null,
-		effectiveModelPreference,
-		forcedModel
-	});
-	const revisionNotes = draft.revisions
-		.map((revision: { userNotes?: string | null }) => revision.userNotes?.trim())
-		.filter((note: string | undefined): note is string => Boolean(note));
-	let approvedSchemeDescription =
-		typeof draft.currentSchemeDescription === 'string' ? draft.currentSchemeDescription.trim() : '';
-	if (!approvedSchemeDescription && approvedUnderstanding) {
-		const understandingValidation = validateSchemeUnderstanding(approvedUnderstanding);
-		if (understandingValidation.ok && understandingValidation.value) {
-			const descriptionResult = await buildAdaptiveSchemeDescription({
-				schema: approvedSchemaValue,
-				language: understandingValidation.value.source.language,
-				understanding: understandingValidation.value,
-				assumptions: understandingValidation.value.assumptions,
-				forcedModel,
-				fastMode: true
-			});
-			approvedSchemeDescription = descriptionResult.description;
+		const revisionNotes = draft.revisions
+			.map((revision: { userNotes?: string | null }) => revision.userNotes?.trim())
+			.filter((note: string | undefined): note is string => Boolean(note));
+		let approvedSchemeDescription =
+			typeof draft.currentSchemeDescription === 'string' ? draft.currentSchemeDescription.trim() : '';
+		if (!approvedSchemeDescription && approvedUnderstanding) {
+			const understandingValidation = validateSchemeUnderstanding(approvedUnderstanding);
+			if (understandingValidation.ok && understandingValidation.value) {
+				const descriptionResult = await buildAdaptiveSchemeDescription({
+					schema: approvedSchemaValue,
+					language: understandingValidation.value.source.language,
+					understanding: understandingValidation.value,
+					assumptions: understandingValidation.value.assumptions,
+					forcedModel,
+					fastMode: true
+				});
+				approvedSchemeDescription = descriptionResult.description;
+			}
 		}
-	}
 
-	await db.taskDraft.update({
-		where: { id: draft.id },
-		data: {
-			approvedUnderstanding,
-			approvedIntent,
+		await db.taskDraft.update({
+			where: { id: draft.id },
+			data: {
+				approvedUnderstanding,
+				approvedIntent,
+				approvedSchema: approvedSchemaValue,
+				approvedSchemeDescription: approvedSchemeDescription || null,
+				solverModel,
+				status: 'SOLVING',
+				schemaVersion: approvedSchemaVersion
+			}
+		});
+		logSchemaCheck('confirm.approved_and_solving', {
+			draftId: draft.id,
+			revisionNotes: revisionNotes.length,
+			schemaVersion: approvedSchemaVersion
+		});
+
+		processingHandle.updateStatus('Solve started. Waiting for result...');
+		launchSchemaSolveInBackground({
+			draftId: draft.id,
+			chatId: draft.chatId,
+			userMessage: draft.originalPrompt,
 			approvedSchema: approvedSchemaValue,
 			approvedSchemeDescription: approvedSchemeDescription || null,
 			solverModel,
+			schemaVersion: approvedSchemaVersion,
+			revisionNotes,
+			forcedModel,
+			startedAt,
+			processingHandle
+		});
+		releaseProcessing = false;
+
+		return json({
+			draftId: draft.id,
 			status: 'SOLVING',
-			schemaVersion: approvedSchemaVersion
+			accepted: true
+		});
+	} finally {
+		if (releaseProcessing) {
+			processingHandle.release();
 		}
-	});
-	logSchemaCheck('confirm.approved_and_solving', {
-		draftId: draft.id,
-		revisionNotes: revisionNotes.length,
-		schemaVersion: approvedSchemaVersion
-	});
-
-	launchSchemaSolveInBackground({
-		draftId: draft.id,
-		chatId: draft.chatId,
-		userMessage: draft.originalPrompt,
-		approvedSchema: approvedSchemaValue,
-		approvedSchemeDescription: approvedSchemeDescription || null,
-		solverModel,
-		schemaVersion: approvedSchemaVersion,
-		revisionNotes,
-		forcedModel,
-		startedAt
-	});
-
-	return json({
-		draftId: draft.id,
-		status: 'SOLVING',
-		accepted: true
-	});
+	}
 };
