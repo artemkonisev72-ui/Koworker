@@ -15,11 +15,11 @@ import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import { compileSchemeIntent, SchemeIntentCompileError } from '$lib/schema/compiler.js';
 import { validateSchemeIntent } from '$lib/schema/intent.js';
 import {
-	buildSchemeUnderstandingDescription,
 	schemeUnderstandingFromIntent,
 	schemeUnderstandingToIntent,
 	validateSchemeUnderstanding
 } from '$lib/schema/understanding.js';
+import { buildAdaptiveSchemeDescription } from '$lib/server/schema/description.js';
 import {
 	detectPromptLanguage,
 	formatSchemaAssistantContent,
@@ -237,7 +237,24 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 			});
 		}
 
-		const schemeDescription = buildSchemeUnderstandingDescription(finalUnderstanding, language);
+		const descriptionResult = await buildAdaptiveSchemeDescription({
+			schema: finalValidation.value,
+			language,
+			understanding: finalUnderstanding,
+			assumptions,
+			forcedModel,
+			fastMode: true
+		});
+		const schemeDescription = descriptionResult.description;
+		if (
+			descriptionResult.source === 'llm' &&
+			descriptionResult.model &&
+			typeof descriptionResult.tokens === 'number'
+		) {
+			usedModels.push(
+				`${descriptionResult.model} (SchemeDescription): ${descriptionResult.tokens.toLocaleString('ru-RU')} tokens`
+			);
+		}
 		const assistantContent = formatSchemaAssistantContent({
 			revisionIndex,
 			assumptions,

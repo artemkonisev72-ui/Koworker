@@ -12,10 +12,10 @@ import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import { compileSchemeIntent } from '$lib/schema/compiler.js';
 import { validateSchemeIntent } from '$lib/schema/intent.js';
 import {
-	buildSchemeUnderstandingDescription,
 	schemeUnderstandingFromIntent,
 	validateSchemeUnderstanding
 } from '$lib/schema/understanding.js';
+import { buildAdaptiveSchemeDescription } from '$lib/server/schema/description.js';
 import { buildSolverModelFromSchema, type SolverModelV1 } from '$lib/solver/model.js';
 import { canConfirmStatus, loadGeminiHistory, logSchemaCheck } from '$lib/server/schema/flow.js';
 
@@ -307,10 +307,15 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	if (!approvedSchemeDescription && approvedUnderstanding) {
 		const understandingValidation = validateSchemeUnderstanding(approvedUnderstanding);
 		if (understandingValidation.ok && understandingValidation.value) {
-			approvedSchemeDescription = buildSchemeUnderstandingDescription(
-				understandingValidation.value,
-				understandingValidation.value.source.language
-			);
+			const descriptionResult = await buildAdaptiveSchemeDescription({
+				schema: approvedSchemaValue,
+				language: understandingValidation.value.source.language,
+				understanding: understandingValidation.value,
+				assumptions: understandingValidation.value.assumptions,
+				forcedModel,
+				fastMode: true
+			});
+			approvedSchemeDescription = descriptionResult.description;
 		}
 	}
 

@@ -10,6 +10,7 @@ import type { SchemeIntentV1 } from '$lib/schema/intent.js';
 import { parseSchemeIntentResponse } from '$lib/schema/intent.js';
 import type { SchemeUnderstandingV1 } from '$lib/schema/understanding.js';
 import { parseSchemeUnderstandingResponse } from '$lib/schema/understanding.js';
+import { detectPromptLanguage } from '$lib/server/schema/language.js';
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -445,44 +446,6 @@ function formatTokenAttribution(model: GeminiModel, stage: string, tokens: numbe
 	return `${model} (${stage}): ${tokens.toLocaleString('ru-RU')} tokens`;
 }
 
-function extractLanguageSignalText(userText: string): string {
-	const contextMarkers = [
-		'[APPROVED_SCHEME_DESCRIPTION]',
-		'[ACCEPTED_SCHEMA_REVISIONS]',
-		'[SOLVER_MODEL_JSON]',
-		'[APPROVED_SCHEMA_JSON]'
-	];
-	let earliestMarkerIndex = -1;
-	for (const marker of contextMarkers) {
-		const markerIndex = userText.indexOf(marker);
-		if (markerIndex < 0) continue;
-		if (earliestMarkerIndex < 0 || markerIndex < earliestMarkerIndex) {
-			earliestMarkerIndex = markerIndex;
-		}
-	}
-
-	if (earliestMarkerIndex >= 0) {
-		return userText.slice(0, earliestMarkerIndex).trim();
-	}
-
-	const userTaskMarker = '[USER_TASK]';
-	const userTaskIndex = userText.indexOf(userTaskMarker);
-	if (userTaskIndex >= 0) {
-		return userText.slice(userTaskIndex + userTaskMarker.length).trim();
-	}
-
-	return userText;
-}
-
-function detectPromptLanguage(userText: string): 'ru' | 'en' {
-	const signalText = extractLanguageSignalText(userText);
-	const cyrillicCount = (signalText.match(/[А-Яа-яЁё]/g) ?? []).length;
-	const latinCount = (signalText.match(/[A-Za-z]/g) ?? []).length;
-
-	if (cyrillicCount === 0 && latinCount === 0) return 'en';
-	return cyrillicCount >= latinCount * 0.6 ? 'ru' : 'en';
-}
-
 function languagePolicy(userText: string): string {
 	const detected = detectPromptLanguage(userText);
 	if (detected === 'ru') {
@@ -622,13 +585,19 @@ export async function generateSchemeDescriptionFromFacts(
 You receive canonical scheme facts as JSON.
 Return plain text only (no JSON, no code fences).
 Do not invent new members, supports, loads, axes, signs, or results.
-Keep the structure concise and explicit with sections:
+Produce concise structured text using short section headings and bullet points.
+Allowed section pool:
 - Scheme type
 - Members and joints
 - Supports and constraints
 - Loads
 - Requested results
 - Assumptions
+Rules:
+- Include only sections that have meaningful data in the provided facts.
+- Skip empty/placeholder sections; never print "not specified"/"none" stubs.
+- Keep terms and labels consistent with the facts JSON.
+- Keep assumptions concise and include them only if assumptions are non-empty.
 Use the exact language requested: ${languageSeed}.`;
 
 	const question = `[SCHEME_FACTS_JSON]\n${params.factsJson}`;

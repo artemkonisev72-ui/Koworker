@@ -28,9 +28,11 @@ import type { SolverModelV1 } from '$lib/solver/model.js';
 
 export type PipelineStatus =
 	| { type: 'ping' }
+	| { type: 'ack'; userMessageId: string }
 	| { type: 'status'; message: string }
 	| {
 			type: 'result';
+			messageId?: string;
 			content: string;
 			generatedCode?: string;
 			executionLogs?: string;

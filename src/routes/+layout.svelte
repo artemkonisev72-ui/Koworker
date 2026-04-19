@@ -71,7 +71,7 @@
 		}
 
 		if (!deferredInstallPrompt) {
-			installHintText = 'Open browser menu and choose "Install app" or "Add to Home screen".';
+			installHintText = 'Откройте меню браузера и выберите «Установить приложение» или «Добавить на главный экран».';
 			return;
 		}
 
@@ -83,11 +83,11 @@
 			if (outcome === 'accepted') {
 				showInstallOffer = false;
 			} else {
-				installHintText = 'You can install Koworker later from the browser menu.';
+				installHintText = 'Вы сможете установить Koworker позже через меню браузера.';
 			}
 		} catch (error) {
 			console.error('PWA install prompt failed:', error);
-			installHintText = 'Install prompt is unavailable now. Try browser menu install.';
+			installHintText = 'Сейчас системное окно установки недоступно. Попробуйте установить через меню браузера.';
 		} finally {
 			installInProgress = false;
 			deferredInstallPrompt = null;
@@ -145,8 +145,8 @@
 {#if showInstallOffer}
 	<section class="pwa-install-offer" aria-live="polite" aria-label="Install Koworker">
 		<div class="pwa-install-copy">
-			<h2>Install Koworker on Android</h2>
-			<p>Keep the app on your home screen and open it faster with one tap.</p>
+			<h2>Установите Koworker на Android</h2>
+			<p>Закрепите приложение на главном экране и открывайте его в одно касание.</p>
 			{#if installHintText}
 				<p class="pwa-install-hint">{installHintText}</p>
 			{/if}
@@ -154,15 +154,15 @@
 		<div class="pwa-install-actions">
 			<button class="pwa-install-btn primary" type="button" onclick={installPwa} disabled={installInProgress}>
 				{#if installInProgress}
-					Opening...
+					Открываем...
 				{:else if deferredInstallPrompt}
-					Install app
+					Установить
 				{:else}
-					How to install
+					Как установить
 				{/if}
 			</button>
 			<button class="pwa-install-btn secondary" type="button" onclick={dismissInstallOffer}>
-				Later
+				Позже
 			</button>
 		</div>
 	</section>

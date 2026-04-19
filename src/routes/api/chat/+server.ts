@@ -154,9 +154,11 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		chatRateMap.set(locals.user!.id, entry);
 	};
 
+	let persistedUserMessageId: string;
+
 	// Сохраняем сообщение пользователя
 	try {
-		await prisma.message.create({
+		const userMessage = await prisma.message.create({
 			data: {
 				chatId,
 				role: 'USER',
@@ -164,6 +166,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				imageData: imageData ? JSON.stringify(imageData) : null
 			}
 		});
+		persistedUserMessageId = userMessage.id;
 	} catch (err) {
 		releasePipelineSlot();
 		throw err;
@@ -184,6 +187,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				controller.close();
 			}
 
+			send({ type: 'ack', userMessageId: persistedUserMessageId });
+
 			// PING каждые 5 секунд — держит соединение через балансировщик
 			const pingInterval = setInterval(() => {
 				send({ type: 'ping' });
@@ -194,16 +199,18 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				message,
 				history,
 				async (event) => {
-					send(event);
+					if (event.type !== 'result') {
+						send(event);
+						return;
+					}
 
 					// Сохраняем финальный ответ в БД
-					if (event.type === 'result') {
-						if (request.signal.aborted) {
+					if (request.signal.aborted) {
 							console.log('[SSE] Request aborted, skipping DB save for result');
 							return;
-						}
-						try {
-							await (prisma as any).message.create({
+					}
+					try {
+						const assistantMessage = await (prisma as any).message.create({
 								data: {
 									chatId,
 									role: 'ASSISTANT',
@@ -220,14 +227,19 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 							});
 
 							// Обновляем заголовок чата если это первое сообщение
-							const msgCount = await prisma.message.count({ where: { chatId } });
-							if (msgCount <= 2) {
-								const title = message.slice(0, 60) + (message.length > 60 ? '...' : '');
-								await prisma.chat.update({ where: { id: chatId }, data: { title } });
-							}
-						} catch (dbErr) {
-							console.error('[SSE] DB save error:', dbErr);
+						const msgCount = await prisma.message.count({ where: { chatId } });
+						if (msgCount <= 2) {
+							const title = message.slice(0, 60) + (message.length > 60 ? '...' : '');
+							await prisma.chat.update({ where: { id: chatId }, data: { title } });
 						}
+
+						send({
+							...event,
+							messageId: assistantMessage.id
+						});
+					} catch (dbErr) {
+						console.error('[SSE] DB save error:', dbErr);
+						send(event);
 					}
 				},
 				imageData,

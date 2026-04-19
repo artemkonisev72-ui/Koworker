@@ -6,6 +6,12 @@
 	import { onMount, tick } from 'svelte';
 	import MessageRenderer from '$lib/components/MessageRenderer.svelte';
 	import type { GraphData } from '$lib/graphs/types.js';
+	import {
+		canDeleteMessage,
+		dedupeMessagesById,
+		isTempMessageId,
+		reconcileMessageId
+	} from '$lib/chat/reconcile.js';
 	interface ActiveDraftState {
 		draftId: string;
 		status: string;
@@ -28,6 +34,8 @@
 		draftId?: string | null;
 		createdAt?: string;
 		isStreaming?: boolean;
+		isOptimistic?: boolean;
+		persistedId?: string | null;
 	}
 	interface Chat {
 		id: string;
@@ -514,15 +522,75 @@
 		return `temp-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 	}
 
+	function patchMessageById(messageId: string, patch: Partial<ChatMessage>) {
+		messages = messages.map((message) =>
+			message.id === messageId
+				? {
+						...message,
+						...patch
+					}
+				: message
+		);
+	}
+
+	function applyMessageIdReconciliation(
+		currentId: string,
+		persistedId: string | null | undefined
+	): string {
+		if (!persistedId || currentId === persistedId) return currentId;
+		messages = reconcileMessageId(messages, currentId, persistedId);
+		return persistedId;
+	}
+
+	function appendOptimisticExchange(text: string, imageData: { base64: string; mimeType: string } | null) {
+		const userTempId = generateSafeId();
+		const assistantTempId = generateSafeId();
+
+		const userMessage: ChatMessage = {
+			id: userTempId,
+			role: 'USER',
+			content: text,
+			imageData: imageData ? JSON.stringify(imageData) : null,
+			createdAt: new Date().toISOString(),
+			isOptimistic: true
+		};
+
+		const assistantPlaceholder: ChatMessage = {
+			id: assistantTempId,
+			role: 'ASSISTANT',
+			content: '',
+			isStreaming: true,
+			isOptimistic: true
+		};
+
+		messages = dedupeMessagesById([...messages, userMessage, assistantPlaceholder]);
+		return { userTempId, assistantTempId };
+	}
+
 	async function deleteMessage(msgId: string) {
 		if (!confirm('Удалить это сообщение?')) return;
+		const targetMessage = messages.find((message) => message.id === msgId);
+		if (targetMessage && !canDeleteMessage(targetMessage)) {
+			alert('Сообщение еще не сохранено. Попробуйте удалить через пару секунд.');
+			return;
+		}
+		if (isTempMessageId(msgId)) {
+			alert('Сообщение еще не сохранено. Попробуйте удалить через пару секунд.');
+			return;
+		}
 		try {
 			const res = await fetch(`/api/messages/${msgId}`, { method: 'DELETE' });
 			if (res.ok) {
-				messages = messages.filter((m) => m.id !== msgId);
+				if (activeChatId) {
+					await loadMessages(activeChatId);
+				}
+				await loadChats();
+				return;
 			}
+			alert(await parseErrorMessage(res));
 		} catch (e) {
 			console.error('Failed to delete message', e);
+			alert('Не удалось удалить сообщение. Проверьте соединение и попробуйте снова.');
 		}
 	}
 
@@ -583,7 +651,8 @@
 
 	async function startSchemaCheckFlow(
 		text: string,
-		imageData: { base64: string; mimeType: string } | null
+		imageData: { base64: string; mimeType: string } | null,
+		optimisticExchange: { userTempId: string; assistantTempId: string }
 	) {
 		if (!activeChatId) return;
 		const modelPreference = currentModelPreference();
@@ -611,6 +680,27 @@
 				throw new Error(await parseErrorMessage(res));
 			}
 			const payload = await res.json();
+			const persistedUserId =
+				typeof payload.userMessageId === 'string' ? payload.userMessageId : null;
+			const persistedAssistantId =
+				typeof payload.assistantMessage?.id === 'string' ? payload.assistantMessage.id : null;
+			const resolvedUserId = applyMessageIdReconciliation(
+				optimisticExchange.userTempId,
+				persistedUserId
+			);
+			const resolvedAssistantId = applyMessageIdReconciliation(
+				optimisticExchange.assistantTempId,
+				persistedAssistantId
+			);
+			patchMessageById(resolvedUserId, { isOptimistic: false });
+			patchMessageById(resolvedAssistantId, {
+				content: typeof payload.assistantMessage?.content === 'string' ? payload.assistantMessage.content : '',
+				schemaData: payload.schema ?? null,
+				schemaDescription:
+					typeof payload.schemeDescription === 'string' ? payload.schemeDescription : null,
+				isStreaming: false,
+				isOptimistic: false
+			});
 			activeDraft = {
 				draftId: payload.draftId,
 				status: payload.status,
@@ -733,38 +823,33 @@
 		inputValue = '';
 		if (isMobileView) mobileToolsOpen = false;
 
+		const optimisticExchange = appendOptimisticExchange(text, imageData);
+		await scrollToBottom();
+
 		if (schemaCheckEnabled) {
 			try {
-				await startSchemaCheckFlow(text, imageData);
+				await startSchemaCheckFlow(text, imageData, optimisticExchange);
 			} catch (err) {
 				console.error('Schema check start failed:', err);
 				alert(err instanceof Error ? err.message : String(err));
+				patchMessageById(optimisticExchange.assistantTempId, {
+					content: `Error: ${err instanceof Error ? err.message : String(err)}`,
+					isStreaming: false,
+					isOptimistic: false
+				});
+				if (activeChatId) {
+					await loadMessages(activeChatId);
+				}
 				statusMessage = '';
 			}
+			await scrollToBottom();
 			return;
 		}
 
 		isLoading = true;
 		statusMessage = '';
-
-		const userMsg: ChatMessage = {
-			id: generateSafeId(),
-			role: 'USER',
-			content: text,
-			imageData: imageData ? JSON.stringify(imageData) : null,
-			createdAt: new Date().toISOString()
-		};
-		messages = [...messages, userMsg];
-
-		const assistantId = generateSafeId();
-		const assistantPlaceholder: ChatMessage = {
-			id: assistantId,
-			role: 'ASSISTANT',
-			content: '',
-			isStreaming: true
-		};
-		messages = [...messages, assistantPlaceholder];
-		await scrollToBottom();
+		let userMessageId = optimisticExchange.userTempId;
+		let assistantMessageId = optimisticExchange.assistantTempId;
 
 		try {
 			abortController = new AbortController();
@@ -805,6 +890,8 @@
 						const event = JSON.parse(payload) as {
 							type: string;
 							message?: string;
+							userMessageId?: string;
+							messageId?: string;
 							content?: string;
 							graphData?: GraphData[];
 							schemaData?: unknown;
@@ -813,32 +900,35 @@
 							usedModels?: string[];
 						};
 
-						if (event.type === 'status') {
+						if (event.type === 'ack') {
+							userMessageId = applyMessageIdReconciliation(userMessageId, event.userMessageId ?? null);
+							patchMessageById(userMessageId, { isOptimistic: false });
+						} else if (event.type === 'status') {
 							statusMessage = event.message ?? '';
 						} else if (event.type === 'result') {
-							messages = messages.map((m) =>
-								m.id === assistantId
-									? {
-											...m,
-											content: event.content ?? '',
-											graphData: event.graphData ?? null,
-											schemaData: event.schemaData ?? null,
-											schemaDescription: event.schemaDescription ?? null,
-											schemaVersion: event.schemaVersion ?? null,
-											usedModels: event.usedModels ?? null,
-											isStreaming: false
-										}
-									: m
+							assistantMessageId = applyMessageIdReconciliation(
+								assistantMessageId,
+								event.messageId ?? null
 							);
+							patchMessageById(assistantMessageId, {
+								content: event.content ?? '',
+								graphData: event.graphData ?? null,
+								schemaData: event.schemaData ?? null,
+								schemaDescription: event.schemaDescription ?? null,
+								schemaVersion: event.schemaVersion ?? null,
+								usedModels: event.usedModels ?? null,
+								isStreaming: false,
+								isOptimistic: false
+							});
 							statusMessage = '';
 							await loadChats();
 							await scrollToBottom();
 						} else if (event.type === 'error') {
-							messages = messages.map((m) =>
-								m.id === assistantId
-									? { ...m, content: `Error: ${event.message}`, isStreaming: false }
-									: m
-							);
+							patchMessageById(assistantMessageId, {
+								content: `Error: ${event.message}`,
+								isStreaming: false,
+								isOptimistic: false
+							});
 							statusMessage = '';
 							await scrollToBottom();
 						}
@@ -850,23 +940,25 @@
 		} catch (chatError) {
 			if (chatError instanceof Error && chatError.name === 'AbortError') {
 				console.log('Request aborted by user');
-				messages = messages.map((m) => (m.id === assistantId ? { ...m, isStreaming: false } : m));
+				patchMessageById(assistantMessageId, {
+					isStreaming: false,
+					isOptimistic: false
+				});
 			} else {
 				console.error('Chat error:', chatError);
-				messages = messages.map((m) =>
-					m.id === assistantId
-						? {
-								...m,
-								content: `Network error: ${chatError instanceof Error ? chatError.message : String(chatError)}`,
-								isStreaming: false
-							}
-						: m
-				);
+				patchMessageById(assistantMessageId, {
+					content: `Network error: ${chatError instanceof Error ? chatError.message : String(chatError)}`,
+					isStreaming: false,
+					isOptimistic: false
+				});
 			}
 		} finally {
 			isLoading = false;
 			statusMessage = '';
 			abortController = null;
+			if (activeChatId && (isTempMessageId(userMessageId) || isTempMessageId(assistantMessageId))) {
+				await loadMessages(activeChatId);
+			}
 			await scrollToBottom();
 		}
 	}
@@ -1330,7 +1422,7 @@
 								<div class="avatar user-avatar">Вы</div>
 							{/if}
 
-							{#if !msg.isStreaming}
+							{#if !msg.isStreaming && !msg.isOptimistic}
 								<button
 									class="delete-msg-btn"
 									onclick={() => deleteMessage(msg.id)}

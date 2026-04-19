@@ -3,6 +3,10 @@ import { prisma } from '$lib/server/db.js';
 import type { SchemaDataV2 } from '$lib/schema/schema-v2.js';
 import { isSchemaDataV2 } from '$lib/schema/schema-v2.js';
 import { analyzeSchemaLayoutV2 } from '$lib/schema/layout-v2.js';
+import {
+	detectPromptLanguage as detectPromptLanguageShared,
+	type PromptLanguage
+} from './language.js';
 
 type DraftStatus =
 	| 'DRAFT'
@@ -21,7 +25,7 @@ export const MAX_REVISION_NOTES_LENGTH = 2_000;
 export const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
 export type InputImageData = { base64: string; mimeType: string };
-export type PromptLanguage = 'ru' | 'en';
+export type { PromptLanguage };
 
 export function validateUserPrompt(prompt: string): string | null {
 	if (!prompt.trim()) return 'message is required';
@@ -60,11 +64,7 @@ export function parseImageData(value: string | null | undefined): InputImageData
 }
 
 export function detectPromptLanguage(text: string): PromptLanguage {
-	const cyrillicCount = (text.match(/[А-Яа-яЁё]/g) ?? []).length;
-	const latinCount = (text.match(/[A-Za-z]/g) ?? []).length;
-
-	if (cyrillicCount === 0 && latinCount === 0) return 'en';
-	return cyrillicCount >= latinCount * 0.6 ? 'ru' : 'en';
+	return detectPromptLanguageShared(text);
 }
 
 export async function loadGeminiHistory(chatId: string, take = 20): Promise<GeminiHistory[]> {

@@ -1,5 +1,9 @@
 import type { SchemeIntentV1 } from '$lib/schema/intent.js';
 import type { SchemaAny } from '$lib/schema/schema-any.js';
+import type { GeminiHistory } from '$lib/server/ai/gemini.js';
+import { generateSchemeDescriptionFromFacts } from '$lib/server/ai/gemini.js';
+import type { SchemeUnderstandingV1 } from '$lib/schema/understanding.js';
+import { schemeUnderstandingToIntent } from '$lib/schema/understanding.js';
 
 export type SchemeDescriptionLanguage = 'ru' | 'en';
 
@@ -21,6 +25,25 @@ export interface SchemeDescriptionFacts {
 	loads: string[];
 	requestedResults: string[];
 	assumptions: string[];
+}
+
+export interface AdaptiveSchemeDescriptionParams {
+	schema: SchemaAny;
+	language: SchemeDescriptionLanguage;
+	history?: GeminiHistory[];
+	intent?: SchemeIntentV1 | null;
+	understanding?: SchemeUnderstandingV1 | null;
+	assumptions?: string[];
+	forcedModel?: string | null;
+	fastMode?: boolean;
+}
+
+export interface AdaptiveSchemeDescriptionResult {
+	description: string;
+	source: 'llm' | 'fallback';
+	model?: string;
+	tokens?: number;
+	facts: SchemeDescriptionFacts;
 }
 
 interface BuildFactsParams {
@@ -361,6 +384,57 @@ export function serializeSchemeDescriptionFacts(facts: SchemeDescriptionFacts): 
 	return JSON.stringify(facts, null, 2);
 }
 
+const EMPTY_SECTION_MARKERS = new Set([
+	'not specified',
+	'none',
+	'n/a',
+	'unknown',
+	'не указаны',
+	'не указано',
+	'не задано',
+	'нет'
+]);
+
+function isEmptySectionItem(line: string): boolean {
+	const normalized = line.replace(/^[-*]\s*/, '').trim().toLowerCase();
+	if (!normalized) return true;
+	return EMPTY_SECTION_MARKERS.has(normalized);
+}
+
+function normalizeGeneratedDescription(text: string): string {
+	const unfenced = text
+		.replace(/```(?:json|text|markdown)?/gi, '')
+		.replace(/```/g, '')
+		.trim();
+	if (!unfenced) return '';
+
+	const blocks = unfenced
+		.split(/\n\s*\n/g)
+		.map((block) =>
+			block
+				.split('\n')
+				.map((line) => line.trim())
+				.filter(Boolean)
+		)
+		.filter((lines) => lines.length > 0);
+
+	const keptBlocks: string[] = [];
+	for (const lines of blocks) {
+		const [heading, ...rest] = lines;
+		const isSection = /:\s*$/.test(heading);
+		if (!isSection) {
+			keptBlocks.push(lines.join('\n'));
+			continue;
+		}
+		if (rest.length === 0) continue;
+		const hasMeaningfulContent = rest.some((line) => !isEmptySectionItem(line));
+		if (!hasMeaningfulContent) continue;
+		keptBlocks.push([heading, ...rest].join('\n'));
+	}
+
+	return keptBlocks.join('\n\n').trim();
+}
+
 function structureKindLabel(kind: StructureKindExtended, language: SchemeDescriptionLanguage): string {
 	if (language === 'ru') {
 		if (kind === 'beam') return 'Балка';
@@ -467,4 +541,53 @@ export function buildSchemeDescriptionFallback(
 	}
 
 	return lines.join('\n').trim();
+}
+
+export async function buildAdaptiveSchemeDescription(
+	params: AdaptiveSchemeDescriptionParams
+): Promise<AdaptiveSchemeDescriptionResult> {
+	const intent =
+		params.intent ??
+		(params.understanding ? schemeUnderstandingToIntent(params.understanding) : null);
+	const assumptions =
+		params.assumptions ??
+		params.understanding?.assumptions ??
+		intent?.assumptions ??
+		[];
+	const facts = buildSchemeDescriptionFacts({
+		schema: params.schema,
+		intent,
+		assumptions
+	});
+	const fallbackDescription = buildSchemeDescriptionFallback(facts, params.language);
+
+	try {
+		const llmDescription = await generateSchemeDescriptionFromFacts(params.history ?? [], {
+			factsJson: serializeSchemeDescriptionFacts(facts),
+			language: params.language,
+			forcedModel: params.forcedModel,
+			fastMode: params.fastMode
+		});
+		const normalized = normalizeGeneratedDescription(llmDescription.description);
+		if (normalized) {
+			return {
+				description: normalized,
+				source: 'llm',
+				model: llmDescription.model,
+				tokens: llmDescription.tokens,
+				facts
+			};
+		}
+	} catch (err) {
+		console.warn(
+			'[SchemaCheck] adaptive description fallback due to LLM error:',
+			err instanceof Error ? err.message : String(err)
+		);
+	}
+
+	return {
+		description: fallbackDescription,
+		source: 'fallback',
+		facts
+	};
 }

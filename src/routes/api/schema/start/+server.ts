@@ -13,10 +13,10 @@ import {
 import { validateSchemaAny } from '$lib/schema/schema-any.js';
 import { compileSchemeIntent, SchemeIntentCompileError } from '$lib/schema/compiler.js';
 import {
-	buildSchemeUnderstandingDescription,
 	schemeUnderstandingFromIntent,
 	schemeUnderstandingToIntent
 } from '$lib/schema/understanding.js';
+import { buildAdaptiveSchemeDescription } from '$lib/server/schema/description.js';
 import {
 	detectPromptLanguage,
 	formatSchemaAssistantContent,
@@ -103,7 +103,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		forcedModel
 	});
 
-	await db.message.create({
+	const userMessage = await db.message.create({
 		data: {
 			chatId,
 			role: 'USER',
@@ -220,7 +220,24 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		}
 
 		const language = detectPromptLanguage(message);
-		const schemeDescription = buildSchemeUnderstandingDescription(finalUnderstanding, language);
+		const descriptionResult = await buildAdaptiveSchemeDescription({
+			schema: finalValidation.value,
+			language,
+			understanding: finalUnderstanding,
+			assumptions,
+			forcedModel,
+			fastMode: true
+		});
+		const schemeDescription = descriptionResult.description;
+		if (
+			descriptionResult.source === 'llm' &&
+			descriptionResult.model &&
+			typeof descriptionResult.tokens === 'number'
+		) {
+			usedModels.push(
+				`${descriptionResult.model} (SchemeDescription): ${descriptionResult.tokens.toLocaleString('ru-RU')} tokens`
+			);
+		}
 
 		const assistantContent = formatSchemaAssistantContent({
 			revisionIndex: 0,
@@ -282,6 +299,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 		return json({
 			draftId: draft.id,
+			userMessageId: userMessage.id,
 			status: result.updatedDraft.status,
 			schemaVersion: finalValidation.version ?? '2.0',
 			revisionIndex: result.updatedDraft.revisionCount,
