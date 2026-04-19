@@ -6,12 +6,11 @@ import { build, files, version } from '$service-worker';
 declare const self: ServiceWorkerGlobalScope;
 
 const STATIC_CACHE = `coworker-static-${version}`;
-const PAGE_CACHE = `coworker-pages-${version}`;
 const OFFLINE_URL = '/offline.html';
 
 const ASSET_DESTINATIONS = new Set(['style', 'script', 'worker', 'font', 'image', 'manifest']);
 const STATIC_ASSETS = new Set([...build, ...files, OFFLINE_URL]);
-const ACTIVE_CACHES = new Set([STATIC_CACHE, PAGE_CACHE]);
+const ACTIVE_CACHES = new Set([STATIC_CACHE]);
 
 self.addEventListener('install', (event) => {
 	event.waitUntil(
@@ -69,18 +68,9 @@ function isCacheableStaticRequest(request: Request, url: URL): boolean {
 }
 
 async function handleNavigationRequest(request: Request): Promise<Response> {
-	const pageCache = await caches.open(PAGE_CACHE);
-
 	try {
-		const response = await fetch(request);
-		if (response.ok) {
-			await pageCache.put(request, response.clone());
-		}
-		return response;
+		return await fetch(request);
 	} catch {
-		const cachedPage = await pageCache.match(request);
-		if (cachedPage) return cachedPage;
-
 		const staticCache = await caches.open(STATIC_CACHE);
 		const offlineFallback = await staticCache.match(OFFLINE_URL);
 		if (offlineFallback) return offlineFallback;

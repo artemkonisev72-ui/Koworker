@@ -136,6 +136,10 @@
 	const THEME_STORAGE_KEY = 'coworker-theme';
 	const PROCESSING_POLL_INTERVAL_MS = 2000;
 
+	function shouldOpenFreshChatAfterLogin(): boolean {
+		return Boolean(data.postLogin);
+	}
+
 	function idleProcessingState(): ChatProcessingState {
 		return {
 			isBusy: false,
@@ -403,7 +407,9 @@
 
 		void (async () => {
 			await loadChats();
-			if (chats.length > 0) {
+			if (shouldOpenFreshChatAfterLogin()) {
+				await startNewChat();
+			} else if (chats.length > 0) {
 				await selectChat(chats[0].id);
 			}
 		})();

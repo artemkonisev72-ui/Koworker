@@ -8,8 +8,6 @@
 		userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 	}
 
-	const POST_LOGIN_INSTALL_QUERY_PARAM = 'postLoginInstall';
-
 	let { children, data }: { children: Snippet; data: import('./$types').LayoutData } = $props();
 
 	let deferredInstallPrompt = $state<BeforeInstallPromptEvent | null>(null);
@@ -35,14 +33,13 @@
 		);
 	}
 
-	function consumePostLoginInstallParam(): boolean {
+	function consumePostLoginParam(): void {
 		const current = new URL(window.location.href);
-		if (current.searchParams.get(POST_LOGIN_INSTALL_QUERY_PARAM) !== '1') return false;
+		if (current.searchParams.get('postLogin') !== '1') return;
 
-		current.searchParams.delete(POST_LOGIN_INSTALL_QUERY_PARAM);
+		current.searchParams.delete('postLogin');
 		const cleanedUrl = `${current.pathname}${current.search}${current.hash}`;
 		window.history.replaceState(window.history.state, '', cleanedUrl);
-		return true;
 	}
 
 	async function registerServiceWorker() {
@@ -102,8 +99,11 @@
 	onMount(() => {
 		void registerServiceWorker();
 
-		const cameFromSuccessfulLogin = consumePostLoginInstallParam();
-		const shouldOfferNow = cameFromSuccessfulLogin && canOfferInstallAfterLogin();
+		if (data.postLogin) {
+			consumePostLoginParam();
+		}
+
+		const shouldOfferNow = data.postLogin && canOfferInstallAfterLogin();
 
 		if (shouldOfferNow) {
 			showInstallOffer = true;
