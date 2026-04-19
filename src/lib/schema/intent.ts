@@ -551,7 +551,10 @@ function normalizeKinematicPairCandidate(raw: unknown, index: number): IntentKin
 	const kind = normalizeKinematicPairKind(raw.kind ?? raw.type ?? raw.pairType);
 	if (!kind) return null;
 	const key = normalizeKey(raw.key ?? raw.id ?? raw.name, `pair_${index + 1}`);
-	const jointKey = normalizeKey(raw.jointKey ?? raw.joint ?? raw.nodeKey ?? raw.node, '');
+	const jointKey = normalizeKey(
+		raw.jointKey ?? raw.joint ?? raw.nodeKey ?? raw.node ?? raw.centerJoint ?? raw.centerNode,
+		''
+	);
 	const memberKeys = normalizeRefArray(raw.memberKeys, raw.memberKey ?? raw.member);
 	const componentKeys = normalizeRefArray(raw.componentKeys, raw.componentKey ?? raw.component);
 	const grounded = typeof raw.grounded === 'boolean' ? raw.grounded : undefined;
@@ -1134,6 +1137,7 @@ export function validateSchemeIntent(input: unknown): SchemeIntentValidationResu
 		const hasJoint = typeof pair.jointKey === 'string' && pair.jointKey.trim().length > 0;
 		const memberRefList = Array.isArray(pair.memberKeys) ? pair.memberKeys : [];
 		const componentRefList = Array.isArray(pair.componentKeys) ? pair.componentKeys : [];
+		const hasPlacementRefs = memberRefList.length > 0 || componentRefList.length > 0;
 
 		if (hasJoint && pair.jointKey && !jointKeys.has(pair.jointKey)) {
 			errors.push(`kinematicPairs[${index}].jointKey "${pair.jointKey}" is unknown`);
@@ -1150,8 +1154,10 @@ export function validateSchemeIntent(input: unknown): SchemeIntentValidationResu
 		}
 
 		if (pair.kind === 'revolute_pair' || pair.kind === 'prismatic_pair' || pair.kind === 'slot_pair') {
-			if (!hasJoint) {
-				errors.push(`kinematicPairs[${index}] kind "${pair.kind}" requires jointKey`);
+			if (!hasJoint && !hasPlacementRefs) {
+				errors.push(
+					`kinematicPairs[${index}] kind "${pair.kind}" requires jointKey or member/component references`
+				);
 			}
 		}
 		if (pair.kind === 'gear_pair' || pair.kind === 'belt_pair') {

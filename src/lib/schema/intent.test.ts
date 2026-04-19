@@ -137,6 +137,51 @@ describe('scheme intent validation', () => {
 		expect(validated.ok).toBe(true);
 	});
 
+	it('accepts prismatic pairs anchored by member reference without jointKey', () => {
+		const result = validateSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'planar_mechanism',
+			modelSpace: 'planar',
+			confidence: 'medium',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'O' }, { key: 'A' }, { key: 'B' }],
+			members: [
+				{ key: 'OA', kind: 'bar', startJoint: 'O', endJoint: 'A' },
+				{ key: 'AB', kind: 'bar', startJoint: 'A', endJoint: 'B' }
+			],
+			components: [],
+			kinematicPairs: [{ key: 'sliderB', kind: 'prismatic_pair', memberKeys: ['AB'] }],
+			supports: [],
+			loads: [],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		expect(result.ok).toBe(true);
+	});
+
+	it('normalizes centerJoint alias for kinematic pairs', () => {
+		const normalized = normalizeSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'planar_mechanism',
+			modelSpace: 'planar',
+			confidence: 'medium',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'A' }, { key: 'B' }],
+			members: [{ key: 'AB', kind: 'bar', startJoint: 'A', endJoint: 'B' }],
+			kinematicPairs: [{ key: 'p1', kind: 'prismatic_pair', centerJoint: 'B' }],
+			supports: [],
+			loads: [],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		expect(normalized.value.kinematicPairs[0]?.jointKey).toBe('B');
+		expect(validateSchemeIntent(normalized.value).ok).toBe(true);
+	});
+
 	it('allows legacy Q/M requested results for planar_frame', () => {
 		const result = validateSchemeIntent({
 			version: 'intent-1.0',

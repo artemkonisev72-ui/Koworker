@@ -121,4 +121,43 @@ describe('scheme compiler', () => {
 		expect(result.schemaData.objects.some((object) => object.type === 'prismatic_pair')).toBe(true);
 		expect(result.schemaData.objects.some((object) => object.label === 'OA')).toBe(true);
 	});
+
+	it('compiles prismatic pair anchored only by member reference', () => {
+		const result = compileSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'planar_mechanism',
+			modelSpace: 'planar',
+			confidence: 'medium',
+			source: { hasImage: false, language: 'ru' },
+			joints: [
+				{ key: 'O', label: 'O' },
+				{ key: 'A', label: 'A' },
+				{ key: 'B', label: 'B' }
+			],
+			members: [
+				{ key: 'OA', label: 'OA', kind: 'bar', startJoint: 'O', endJoint: 'A' },
+				{ key: 'AB', label: 'AB', kind: 'bar', startJoint: 'A', endJoint: 'B' }
+			],
+			components: [],
+			kinematicPairs: [
+				{
+					key: 'pB',
+					kind: 'prismatic_pair',
+					memberKeys: ['AB'],
+					guideHint: 'horizontal',
+					label: 'B-slider'
+				}
+			],
+			supports: [],
+			loads: [],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		const slider = result.schemaData.objects.find((object) => object.type === 'prismatic_pair');
+		expect(slider).toBeTruthy();
+		expect(slider?.nodeRefs).toHaveLength(3);
+		expect(slider?.label).toBe('B-slider');
+	});
 });
