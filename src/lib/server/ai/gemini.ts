@@ -653,6 +653,7 @@ Rules:
 4) Keep language of assumptions/ambiguities consistent with user task.
 5) Every joint/member/component/kinematic pair must have a non-empty label. If the task uses names like A, B, OA, AB, preserve them in labels.
 6) For slider-crank, connect crank and rod with revolute_pair and connect slider with prismatic_pair.
+7) If a support is attached by memberKey, always provide s in [0,1]. For end supports on a beam, use s=0 or s=1 instead of omitting it.
 ${languagePolicy(userMessage)}`;
 
 	const question = `Task:\n${userMessage}`;
@@ -768,6 +769,7 @@ Rules:
 5) Spatial frame/mechanism must set modelSpace="spatial"; beam/planar frame/mechanism must set modelSpace="planar".
 6) Every joint/member/component/kinematic pair must include label.
 7) For slider-crank, always use revolute_pair between crank and rod.
+8) If a support is attached by memberKey, always provide s in [0,1]. For end supports on a beam, use s=0 or s=1 instead of omitting it.
 ${languagePolicy(userMessage)}`;
 
 	if (useFastMode) {

@@ -161,6 +161,49 @@ describe('scheme intent validation', () => {
 		expect(result.ok).toBe(true);
 	});
 
+	it('infers cantilever fixed support position from sideHint when memberKey is used', () => {
+		const normalized = normalizeSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'beam',
+			modelSpace: 'planar',
+			confidence: 'medium',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'A' }, { key: 'B' }],
+			members: [{ key: 'm1', kind: 'bar', startJoint: 'A', endJoint: 'B' }],
+			supports: [{ key: 's1', kind: 'fixed_wall', memberKey: 'm1', sideHint: 'left' }],
+			loads: [],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		expect(normalized.value.supports[0]?.s).toBe(0);
+		expect(validateSchemeIntent(normalized.value).ok).toBe(true);
+		expect(
+			normalized.warnings.some((warning) => warning.includes('member placement was inferred'))
+		).toBe(true);
+	});
+
+	it('parses explicit support endpoint aliases into member position', () => {
+		const normalized = normalizeSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'beam',
+			modelSpace: 'planar',
+			confidence: 'medium',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'A' }, { key: 'B' }],
+			members: [{ key: 'm1', kind: 'bar', startJoint: 'A', endJoint: 'B' }],
+			supports: [{ key: 's1', kind: 'fixed_wall', memberKey: 'm1', at: 'end' }],
+			loads: [],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		expect(normalized.value.supports[0]?.s).toBe(1);
+		expect(validateSchemeIntent(normalized.value).ok).toBe(true);
+	});
+
 	it('normalizes centerJoint alias for kinematic pairs', () => {
 		const normalized = normalizeSchemeIntent({
 			version: 'intent-1.0',

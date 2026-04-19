@@ -485,10 +485,14 @@ function normalizeSupportCandidate(raw: unknown, index: number): IntentSupport |
 	const jointKeyRaw = normalizeKey(raw.jointKey ?? raw.joint ?? raw.nodeKey ?? raw.node, '');
 	const memberKeyRaw = normalizeKey(raw.memberKey ?? raw.member ?? raw.bar ?? raw.memberId, '');
 	const sRaw = toFiniteNumber(raw.s ?? raw.t ?? raw.lambda ?? raw.position);
+	const endpointPosition =
+		normalizeSupportEndpointPosition(
+			raw.at ?? raw.endpoint ?? raw.memberEnd ?? raw.anchor ?? raw.attachAt ?? raw.anchorAt
+		) ?? undefined;
 	const s =
 		typeof sRaw === 'number' && Number.isFinite(sRaw)
 			? Math.max(0, Math.min(1, sRaw))
-			: undefined;
+			: endpointPosition;
 	const sideHint = normalizeSupportSideHint(raw.sideHint ?? raw.side);
 	const guideHint = normalizeSupportGuideHint(raw.guideHint ?? raw.guide ?? raw.orientation);
 
@@ -499,6 +503,73 @@ function normalizeSupportCandidate(raw: unknown, index: number): IntentSupport |
 	if (sideHint) support.sideHint = sideHint;
 	if (guideHint) support.guideHint = guideHint;
 	return support;
+}
+
+function normalizeSupportEndpointPosition(value: unknown): number | null {
+	if (typeof value === 'number' && Number.isFinite(value)) {
+		return Math.max(0, Math.min(1, value));
+	}
+	if (typeof value !== 'string') return null;
+
+	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+	if (!normalized) return null;
+
+	if (
+		normalized === '0' ||
+		normalized === 'start' ||
+		normalized === 'begin' ||
+		normalized === 'from' ||
+		normalized === 'left' ||
+		normalized === 'left_end' ||
+		normalized === 'start_joint' ||
+		normalized === 'joint_start'
+	) {
+		return 0;
+	}
+
+	if (
+		normalized === '1' ||
+		normalized === 'end' ||
+		normalized === 'finish' ||
+		normalized === 'to' ||
+		normalized === 'right' ||
+		normalized === 'right_end' ||
+		normalized === 'end_joint' ||
+		normalized === 'joint_end'
+	) {
+		return 1;
+	}
+
+	return null;
+}
+
+function inferSupportPositionFromContext(
+	support: IntentSupport,
+	structureKind: IntentStructureKind,
+	member: IntentMember | undefined
+): number | undefined {
+	if (typeof support.s === 'number') return support.s;
+	if (!support.memberKey || !support.sideHint) return undefined;
+
+	if (structureKind === 'beam') {
+		if (support.sideHint === 'left') return 0;
+		if (support.sideHint === 'right') return 1;
+		return undefined;
+	}
+
+	if (!member) return undefined;
+
+	if (member.relation === 'horizontal') {
+		if (support.sideHint === 'left') return 0;
+		if (support.sideHint === 'right') return 1;
+	}
+
+	if (member.relation === 'vertical') {
+		if (support.sideHint === 'bottom') return 0;
+		if (support.sideHint === 'top') return 1;
+	}
+
+	return undefined;
 }
 
 function normalizeComponentCandidate(raw: unknown, index: number): IntentComponent | null {
@@ -935,11 +1006,26 @@ export function normalizeSchemeIntent(input: unknown): SchemeIntentNormalizeResu
 
 	const usedSupportKeys = new Set<string>();
 	const supports: IntentSupport[] = [];
+	const membersByKey = new Map(members.map((member) => [member.key, member]));
 	for (const [index, rawSupport] of supportsRaw.entries()) {
 		const normalized = normalizeSupportCandidate(rawSupport, index);
 		if (!normalized) continue;
 		const key = ensureUniqueKey(normalized.key, usedSupportKeys, 'support');
-		supports.push({ ...normalized, key });
+		const inferredS = inferSupportPositionFromContext(
+			normalized,
+			structureKind,
+			normalized.memberKey ? membersByKey.get(normalized.memberKey) : undefined
+		);
+		if (normalized.memberKey && normalized.s === undefined && inferredS !== undefined) {
+			warnings.push(
+				`supports["${key}"] member placement was inferred as s=${inferredS.toFixed(0)} from endpoint hints`
+			);
+		}
+		supports.push({
+			...normalized,
+			key,
+			...(normalized.s === undefined && inferredS !== undefined ? { s: inferredS } : {})
+		});
 	}
 
 	if (structureKind === 'planar_mechanism' || structureKind === 'spatial_mechanism') {
