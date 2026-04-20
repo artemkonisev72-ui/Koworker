@@ -34,6 +34,7 @@ export const GET: RequestHandler = async ({ locals, params }) => {
 		chatId: draft.chatId,
 		mode: draft.mode,
 		status: draft.status,
+		detailedSolutionRequested: draft.detailedSolutionRequested === true,
 		schemaVersion: draft.schemaVersion ?? '1.0',
 		revisionCount: draft.revisionCount,
 		currentUnderstanding: draft.currentUnderstanding,

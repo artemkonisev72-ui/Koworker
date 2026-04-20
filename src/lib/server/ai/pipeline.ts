@@ -25,6 +25,10 @@ import {
 	type GraphPoint
 } from '$lib/graphs/types.js';
 import type { SolverModelV1 } from '$lib/solver/model.js';
+import {
+	normalizeSolutionDocument,
+	type SolutionDocumentV1
+} from '$lib/solution/document.js';
 
 export type PipelineStatus =
 	| { type: 'ping' }
@@ -38,6 +42,7 @@ export type PipelineStatus =
 			executionLogs?: string;
 			graphData?: GraphData[];
 			schemaData?: SchemaAny;
+			solutionDoc?: SolutionDocumentV1;
 			schemaDescription?: string;
 			schemaVersion?: SchemaVersionTag;
 			usedModels?: string[];
@@ -51,6 +56,8 @@ interface SandboxOutput {
 	schemaData?: unknown;
 	schemaPatch?: unknown;
 	schemaVersion?: unknown;
+	solutionDoc?: unknown;
+	solution_doc?: unknown;
 	[key: string]: unknown;
 }
 
@@ -63,6 +70,11 @@ interface GraphNormalizationResult {
 interface SchemaNormalizationResult {
 	schemaData?: SchemaAny;
 	schemaVersion?: SchemaVersionTag;
+	issues: string[];
+}
+
+interface SolutionDocNormalizationResult {
+	solutionDoc?: SolutionDocumentV1;
 	issues: string[];
 }
 
@@ -168,6 +180,15 @@ function normalizeString(value: unknown): string | null {
 	if (typeof value !== 'string') return null;
 	const trimmed = value.trim();
 	return trimmed.length > 0 ? trimmed : null;
+}
+
+function tryParseJsonString(value: unknown): unknown {
+	if (typeof value !== 'string') return value;
+	try {
+		return JSON.parse(value);
+	} catch {
+		return value;
+	}
 }
 
 function normalizeMemberId(raw: Record<string, unknown>): string | null {
@@ -413,6 +434,144 @@ function summarizeSchemaPatch(output: SandboxOutput | null): Record<string, unkn
 	};
 }
 
+function extractSolutionDocCandidate(output: SandboxOutput | null): unknown {
+	if (!output || !isRecord(output)) return null;
+	return output.solutionDoc ?? output.solution_doc ?? null;
+}
+
+function normalizeSolutionDocFromOutput(output: SandboxOutput | null): SolutionDocNormalizationResult {
+	const candidate = extractSolutionDocCandidate(output);
+	if (!candidate) return { issues: [] };
+
+	const solutionDoc =
+		typeof candidate === 'string' ? normalizeSolutionDocument(tryParseJsonString(candidate)) : normalizeSolutionDocument(candidate);
+	if (!solutionDoc) {
+		return { issues: ['solutionDoc is present but does not match solution-doc-1.0 contract'] };
+	}
+
+	return {
+		solutionDoc,
+		issues: []
+	};
+}
+
+function detectSolutionLocale(text: string): 'ru' | 'en' {
+	const cyrillicCount = (text.match(/[А-Яа-яЁё]/g) ?? []).length;
+	const latinCount = (text.match(/[A-Za-z]/g) ?? []).length;
+	return cyrillicCount >= latinCount ? 'ru' : 'en';
+}
+
+function stringifyForDoc(value: unknown): string {
+	if (value === null || value === undefined) return '';
+	if (typeof value === 'string') return value;
+	try {
+		return JSON.stringify(value, null, 2);
+	} catch {
+		return String(value);
+	}
+}
+
+function summarizePrimaryResult(output: SandboxOutput | null, rawStdout: string): string {
+	if (output && output.result !== undefined) {
+		const text = stringifyForDoc(output.result).trim();
+		if (text.length > 0) return truncateText(text, 3000);
+	}
+	const stdout = rawStdout.trim();
+	return stdout.length > 0 ? truncateText(stdout, 3000) : '';
+}
+
+function buildFallbackSolutionDoc(params: {
+	userMessage: string;
+	pythonCode: string;
+	output: SandboxOutput | null;
+	rawStdout: string;
+	graphData?: GraphData[];
+}): SolutionDocumentV1 {
+	const locale = detectSolutionLocale(params.userMessage);
+	const givenTitle = locale === 'ru' ? 'Исходные данные' : 'Given';
+	const computationTitle = locale === 'ru' ? 'Вычисления' : 'Computation';
+	const resultTitle = locale === 'ru' ? 'Результат' : 'Result';
+	const graphTitle = locale === 'ru' ? 'Графики и эпюры' : 'Graphs and diagrams';
+	const summary = locale === 'ru' ? 'Подробное решение построено в режиме трассировки вычислений.' : 'Detailed solution was produced in computation trace mode.';
+	const primaryResult = summarizePrimaryResult(params.output, params.rawStdout);
+
+	const sections: SolutionDocumentV1['sections'] = [
+		{
+			id: 'given',
+			title: givenTitle,
+			blocks: [
+				{
+					id: 'given-note',
+					kind: 'note',
+					text: sanitizeFinalizerTaskContext(params.userMessage)
+				}
+			]
+		},
+		{
+			id: 'computation',
+			title: computationTitle,
+			blocks: [
+				{
+					id: 'code',
+					kind: 'code',
+					title: locale === 'ru' ? 'Код вычислений' : 'Computation code',
+					code: truncateText(params.pythonCode, 12000)
+				}
+			]
+		},
+		{
+			id: 'result',
+			title: resultTitle,
+			blocks: primaryResult
+				? [
+					{
+						id: 'result-main',
+						kind: 'result',
+						text: locale === 'ru' ? 'Основной результат' : 'Primary result',
+						value: primaryResult
+					}
+				]
+				: []
+		}
+	];
+
+	if (Array.isArray(params.graphData) && params.graphData.length > 0) {
+		sections.push({
+			id: 'graphs',
+			title: graphTitle,
+			blocks: params.graphData.map((graph, index) => ({
+				id: `graph-${index + 1}`,
+				kind: 'graph',
+				title: typeof graph.title === 'string' && graph.title.trim() ? graph.title : `Graph ${index + 1}`,
+				text:
+					typeof graph.memberId === 'string' && graph.memberId.trim()
+						? `${locale === 'ru' ? 'Элемент' : 'Member'}: ${graph.memberId}`
+						: undefined,
+				data: {
+					type: graph.type,
+					diagramType: graph.diagramType,
+					points: Array.isArray(graph.points) ? graph.points.length : 0
+				}
+			}))
+		});
+	}
+
+	return {
+		version: 'solution-doc-1.0',
+		locale,
+		summary,
+		sections
+	};
+}
+
+function summarizeSolutionDoc(solutionDoc: SolutionDocumentV1): string {
+	const totalBlocks = solutionDoc.sections.reduce((sum, section) => sum + section.blocks.length, 0);
+	if (solutionDoc.locale === 'ru') {
+		return `Подробное решение готово: ${solutionDoc.sections.length} раздел(ов), ${totalBlocks} шаг(ов).`;
+	}
+	return `Detailed solution is ready: ${solutionDoc.sections.length} sections, ${totalBlocks} steps.`;
+}
+
 function isFiniteGraphPoint(value: unknown): value is GraphPoint {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
 	const maybe = value as Record<string, unknown>;
@@ -613,6 +772,8 @@ function buildFinalizerExecutionPayload(
 					key === 'jsxgraphSchema' ||
 					key === 'schemaPatch' ||
 					key === 'schema_patch' ||
+					key === 'solutionDoc' ||
+					key === 'solution_doc' ||
 					key === 'schemaVersion'
 				) {
 					continue;
@@ -638,6 +799,7 @@ export async function runPipelineWithApprovedSchema(
 		approvedSchemeDescription?: string | null;
 		revisionNotes?: string[];
 		solverModel?: SolverModelV1;
+		detailedSolution?: boolean;
 	},
 	history: GeminiHistory[],
 	onStatus: (event: PipelineStatus) => void | Promise<void>,
@@ -668,7 +830,8 @@ export async function runPipelineWithApprovedSchema(
 	const messageWithSchemaContext = `${params.userMessage}${descriptionBlock}${notesBlock}${solverBlock}${APPROVED_SCHEMA_MARKER}${schemaJson}\n\n${approvedSchemeDescription ? 'Use approved scheme description as primary narrative context for solving.' : ''} Use approved schema as canonical structural context.${solverModelJson ? ' Use solver model as canonical semantics for member local axes, signs, and axis origins.' : ''}`;
 
 	return runPipeline(messageWithSchemaContext, [], onStatus, undefined, forcedModel, {
-		approvedSchema: params.approvedSchema
+		approvedSchema: params.approvedSchema,
+		detailedSolutionRequested: params.detailedSolution === true
 	})
 		.finally(() => {
 			console.log('[SchemaCheck] pipeline.finished');
@@ -683,12 +846,14 @@ export async function runPipeline(
 	forcedModel?: string | null,
 	options?: {
 		approvedSchema?: SchemaAny | null;
+		detailedSolutionRequested?: boolean;
 	}
 ): Promise<void> {
 	console.log('[Pipeline] START message:', userMessage.slice(0, 80), '| forcedModel:', forcedModel);
 	let currentContext = userMessage;
 	const usedModelsList: string[] = [];
 	const approvedSchema = options?.approvedSchema ?? null;
+	const detailedSolutionRequested = options?.detailedSolutionRequested === true;
 	const effectiveHistory = approvedSchema ? [] : history;
 	const emitStatus = (event: PipelineStatus) => Promise.resolve(onStatus(event));
 
@@ -741,7 +906,8 @@ export async function runPipeline(
 			effectiveHistory,
 			currentContext,
 			undefined,
-			forcedModel
+			forcedModel,
+			{ detailedSolution: detailedSolutionRequested }
 		);
 		usedModelsList.push(`${codeModel} (CodeGen): ${codeTokens.toLocaleString('ru-RU')} токенов`);
 		console.log('[Pipeline] Step 2 done, code length:', pythonCode.length);
@@ -752,6 +918,7 @@ export async function runPipeline(
 		let rawStdout = '';
 		let solvedSchemaData: SchemaAny | undefined;
 		let solvedSchemaVersion: SchemaVersionTag | undefined;
+		let detailedSolutionDoc: SolutionDocumentV1 | undefined;
 
 		for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
 			if (attempt > 0) {
@@ -761,7 +928,8 @@ export async function runPipeline(
 					effectiveHistory,
 					currentContext,
 					`Предыдущий код:\n\`\`\`python\n${pythonCode}\n\`\`\`\n\nОшибка:\n${lastError}`,
-					forcedModel
+					forcedModel,
+					{ detailedSolution: detailedSolutionRequested }
 				);
 				pythonCode = retryRes.code;
 				usedModelsList.push(`${retryRes.model} (Fixer): ${retryRes.tokens.toLocaleString('ru-RU')} токенов`);
@@ -834,6 +1002,13 @@ export async function runPipeline(
 
 				solvedSchemaData = schemaNormalization.schemaData;
 				solvedSchemaVersion = schemaNormalization.schemaVersion;
+				const solutionDocNormalization = normalizeSolutionDocFromOutput(sandboxOutput);
+				if (solutionDocNormalization.issues.length > 0) {
+					console.warn('[Pipeline] Ignoring invalid solutionDoc from solver output:', solutionDocNormalization.issues);
+				}
+				if (solutionDocNormalization.solutionDoc) {
+					detailedSolutionDoc = solutionDocNormalization.solutionDoc;
+				}
 
 				lastError = null;
 				break;
@@ -856,8 +1031,43 @@ export async function runPipeline(
 		}
 
 		// ── Шаг 4: Сборка ответа (Flash/Pro по tier) ─────────────────────────
-		console.log('[Pipeline] Step 4: assembling final answer...');
+		console.log('[Pipeline] Step 4: assembling output...');
 		await emitStatus({ type: 'status', message: 'Формирование ответа...' });
+
+		const graphData: GraphData[] | undefined =
+			Array.isArray(sandboxOutput?.graphs) && sandboxOutput.graphs.length > 0
+				? sandboxOutput.graphs
+				: undefined;
+
+		if (detailedSolutionRequested) {
+			console.log('[Pipeline] Step 4: assembling detailed solution document...');
+			await emitStatus({ type: 'status', message: 'Сборка подробного решения...' });
+
+			const solutionDoc =
+				detailedSolutionDoc ??
+				buildFallbackSolutionDoc({
+					userMessage,
+					pythonCode,
+					output: sandboxOutput,
+					rawStdout,
+					graphData
+				});
+			const content = summarizeSolutionDoc(solutionDoc);
+
+			await emitStatus({
+				type: 'result',
+				content,
+				generatedCode: pythonCode,
+				executionLogs: rawStdout,
+				graphData,
+				schemaData: solvedSchemaData,
+				solutionDoc,
+				schemaVersion: solvedSchemaVersion,
+				usedModels: usedModelsList
+			});
+			console.log('[Pipeline] DONE (detailed mode)');
+			return;
+		}
 
 		const finalizerHistory = trimHistoryForFinalizer(effectiveHistory);
 		const finalizerTask = truncateText(
@@ -907,11 +1117,6 @@ export async function runPipeline(
 		);
 		usedModelsList.push(`${assembleModel} (Finalizer): ${assembleTokens.toLocaleString('ru-RU')} токенов`);
 		console.log('[Pipeline] Step 4 done, answer length:', finalAnswer.length);
-
-		const graphData: GraphData[] | undefined =
-			Array.isArray(sandboxOutput?.graphs) && sandboxOutput.graphs.length > 0
-				? sandboxOutput.graphs
-				: undefined;
 
 		await emitStatus({
 			type: 'result',

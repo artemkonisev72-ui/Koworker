@@ -332,6 +332,7 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 		return json({
 			draftId: draft.id,
 			status: result.updatedDraft.status,
+			detailedSolutionRequested: result.updatedDraft.detailedSolutionRequested === true,
 			schemaVersion: finalValidation.version ?? '2.0',
 			revisionIndex,
 			schema: finalValidation.value,

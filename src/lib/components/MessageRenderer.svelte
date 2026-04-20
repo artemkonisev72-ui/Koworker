@@ -14,6 +14,10 @@
 		normalizeGraphEpure,
 		type GraphData
 	} from '$lib/graphs/types.js';
+	import {
+		normalizeSolutionDocument,
+		type SolutionDocumentV1
+	} from '$lib/solution/document.js';
 	interface GraphGroup {
 		memberId: string | null;
 		items: GraphData[];
@@ -24,6 +28,7 @@
 		content: string;
 		graphData?: GraphData[] | string | null;
 		schemaData?: unknown;
+		solutionDoc?: unknown;
 		schemaDescription?: string | null;
 		schemaVersion?: string | null;
 		usedModels?: string[] | string | null;
@@ -39,7 +44,7 @@
 		| 'spatial_mechanism';
 	const FRAME_COMPONENT_ORDER = ['N', 'Vy', 'Vz', 'T', 'My', 'Mz'] as const;
 
-	type ExportActionId = 'pdf';
+	type ExportActionId = 'pdf' | 'xmcd';
 
 	let { message, schemeDebug = false }: { message: Message; schemeDebug?: boolean } = $props();
 
@@ -53,17 +58,30 @@
 	const TEXT_EXPORT = '\u042d\u043a\u0441\u043f\u043e\u0440\u0442';
 	const TEXT_EXPORTING = '\u042d\u043a\u0441\u043f\u043e\u0440\u0442\u0438\u0440\u0443\u0435\u0442\u0441\u044f...';
 	const TEXT_EXPORT_TO_PDF = '\u042d\u043a\u0441\u043f\u043e\u0440\u0442 \u0432 PDF';
+	const TEXT_EXPORT_TO_XMCD = '\u042d\u043a\u0441\u043f\u043e\u0440\u0442 \u0432 XMCD';
 	const TEXT_EXPORT_ERROR =
 		'\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u0444\u043e\u0440\u043c\u0438\u0440\u043e\u0432\u0430\u0442\u044c PDF. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0441\u043d\u043e\u0432\u0430.';
+	const TEXT_EXPORT_XMCD_ERROR =
+		'\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u0444\u043e\u0440\u043c\u0438\u0440\u043e\u0432\u0430\u0442\u044c XMCD. \u041f\u043e\u043f\u0440\u043e\u0431\u0443\u0439\u0442\u0435 \u0441\u043d\u043e\u0432\u0430.';
 	const TEXT_EXPORT_MENU_ARIA = '\u042d\u043a\u0441\u043f\u043e\u0440\u0442 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f';
 
-	const exportActions: Array<{ id: ExportActionId; label: string }> = [
-		{ id: 'pdf', label: TEXT_EXPORT_TO_PDF }
-	];
-
 	let canExport = $derived(
-		message.role === 'ASSISTANT' && !message.schemaData && !message.isStreaming
+		message.role === 'ASSISTANT' && !message.isStreaming && !message.id.startsWith('temp-')
 	);
+
+	let solutionDoc = $derived.by(() => {
+		if (!message.solutionDoc) return null as SolutionDocumentV1 | null;
+		const raw = typeof message.solutionDoc === 'string' ? parseJsonSafe(message.solutionDoc) : message.solutionDoc;
+		return normalizeSolutionDocument(raw);
+	});
+
+	let exportActions = $derived.by(() => {
+		const actions: Array<{ id: ExportActionId; label: string }> = [{ id: 'pdf', label: TEXT_EXPORT_TO_PDF }];
+		if (solutionDoc && !message.id.startsWith('temp-')) {
+			actions.push({ id: 'xmcd', label: TEXT_EXPORT_TO_XMCD });
+		}
+		return actions;
+	});
 
 	let usedModels = $derived.by(() => {
 		if (!message.usedModels) return [];
@@ -91,6 +109,23 @@
 
 	function isRecord(value: unknown): value is Record<string, unknown> {
 		return typeof value === 'object' && value !== null && !Array.isArray(value);
+	}
+
+	function parseJsonSafe(value: string): unknown {
+		try {
+			return JSON.parse(value);
+		} catch {
+			return value;
+		}
+	}
+
+	function stringifyBlockData(data: Record<string, unknown> | undefined): string {
+		if (!data) return '';
+		try {
+			return JSON.stringify(data, null, 2);
+		} catch {
+			return '';
+		}
 	}
 
 	function normalizeStructureKind(value: unknown): StructureKind {
@@ -692,9 +727,59 @@
 		}
 	}
 
+	function parseFilenameFromContentDisposition(headerValue: string | null): string | null {
+		if (!headerValue) return null;
+		const utf8Match = headerValue.match(/filename\*=UTF-8''([^;]+)/i);
+		if (utf8Match?.[1]) {
+			try {
+				return decodeURIComponent(utf8Match[1]);
+			} catch {
+				return utf8Match[1];
+			}
+		}
+		const plainMatch = headerValue.match(/filename=\"?([^\";]+)\"?/i);
+		return plainMatch?.[1] ?? null;
+	}
+
+	async function exportAsXmcd() {
+		if (isExporting || !solutionDoc || message.id.startsWith('temp-')) return;
+		isExporting = true;
+		menuOpen = false;
+		exportError = '';
+
+		try {
+			const response = await fetch(`/api/messages/${message.id}/xmcd`);
+			if (!response.ok) {
+				throw new Error(`HTTP ${response.status}`);
+			}
+
+			const blob = await response.blob();
+			const filename =
+				parseFilenameFromContentDisposition(response.headers.get('content-disposition')) ??
+				`coworker-solution-${makePdfTimestamp(new Date())}.xmcd`;
+			const blobUrl = URL.createObjectURL(blob);
+			const anchor = document.createElement('a');
+			anchor.href = blobUrl;
+			anchor.download = filename;
+			document.body.appendChild(anchor);
+			anchor.click();
+			anchor.remove();
+			URL.revokeObjectURL(blobUrl);
+		} catch (err) {
+			console.error('[Export] XMCD export failed:', err);
+			exportError = TEXT_EXPORT_XMCD_ERROR;
+		} finally {
+			isExporting = false;
+		}
+	}
+
 	async function handleExport(actionId: ExportActionId) {
 		if (actionId === 'pdf') {
 			await exportAsPdf();
+			return;
+		}
+		if (actionId === 'xmcd') {
+			await exportAsXmcd();
 		}
 	}
 
@@ -749,6 +834,47 @@
 		{#if renderedHtml}
 			<!-- eslint-disable-next-line svelte/no-at-html-tags -->
 			{@html renderedHtml}
+		{/if}
+
+		{#if solutionDoc}
+			<div class="solution-doc-card">
+				{#if solutionDoc.summary}
+					<div class="solution-doc-summary">{solutionDoc.summary}</div>
+				{/if}
+
+				{#each solutionDoc.sections as section}
+					<section class="solution-doc-section">
+						<div class="solution-doc-section-title">{section.title}</div>
+
+						{#if section.blocks.length === 0}
+							<div class="solution-doc-empty">No steps in this section.</div>
+						{:else}
+							{#each section.blocks as block}
+								<article class="solution-doc-block" data-kind={block.kind}>
+									{#if block.title}
+										<div class="solution-doc-block-title">{block.title}</div>
+									{/if}
+									{#if block.expression}
+										<div class="solution-doc-expression">{block.expression}</div>
+									{/if}
+									{#if block.text}
+										<div class="solution-doc-text">{block.text}</div>
+									{/if}
+									{#if block.value}
+										<div class="solution-doc-value">{block.value}</div>
+									{/if}
+									{#if block.code}
+										<pre class="solution-doc-code"><code>{block.code}</code></pre>
+									{/if}
+									{#if block.data}
+										<pre class="solution-doc-data"><code>{stringifyBlockData(block.data)}</code></pre>
+									{/if}
+								</article>
+							{/each}
+						{/if}
+					</section>
+				{/each}
+			</div>
 		{/if}
 
 		{#if schemes.length > 0}
@@ -864,6 +990,85 @@
 		font-size: 0.9rem;
 		line-height: 1.45;
 		color: var(--text-primary);
+	}
+
+	.solution-doc-card {
+		margin-top: 0.95rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.9rem;
+		padding: 0.85rem 0.95rem;
+		border-radius: 0.7rem;
+		border: 1px solid var(--border-medium);
+		background: color-mix(in srgb, var(--bg-surface) 72%, transparent);
+	}
+
+	.solution-doc-summary {
+		font-size: 0.9rem;
+		color: var(--text-secondary);
+	}
+
+	.solution-doc-section {
+		display: flex;
+		flex-direction: column;
+		gap: 0.6rem;
+	}
+
+	.solution-doc-section-title {
+		font-size: 0.78rem;
+		font-weight: 700;
+		letter-spacing: 0.03em;
+		text-transform: uppercase;
+		color: var(--text-secondary);
+	}
+
+	.solution-doc-empty {
+		font-size: 0.83rem;
+		color: var(--text-muted);
+	}
+
+	.solution-doc-block {
+		padding: 0.55rem 0.62rem;
+		border-radius: 0.55rem;
+		border: 1px solid var(--border-subtle);
+		background: color-mix(in srgb, var(--bg-elevated) 80%, transparent);
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+
+	.solution-doc-block-title {
+		font-size: 0.77rem;
+		font-weight: 600;
+		color: var(--text-secondary);
+		text-transform: uppercase;
+		letter-spacing: 0.02em;
+	}
+
+	.solution-doc-expression,
+	.solution-doc-value {
+		font-family: var(--font-mono);
+		font-size: 0.8rem;
+		color: var(--text-primary);
+		white-space: pre-wrap;
+	}
+
+	.solution-doc-text {
+		font-size: 0.9rem;
+		color: var(--text-primary);
+		white-space: pre-wrap;
+	}
+
+	.solution-doc-code,
+	.solution-doc-data {
+		margin: 0;
+		padding: 0.48rem 0.56rem;
+		border-radius: 0.45rem;
+		background: color-mix(in srgb, var(--bg-base) 78%, transparent);
+		border: 1px solid var(--border-subtle);
+		overflow-x: auto;
+		font-size: 0.75rem;
+		line-height: 1.35;
 	}
 
 	.models-attribution {

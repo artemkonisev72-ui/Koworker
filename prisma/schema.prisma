@@ -102,6 +102,7 @@ model Message {
   executionLogs String?     @db.Text
   graphData     Json?
   schemaData    Json?
+  solutionDoc   Json?
   schemaDescription String? @db.Text
   schemaVersion String?     @default("1.0")
   usedModels    Json?
@@ -119,6 +120,7 @@ model TaskDraft {
   chatId            String
   userId            String
   mode              String              @default("standard")
+  detailedSolutionRequested Boolean     @default(false)
   status            DraftStatus         @default(DRAFT)
   schemaVersion     String              @default("1.0")
   originalPrompt    String              @db.Text

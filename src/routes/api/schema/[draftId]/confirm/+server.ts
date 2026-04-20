@@ -33,6 +33,7 @@ async function runSolveWithGate(params: {
 	approvedSchema: SchemaAny;
 	approvedSchemeDescription?: string | null;
 	solverModel?: SolverModelV1;
+	detailedSolution?: boolean;
 	revisionNotes: string[];
 	history: Awaited<ReturnType<typeof loadGeminiHistory>>;
 	forcedModel?: string | null;
@@ -47,6 +48,7 @@ async function runSolveWithGate(params: {
 			approvedSchema: params.approvedSchema,
 			approvedSchemeDescription: params.approvedSchemeDescription,
 			solverModel: params.solverModel,
+			detailedSolution: params.detailedSolution,
 			revisionNotes: params.revisionNotes
 		},
 		params.history,
@@ -81,6 +83,7 @@ function launchSchemaSolveInBackground(params: {
 	approvedSchema: SchemaAny;
 	approvedSchemeDescription?: string | null;
 	solverModel?: SolverModelV1;
+	detailedSolution?: boolean;
 	schemaVersion: string;
 	revisionNotes: string[];
 	forcedModel?: string | null;
@@ -102,6 +105,7 @@ function launchSchemaSolveInBackground(params: {
 				approvedSchema: params.approvedSchema,
 				approvedSchemeDescription: params.approvedSchemeDescription,
 				solverModel: params.solverModel,
+				detailedSolution: params.detailedSolution,
 				revisionNotes: params.revisionNotes,
 				history,
 				forcedModel: params.forcedModel,
@@ -132,6 +136,7 @@ function launchSchemaSolveInBackground(params: {
 						executionLogs: resultEvent.executionLogs ?? null,
 						graphData: resultEvent.graphData ? JSON.stringify(resultEvent.graphData) : undefined,
 						schemaData: resultEvent.schemaData ? JSON.stringify(resultEvent.schemaData) : undefined,
+						solutionDoc: resultEvent.solutionDoc ? JSON.stringify(resultEvent.solutionDoc) : undefined,
 						schemaVersion: resultEvent.schemaVersion ?? params.schemaVersion,
 						usedModels: resultEvent.usedModels ? JSON.stringify(resultEvent.usedModels) : undefined
 					}
@@ -378,6 +383,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 			approvedSchema: approvedSchemaValue,
 			approvedSchemeDescription: approvedSchemeDescription || null,
 			solverModel,
+			detailedSolution: draft.detailedSolutionRequested === true,
 			schemaVersion: approvedSchemaVersion,
 			revisionNotes,
 			forcedModel,

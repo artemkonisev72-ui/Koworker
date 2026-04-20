@@ -470,8 +470,10 @@ export async function generatePythonCode(
 	history: GeminiHistory[],
 	userMessage: string,
 	retryContext?: string,
-	forcedModel?: string | null
+	forcedModel?: string | null,
+	options?: { detailedSolution?: boolean }
 ): Promise<{ code: string; model: GeminiModel; tokens: number }> {
+	const detailedSolution = options?.detailedSolution === true;
 	const isSchemaCheckSolve = userMessage.includes('[APPROVED_SCHEMA_JSON]');
 	const hasApprovedSchemeDescription = userMessage.includes('[APPROVED_SCHEME_DESCRIPTION]');
 	const hasSolverModelContext = userMessage.includes('[SOLVER_MODEL_JSON]');
@@ -502,6 +504,20 @@ export async function generatePythonCode(
 		: '';
 	const solverModelSection = solverModelContract ? `${solverModelContract}\n` : '';
 	const schemeDescriptionSection = schemeDescriptionContract ? `${schemeDescriptionContract}\n` : '';
+	const detailedSolutionContract = detailedSolution
+		? `Detailed-solution mode is ON.
+Use runtime helper "trace" to emit compact step-by-step blocks while computing:
+- trace.section("...")
+- trace.note("...")
+- trace.define("x", expr)
+- trace.equation(lhs, rhs) or trace.equation(eq_expr)
+- trace.solve(target, variable, result)
+- trace.result("label", value)
+- trace.code("short code fragment")
+Never build manual AST dictionaries (no objects like {"type":"apply","op":"plus"...}).
+Do not serialize tree nodes by hand.
+In final JSON include key "solutionDoc" with trace.export().`
+		: '';
 
 	const systemPrompt = `You generate Python code for exact scientific computation.
 Rules:
@@ -519,6 +535,7 @@ Rules:
 11. For a simple cantilever beam with exactly one fixed support, epure x=0 must be at the free end, increase toward the fixed support, and epure.axisOrigin must be "free_end".
 12. Put primary numeric/text result in key "result".
 13. Prefer sympy for exact math and numpy arrays for sampling points.
+${detailedSolutionContract}
 ${visualContract}
 ${schemeDescriptionSection}${solverModelSection}${languagePolicy(userMessage)}`;
 

@@ -51,6 +51,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		message?: string;
 		imageData?: { base64: string; mimeType: string };
 		modelPreference?: string;
+		detailedSolution?: boolean;
 	};
 
 	try {
@@ -71,6 +72,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const { chatId, message, imageData } = body;
 	if (body.modelPreference !== undefined && !isModelPreference(body.modelPreference)) {
 		return error(400, `Unsupported modelPreference: ${String(body.modelPreference)}`);
+	}
+	if (body.detailedSolution !== undefined && typeof body.detailedSolution !== 'boolean') {
+		return error(400, 'detailedSolution must be a boolean');
 	}
 
 	if (!chatId || !message?.trim()) {
@@ -278,6 +282,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 									executionLogs: event.executionLogs ?? null,
 									graphData: event.graphData ? JSON.stringify(event.graphData) : undefined,
 									schemaData: event.schemaData ? JSON.stringify(event.schemaData) : undefined,
+									solutionDoc: event.solutionDoc ? JSON.stringify(event.solutionDoc) : undefined,
 									schemaDescription:
 										typeof event.schemaDescription === 'string' ? event.schemaDescription : undefined,
 									schemaVersion: event.schemaVersion ?? undefined,
@@ -302,7 +307,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 					}
 				},
 				imageData,
-				forcedModel
+				forcedModel,
+				{
+					detailedSolutionRequested: body.detailedSolution === true
+				}
 			)
 				.catch((pipelineErr) => {
 					console.error('[SSE] Pipeline error:', pipelineErr);
@@ -358,6 +366,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			generatedCode: true,
 			graphData: true,
 			schemaData: true,
+			solutionDoc: true,
 			schemaDescription: true,
 			schemaVersion: true,
 			usedModels: true,

@@ -38,6 +38,7 @@ interface StartSchemaBody {
 	imageData?: InputImageData;
 	mode?: string;
 	modelPreference?: string;
+	detailedSolution?: boolean;
 }
 
 export const POST: RequestHandler = async ({ locals, request }) => {
@@ -60,12 +61,16 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		userId: locals.user.id,
 		chatId,
 		mode: body.mode ?? 'schema_check',
+		detailedSolution: body.detailedSolution === true,
 		messageLength: message.length,
 		hasImage: Boolean(imageData)
 	});
 
 	if (!chatId) return error(400, 'chatId is required');
 	if (body.mode && body.mode !== 'schema_check') return error(400, 'Unsupported mode');
+	if (body.detailedSolution !== undefined && typeof body.detailedSolution !== 'boolean') {
+		return error(400, 'detailedSolution must be a boolean');
+	}
 	if (body.modelPreference !== undefined && !isModelPreference(body.modelPreference)) {
 		return error(400, `Unsupported modelPreference: ${String(body.modelPreference)}`);
 	}
@@ -141,6 +146,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				chatId,
 				userId: locals.user.id,
 				mode: 'schema_check',
+				detailedSolutionRequested: body.detailedSolution === true,
 				status: 'DRAFT',
 				schemaVersion: '2.0',
 				originalPrompt: message,
@@ -326,6 +332,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			draftId: draft.id,
 			userMessageId: userMessage.id,
 			status: result.updatedDraft.status,
+			detailedSolutionRequested: result.updatedDraft.detailedSolutionRequested === true,
 			schemaVersion: finalValidation.version ?? '2.0',
 			revisionIndex: result.updatedDraft.revisionCount,
 			schema: finalValidation.value,

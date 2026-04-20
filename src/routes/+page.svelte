@@ -15,6 +15,7 @@
 	interface ActiveDraftState {
 		draftId: string;
 		status: string;
+		detailedSolutionRequested?: boolean;
 		revisionIndex: number;
 		schema: unknown;
 		schemeDescription: string;
@@ -27,6 +28,7 @@
 		content: string;
 		graphData?: GraphData[] | string | null;
 		schemaData?: unknown;
+		solutionDoc?: unknown;
 		schemaDescription?: string | null;
 		schemaVersion?: string | null;
 		imageData?: string | null;
@@ -128,7 +130,17 @@
 	let schemaCheckEnabled = $derived(
 		activeChatId ? Boolean(schemaCheckEnabledByChatId[activeChatId]) : schemaCheckEnabledForNewChat
 	);
+	let detailedSolutionEnabledByChatId = $state<Record<string, boolean>>({});
+	let detailedSolutionEnabledForNewChat = $state(false);
+	let detailedSolutionEnabled = $derived(
+		activeChatId
+			? Boolean(detailedSolutionEnabledByChatId[activeChatId])
+			: detailedSolutionEnabledForNewChat
+	);
 	let schemaCheckToggleDisabled = $derived(
+		hasAnyProcessing || Boolean(activeDraft && activeDraft.status === 'AWAITING_REVIEW')
+	);
+	let detailedSolutionToggleDisabled = $derived(
 		hasAnyProcessing || Boolean(activeDraft && activeDraft.status === 'AWAITING_REVIEW')
 	);
 	let revisionNotes = $state('');
@@ -258,6 +270,26 @@
 	function toggleSchemaCheckMode() {
 		if (schemaCheckToggleDisabled) return;
 		setSchemaCheckEnabledForCurrentContext(!schemaCheckEnabled);
+	}
+
+	function setDetailedSolutionForChat(chatId: string, enabled: boolean) {
+		detailedSolutionEnabledByChatId = {
+			...detailedSolutionEnabledByChatId,
+			[chatId]: enabled
+		};
+	}
+
+	function setDetailedSolutionForCurrentContext(enabled: boolean) {
+		if (!activeChatId) {
+			detailedSolutionEnabledForNewChat = enabled;
+			return;
+		}
+		setDetailedSolutionForChat(activeChatId, enabled);
+	}
+
+	function toggleDetailedSolutionMode() {
+		if (detailedSolutionToggleDisabled) return;
+		setDetailedSolutionForCurrentContext(!detailedSolutionEnabled);
 	}
 
 	function removeProcessingPlaceholder(chatId: string) {
@@ -458,6 +490,9 @@
 			const enableSchemaCheckInCreatedChat = !activeChatId
 				? schemaCheckEnabledForNewChat
 				: Boolean(schemaCheckEnabledByChatId[activeChatId]);
+			const enableDetailedSolutionInCreatedChat = !activeChatId
+				? detailedSolutionEnabledForNewChat
+				: Boolean(detailedSolutionEnabledByChatId[activeChatId]);
 			const res = await fetch('/api/chats', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -467,6 +502,7 @@
 				const chat = await res.json();
 				chats = [chat, ...chats];
 				setSchemaCheckForChat(chat.id, enableSchemaCheckInCreatedChat);
+				setDetailedSolutionForChat(chat.id, enableDetailedSolutionInCreatedChat);
 				await selectChat(chat.id);
 			}
 		} catch (e) {
@@ -483,6 +519,7 @@
 		editingChatId = null;
 		editingTitle = '';
 		schemaCheckEnabledForNewChat = false;
+		detailedSolutionEnabledForNewChat = false;
 		pickWelcomeGreeting();
 
 		if (isMobileView) {
@@ -507,6 +544,8 @@
 				processingByChatId = restProcessing;
 				const { [id]: _removedSchemaCheck, ...restSchemaCheck } = schemaCheckEnabledByChatId;
 				schemaCheckEnabledByChatId = restSchemaCheck;
+				const { [id]: _removedDetailed, ...restDetailed } = detailedSolutionEnabledByChatId;
+				detailedSolutionEnabledByChatId = restDetailed;
 				abortControllersByChatId.delete(id);
 				const { [id]: _removedAbortable, ...restAbortable } = abortableChatIds;
 				abortableChatIds = restAbortable;
@@ -697,9 +736,11 @@
 				return;
 			}
 			if (messageLoadVersionByChatId[chatId] !== requestVersion) return;
+			setDetailedSolutionForChat(chatId, payload.detailedSolutionRequested === true);
 			setDraftState(chatId, {
 				draftId: payload.draftId,
 				status: payload.status,
+				detailedSolutionRequested: payload.detailedSolutionRequested === true,
 				revisionIndex: payload.revisionCount,
 				schema: payload.currentSchema,
 				schemeDescription:
@@ -735,6 +776,7 @@
 					...m,
 					graphData: typeof m.graphData === 'string' ? JSON.parse(m.graphData) : m.graphData,
 					schemaData: parseMaybeJson(m.schemaData),
+					solutionDoc: parseMaybeJson(m.solutionDoc),
 					schemaDescription: typeof m.schemaDescription === 'string' ? m.schemaDescription : null,
 					schemaVersion: typeof m.schemaVersion === 'string' ? m.schemaVersion : null,
 					usedModels: typeof m.usedModels === 'string' ? JSON.parse(m.usedModels) : m.usedModels,
@@ -924,9 +966,11 @@
 	}
 
 	function setDraftStateFromPayload(chatId: string, payload: Record<string, any>) {
+		setDetailedSolutionForChat(chatId, payload.detailedSolutionRequested === true);
 		setDraftState(chatId, {
 			draftId: payload.draftId,
 			status: payload.status,
+			detailedSolutionRequested: payload.detailedSolutionRequested === true,
 			revisionIndex: payload.revisionIndex,
 			schema: payload.schema,
 			schemeDescription: typeof payload.schemeDescription === 'string' ? payload.schemeDescription : '',
@@ -969,12 +1013,14 @@
 		chatId: string,
 		text: string,
 		imageData: { base64: string; mimeType: string } | null,
-		optimisticExchange: { userTempId: string; assistantTempId: string }
+		optimisticExchange: { userTempId: string; assistantTempId: string },
+		detailedSolution: boolean
 	) {
 		const modelPreference = currentModelPreference();
 		console.log('[ModelPreference:UI] schema start submit', {
 			chatId,
 			modelPreference,
+			detailedSolution,
 			messageLength: text.length,
 			hasImage: Boolean(imageData)
 		});
@@ -992,6 +1038,7 @@
 					message: text,
 					imageData,
 					modelPreference,
+					detailedSolution,
 					mode: 'schema_check'
 				})
 			});
@@ -1133,6 +1180,7 @@
 			chatId: originChatId,
 			modelPreference,
 			schemaCheckEnabled,
+			detailedSolutionEnabled,
 			messageLength: text.length,
 			hasImage: Boolean(selectedImage)
 		});
@@ -1147,7 +1195,13 @@
 
 		if (schemaCheckEnabled) {
 			try {
-				await startSchemaCheckFlow(originChatId, text, imageData, optimisticExchange);
+				await startSchemaCheckFlow(
+					originChatId,
+					text,
+					imageData,
+					optimisticExchange,
+					detailedSolutionEnabled
+				);
 			} catch (err) {
 				console.error('Schema check start failed:', err);
 				alert(err instanceof Error ? err.message : String(err));
@@ -1187,7 +1241,8 @@
 					chatId: originChatId,
 					message: text,
 					imageData,
-					modelPreference
+					modelPreference,
+					detailedSolution: detailedSolutionEnabled
 				}),
 				signal: abortController.signal
 			});
@@ -1222,6 +1277,7 @@
 							content?: string;
 							graphData?: GraphData[];
 							schemaData?: unknown;
+							solutionDoc?: unknown;
 							schemaDescription?: string;
 							schemaVersion?: string;
 							usedModels?: string[];
@@ -1250,6 +1306,7 @@
 								content: event.content ?? '',
 								graphData: event.graphData ?? null,
 								schemaData: event.schemaData ?? null,
+								solutionDoc: event.solutionDoc ?? null,
 								schemaDescription: event.schemaDescription ?? null,
 								schemaVersion: event.schemaVersion ?? null,
 								usedModels: event.usedModels ?? null,
@@ -1871,6 +1928,20 @@
 					title="Включить или выключить проверку схемы для текущего чата"
 				>
 					<span class="schema-check-title">Проверка схемы</span>
+					<span class="schema-check-indicator" aria-hidden="true"></span>
+				</button>
+
+				<button
+					type="button"
+					class="schema-check-btn detailed-solution-btn"
+					class:active={detailedSolutionEnabled}
+					onclick={toggleDetailedSolutionMode}
+					disabled={detailedSolutionToggleDisabled}
+					aria-pressed={detailedSolutionEnabled}
+					aria-label={detailedSolutionEnabled ? 'Подробное решение включено' : 'Подробное решение выключено'}
+					title="Включить подробное пошаговое решение и экспорт в XMCD после расчета"
+				>
+					<span class="schema-check-title">Подробное решение</span>
 					<span class="schema-check-indicator" aria-hidden="true"></span>
 				</button>
 
@@ -2812,6 +2883,7 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+		flex-wrap: wrap;
 		gap: 0.65rem;
 		margin-bottom: 0.55rem;
 		padding: 0 0.12rem;
@@ -2869,6 +2941,10 @@
 
 	.schema-check-btn.active .schema-check-indicator {
 		--schema-dot-color: #2ea66b;
+	}
+
+	.detailed-solution-btn.active .schema-check-indicator {
+		--schema-dot-color: #2f7ffd;
 	}
 
 	.mobile-model-inline {
@@ -3309,7 +3385,8 @@
 
 		.mobile-model-inline {
 			display: block;
-			max-width: 50%;
+			max-width: 100%;
+			flex-basis: 100%;
 		}
 
 		.input-container {
