@@ -120,38 +120,39 @@ class _TraceHelper:
         self._current_section = section
         return section
 
-    def note(self, text):
-        return self._add_block("note", {"text": self._format(text)})
+    def note(self, text, title=None):
+        payload = {"text": self._format(text)}
+        if title is not None:
+            payload["title"] = self._format(title)
+        return self._add_block("note", payload)
 
-    def define(self, name, expr):
-        return self._add_block(
-            "definition",
-            {
-                "title": "Definition",
-                "text": "Define notation.",
-                "expression": f"{self._format(name)} := {self._format(expr)}"
-            }
-        )
+    def define(self, name, expr, value=None, title=None):
+        payload = {
+            "title": self._format(title) if title else "Definition",
+            "text": "Define notation.",
+            "expression": f"{self._format(name)} := {self._format(expr)}"
+        }
+        if value is not None:
+            payload["value"] = self._format(value)
+        return self._add_block("definition", payload)
 
-    def equation(self, lhs, rhs=None):
+    def equation(self, lhs, rhs=None, title=None):
         if rhs is None and isinstance(lhs, __sandbox_sympy.Equality):
             expression = self._format(lhs)
         elif rhs is None:
             expression = self._format(lhs)
         else:
             expression = f"{self._format(lhs)} = {self._format(rhs)}"
-        return self._add_block(
-            "equation",
-            {
-                "title": "Equation",
-                "text": "Apply relation.",
-                "expression": expression
-            }
-        )
-
-    def solve(self, target, variable=None, result=None):
         payload = {
-            "title": "Solve",
+            "title": self._format(title) if title else "Equation",
+            "text": "Apply relation.",
+            "expression": expression
+        }
+        return self._add_block("equation", payload)
+
+    def solve(self, target, variable=None, result=None, title=None):
+        payload = {
+            "title": self._format(title) if title else "Solve",
             "text": "Solve for target quantity.",
             "expression": self._format(target)
         }
@@ -161,25 +162,21 @@ class _TraceHelper:
             payload["value"] = self._format(result)
         return self._add_block("solve", payload)
 
-    def result(self, label, value):
+    def result(self, label, value, title=None):
         label_text = self._format(label)
-        return self._add_block(
-            "result",
-            {
-                "title": "Answer",
-                "text": label_text,
-                "value": self._format(value)
-            }
-        )
+        payload = {
+            "title": self._format(title) if title else "Answer",
+            "text": label_text,
+            "value": self._format(value)
+        }
+        return self._add_block("result", payload)
 
-    def code(self, code_text):
-        return self._add_block(
-            "code",
-            {
-                "title": "Technical details",
-                "code": self._format(code_text)
-            }
-        )
+    def code(self, code_text, title=None):
+        payload = {
+            "title": self._format(title) if title else "Technical details",
+            "code": self._format(code_text)
+        }
+        return self._add_block("code", payload)
 
     def export(self):
         return self._doc
