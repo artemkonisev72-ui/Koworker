@@ -183,6 +183,60 @@ trace = _SolutionTrace()
 # ── end trace helper ──────────────────────────────────────────────
 `;
 
+/**
+ * Strip model-generated trace class definitions and trace reassignments.
+ * The model frequently ignores the prompt to not redefine trace and creates
+ * its own helper class with wrong signatures, overriding our injected preamble.
+ */
+function stripModelTraceRedefinitions(code: string): string {
+	const lines = code.split('\n');
+	const output: string[] = [];
+	let skippingClass = false;
+	let classIndent = 0;
+	let stripped = 0;
+
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		const trimmed = line.trimStart();
+
+		// Detect class definitions for trace helpers
+		if (/^class\s+_?(Trace|SolutionTrace|TraceHelper|StepTrace)\b/i.test(trimmed)) {
+			skippingClass = true;
+			classIndent = line.length - trimmed.length;
+			stripped += 1;
+			continue;
+		}
+
+		// While inside a trace class, skip all indented lines
+		if (skippingClass) {
+			if (trimmed.length === 0) {
+				// blank line inside class — skip
+				continue;
+			}
+			const currentIndent = line.length - trimmed.length;
+			if (currentIndent > classIndent) {
+				// still inside the class body
+				continue;
+			}
+			// We've exited the class body
+			skippingClass = false;
+		}
+
+		// Strip standalone trace reassignments like: trace = _TraceHelper() or trace = _Trace()
+		if (/^trace\s*=\s*_?\w*[Tt]race\w*\s*\(/.test(trimmed)) {
+			stripped += 1;
+			continue;
+		}
+
+		output.push(line);
+	}
+
+	if (stripped > 0) {
+		console.log(`[Pipeline] Stripped ${stripped} model-generated trace redefinition(s) from code`);
+	}
+	return output.join('\n');
+}
+
 const FINALIZER_HISTORY_LIMIT = readIntEnv('FINALIZER_HISTORY_LIMIT', 2, 0, 6);
 const FINALIZER_HISTORY_ENTRY_MAX_CHARS = readIntEnv('FINALIZER_HISTORY_ENTRY_MAX_CHARS', 1200, 200, 6000);
 const FINALIZER_TASK_MAX_CHARS = readIntEnv('FINALIZER_TASK_MAX_CHARS', 3000, 400, 20000);
@@ -1011,6 +1065,7 @@ export async function runPipeline(
 
 		// Inject trace preamble for detailed solutions
 		if (detailedSolutionRequested) {
+			pythonCode = stripModelTraceRedefinitions(pythonCode);
 			pythonCode = TRACE_PREAMBLE + '\n' + pythonCode;
 			console.log('[Pipeline] Step 2: trace preamble injected, total code length:', pythonCode.length);
 		} else {

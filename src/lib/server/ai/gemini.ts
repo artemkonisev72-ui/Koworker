@@ -507,6 +507,7 @@ export async function generatePythonCode(
 	const detailedSolutionContract = detailedSolution
 		? `DETAILED-SOLUTION MODE IS ON. Critical rules:
 The runtime provides a pre-defined "trace" object (class _SolutionTrace). Do NOT redefine or re-create it.
+WARNING: Do NOT define any trace-related classes (e.g. class _TraceHelper, class _Trace, class Trace, class _SolutionTrace). Do NOT write "trace = ..." to reassign the trace object. The "trace" variable is already available and ready to use. Any class definition or reassignment will be automatically removed by the runtime.
 You MUST use trace calls for EVERY computation step:
 - trace.section("Section title") — start a new logical section
 - trace.note("explanation text") — explain reasoning or assumptions
