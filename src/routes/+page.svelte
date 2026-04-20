@@ -69,13 +69,10 @@
 	let inputValue = $state('');
 	let sidebarOpen = $state(true);
 	let isMobileView = $state(false);
-	let mobileToolsOpen = $state(false);
-	let inputSettingsOpen = $state(false);
 	let hasViewportInit = false;
 	let messagesEnd: HTMLDivElement | undefined = $state();
 	let inputEl: HTMLTextAreaElement | undefined = $state();
 	let fileInputEl: HTMLInputElement | undefined = $state();
-	let inputSettingsMenuEl: HTMLDivElement | undefined = $state();
 
 	let editingChatId = $state<string | null>(null);
 	let editingTitle = $state('');
@@ -120,10 +117,15 @@
 	let canCancelActiveGeneration = $derived(
 		Boolean(activeChatId && abortableChatIds[activeChatId])
 	);
-
 	let selectedImage = $state<{ base64: string; mimeType: string } | null>(null);
-	let schemaCheckEnabled = $state(false);
-	let schemeDebugEnabled = $state(false);
+	let schemaCheckEnabledByChatId = $state<Record<string, boolean>>({});
+	let schemaCheckEnabledForNewChat = $state(false);
+	let schemaCheckEnabled = $derived(
+		activeChatId ? Boolean(schemaCheckEnabledByChatId[activeChatId]) : schemaCheckEnabledForNewChat
+	);
+	let schemaCheckToggleDisabled = $derived(
+		hasAnyProcessing || Boolean(activeDraft && activeDraft.status === 'AWAITING_REVIEW')
+	);
 	let revisionNotes = $state('');
 	let showRevisionBox = $state(false);
 	let selectedModelPreference = $state('auto');
@@ -235,6 +237,26 @@
 		if (!hasAnyProcessing) return true;
 		alert(`Дождитесь завершения обработки в чате "${getBusyChatTitle()}".`);
 		return false;
+	}
+
+	function setSchemaCheckForChat(chatId: string, enabled: boolean) {
+		schemaCheckEnabledByChatId = {
+			...schemaCheckEnabledByChatId,
+			[chatId]: enabled
+		};
+	}
+
+	function setSchemaCheckEnabledForCurrentContext(enabled: boolean) {
+		if (!activeChatId) {
+			schemaCheckEnabledForNewChat = enabled;
+			return;
+		}
+		setSchemaCheckForChat(activeChatId, enabled);
+	}
+
+	function toggleSchemaCheckMode() {
+		if (schemaCheckToggleDisabled) return;
+		setSchemaCheckEnabledForCurrentContext(!schemaCheckEnabled);
 	}
 
 	function removeProcessingPlaceholder(chatId: string) {
@@ -373,25 +395,12 @@
 			if (mobileNow) {
 				sidebarOpen = false;
 				isSharing = false;
-				inputSettingsOpen = false;
 			} else {
 				sidebarOpen = true;
-				mobileToolsOpen = false;
 			}
 		};
 
 		const onViewportChange = () => applyViewportMode();
-		const onDocumentPointerDown = (event: PointerEvent) => {
-			if (!inputSettingsOpen) return;
-			const target = event.target as Node | null;
-			if (target && inputSettingsMenuEl?.contains(target)) return;
-			inputSettingsOpen = false;
-		};
-		const onWindowKeyDown = (event: KeyboardEvent) => {
-			if (event.key === 'Escape') {
-				inputSettingsOpen = false;
-			}
-		};
 
 		applyViewportMode();
 
@@ -402,8 +411,6 @@
 		}
 		window.addEventListener('orientationchange', onViewportChange);
 		window.addEventListener('resize', onViewportChange);
-		document.addEventListener('pointerdown', onDocumentPointerDown);
-		window.addEventListener('keydown', onWindowKeyDown);
 
 		void (async () => {
 			await loadChats();
@@ -422,8 +429,6 @@
 			}
 			window.removeEventListener('orientationchange', onViewportChange);
 			window.removeEventListener('resize', onViewportChange);
-			document.removeEventListener('pointerdown', onDocumentPointerDown);
-			window.removeEventListener('keydown', onWindowKeyDown);
 		};
 	});
 
@@ -453,6 +458,9 @@
 
 	async function createPersistedChat() {
 		try {
+			const enableSchemaCheckInCreatedChat = !activeChatId
+				? schemaCheckEnabledForNewChat
+				: Boolean(schemaCheckEnabledByChatId[activeChatId]);
 			const res = await fetch('/api/chats', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -461,6 +469,7 @@
 			if (res.ok) {
 				const chat = await res.json();
 				chats = [chat, ...chats];
+				setSchemaCheckForChat(chat.id, enableSchemaCheckInCreatedChat);
 				await selectChat(chat.id);
 			}
 		} catch (e) {
@@ -476,8 +485,7 @@
 		copySuccess = false;
 		editingChatId = null;
 		editingTitle = '';
-		inputSettingsOpen = false;
-		mobileToolsOpen = false;
+		schemaCheckEnabledForNewChat = false;
 		pickWelcomeGreeting();
 
 		if (isMobileView) {
@@ -500,6 +508,8 @@
 				draftsByChatId = restDrafts;
 				const { [id]: _removedProcessing, ...restProcessing } = processingByChatId;
 				processingByChatId = restProcessing;
+				const { [id]: _removedSchemaCheck, ...restSchemaCheck } = schemaCheckEnabledByChatId;
+				schemaCheckEnabledByChatId = restSchemaCheck;
 				abortControllersByChatId.delete(id);
 				const { [id]: _removedAbortable, ...restAbortable } = abortableChatIds;
 				abortableChatIds = restAbortable;
@@ -634,7 +644,6 @@
 		activeChatId = chatId;
 		showRevisionBox = false;
 		revisionNotes = '';
-		inputSettingsOpen = false;
 		ensureProcessingPlaceholder(chatId);
 		await loadMessages(chatId);
 		if (messages.length === 0) {
@@ -1072,6 +1081,7 @@
 				throw new Error(await parseErrorMessage(res));
 			}
 			const payload = await res.json();
+			setSchemaCheckForChat(chatId, false);
 			if (payload.status === 'SOLVED') {
 				setDraftState(chatId, null);
 				showRevisionBox = false;
@@ -1126,7 +1136,6 @@
 		selectedImage = null;
 		if (fileInputEl) fileInputEl.value = '';
 		inputValue = '';
-		if (isMobileView) mobileToolsOpen = false;
 
 		const optimisticExchange = appendOptimisticExchange(originChatId, text, imageData);
 		await scrollToBottom();
@@ -1343,13 +1352,6 @@
 				e.preventDefault();
 				break;
 			}
-		}
-	}
-
-	function toggleMobileTools() {
-		mobileToolsOpen = !mobileToolsOpen;
-		if (mobileToolsOpen) {
-			inputSettingsOpen = false;
 		}
 	}
 </script>
@@ -1747,7 +1749,7 @@
 									{/if}
 									<p class="user-text">{msg.content}</p>
 								{:else}
-									<MessageRenderer message={msg} schemeDebug={schemeDebugEnabled} />
+									<MessageRenderer message={msg} />
 									{#if msg.isStreaming && statusMessage}
 										<div class="status-text streaming">{statusMessage}</div>
 									{/if}
@@ -1866,99 +1868,45 @@
 				</div>
 			{/if}
 
-			<div class="input-options desktop-options">
-				<div class="input-settings" bind:this={inputSettingsMenuEl}>
-					<button
-						class="input-settings-btn"
-						onclick={() => (inputSettingsOpen = !inputSettingsOpen)}
-						disabled={hasAnyProcessing}
-					>
-						<span>Режимы</span>
-						<span class="input-settings-chevron" class:open={inputSettingsOpen}>⌄</span>
-					</button>
-					{#if inputSettingsOpen}
-						<div class="input-settings-panel">
-							<label class="schema-toggle">
-								<input
-									type="checkbox"
-									bind:checked={schemaCheckEnabled}
-									disabled={hasAnyProcessing || (!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
-								/>
-								<span>Проверка схемы</span>
-							</label>
-							<label class="schema-toggle">
-								<input
-									type="checkbox"
-									bind:checked={schemeDebugEnabled}
-									disabled={hasAnyProcessing}
-								/>
-								<span>Scheme debug</span>
-							</label>
-						</div>
-					{/if}
-				</div>
-			</div>
-
-			<div class="mobile-tools-row">
+			<div class="input-toolbar">
 				<button
-					class="mobile-tools-toggle"
-					onclick={toggleMobileTools}
+					type="button"
+					class="schema-check-btn"
+					class:active={schemaCheckEnabled}
+					onclick={toggleSchemaCheckMode}
+					disabled={schemaCheckToggleDisabled}
+					aria-pressed={schemaCheckEnabled}
+					title="Включить или выключить проверку схемы для текущего чата"
+				>
+					<span class="schema-check-title">Проверка схемы</span>
+					<span class="schema-check-state">{schemaCheckEnabled ? 'ВКЛ' : 'ВЫКЛ'}</span>
+				</button>
+
+				<select
+					value={currentModelPreference()}
+					onchange={(e) => updateModelPreference(e.currentTarget.value)}
+					class="model-select mobile-model-inline"
 					disabled={hasAnyProcessing}
 				>
-					<span>Режимы и модель</span>
-					<span class="mobile-tools-chevron" class:open={mobileToolsOpen}>⌄</span>
-				</button>
+					<option value="auto">✨ Авто-режим</option>
+					<optgroup label="Gemini 3.1">
+						<option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Умная)</option>
+						<option value="gemini-3.1-flash-preview">Gemini 3.1 Flash (Быстрая)</option>
+						<option value="gemini-3.1-flash-lite-preview"
+							>Gemini 3.1 Flash-Lite (Самая быстрая)</option
+						>
+					</optgroup>
+					<optgroup label="Gemini 3.0">
+						<option value="gemini-3-pro-preview">Gemini 3.0 Pro</option>
+						<option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
+					</optgroup>
+					<optgroup label="Gemini 2.5">
+						<option value="gemini-2.5-pro">Gemini 2.5 Pro (Умная)</option>
+						<option value="gemini-2.5-flash">Gemini 2.5 Flash (Быстрая)</option>
+						<option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite (Самая быстрая)</option>
+					</optgroup>
+				</select>
 			</div>
-
-			{#if mobileToolsOpen}
-				<div class="mobile-tools-sheet">
-					<div class="mobile-tools-grid">
-						<label class="schema-toggle">
-							<input
-								type="checkbox"
-								bind:checked={schemaCheckEnabled}
-								disabled={hasAnyProcessing || (!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
-							/>
-							<span>Проверка схемы</span>
-						</label>
-						<label class="schema-toggle">
-							<input
-								type="checkbox"
-								bind:checked={schemeDebugEnabled}
-								disabled={hasAnyProcessing}
-							/>
-							<span>Scheme debug</span>
-						</label>
-					</div>
-
-					<label class="mobile-model-label" for="mobile-model-select">Модель</label>
-					<select
-						id="mobile-model-select"
-						value={currentModelPreference()}
-						onchange={(e) => updateModelPreference(e.currentTarget.value)}
-						class="model-select mobile-model-select"
-						disabled={hasAnyProcessing}
-					>
-						<option value="auto">✨ Авто-режим</option>
-						<optgroup label="Gemini 3.1">
-							<option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Умная)</option>
-							<option value="gemini-3.1-flash-preview">Gemini 3.1 Flash (Быстрая)</option>
-							<option value="gemini-3.1-flash-lite-preview"
-								>Gemini 3.1 Flash-Lite (Самая быстрая)</option
-							>
-						</optgroup>
-						<optgroup label="Gemini 3.0">
-							<option value="gemini-3-pro-preview">Gemini 3.0 Pro</option>
-							<option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
-						</optgroup>
-						<optgroup label="Gemini 2.5">
-							<option value="gemini-2.5-pro">Gemini 2.5 Pro (Умная)</option>
-							<option value="gemini-2.5-flash">Gemini 2.5 Flash (Быстрая)</option>
-							<option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite (Самая быстрая)</option>
-						</optgroup>
-					</select>
-				</div>
-			{/if}
 
 			<div class="input-container">
 				<!-- File upload button -->
@@ -2889,24 +2837,20 @@
 		gap: 0.5rem;
 	}
 
-	.input-options {
+	.input-toolbar {
 		display: flex;
-		justify-content: flex-start;
-		gap: 0.5rem;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.65rem;
 		margin-bottom: 0.55rem;
 		padding: 0 0.12rem;
-		flex-wrap: wrap;
 	}
 
-	.input-settings {
-		position: relative;
-	}
-
-	.input-settings-btn {
+	.schema-check-btn {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.55rem;
-		padding: 0.36rem 0.62rem;
+		padding: 0.38rem 0.66rem;
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-sm);
 		background: var(--bg-card);
@@ -2920,112 +2864,38 @@
 			color var(--transition-fast);
 	}
 
-	.input-settings-btn:hover:not(:disabled) {
+	.schema-check-btn:hover:not(:disabled) {
 		border-color: color-mix(in srgb, var(--accent-primary) 45%, transparent);
 		color: var(--text-primary);
 		background: var(--bg-elevated);
 	}
 
-	.input-settings-btn:disabled {
+	.schema-check-btn.active {
+		border-color: color-mix(in srgb, var(--accent-primary) 52%, transparent);
+		color: var(--accent-primary);
+		background: color-mix(in srgb, var(--accent-primary) 11%, var(--bg-card));
+	}
+
+	.schema-check-btn:disabled {
 		opacity: 0.55;
 		cursor: not-allowed;
 	}
 
-	.input-settings-chevron {
-		font-size: 0.93rem;
-		line-height: 1;
-		transition: transform var(--transition-fast);
+	.schema-check-title {
+		white-space: nowrap;
 	}
 
-	.input-settings-chevron.open {
-		transform: rotate(180deg);
+	.schema-check-state {
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		opacity: 0.88;
 	}
 
-	.input-settings-panel {
-		position: absolute;
-		left: 0;
-		bottom: calc(100% + 0.5rem);
-		min-width: 220px;
-		padding: 0.64rem;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-md);
-		background: var(--bg-card);
-		box-shadow: var(--shadow-sm);
-		display: flex;
-		flex-direction: column;
-		gap: 0.45rem;
-		z-index: 50;
-	}
-
-	.schema-toggle {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.44rem;
-		font-size: 0.78rem;
-		color: var(--text-secondary);
-		user-select: none;
-	}
-
-	.schema-toggle input {
-		accent-color: var(--accent-primary);
-	}
-
-	.mobile-tools-row {
+	.mobile-model-inline {
 		display: none;
-		margin-bottom: 0.5rem;
-	}
-
-	.mobile-tools-toggle {
 		width: 100%;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.75rem;
-		padding: 0.48rem 0.7rem;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-md);
-		background: var(--bg-card);
-		color: var(--text-secondary);
-		font-size: 0.76rem;
-		font-weight: 600;
-		cursor: pointer;
-	}
-
-	.mobile-tools-chevron {
-		font-size: 0.95rem;
-		line-height: 1;
-		transition: transform var(--transition-fast);
-	}
-
-	.mobile-tools-chevron.open {
-		transform: rotate(180deg);
-	}
-
-	.mobile-tools-sheet {
-		margin-bottom: 0.56rem;
-		padding: 0.68rem;
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-md);
-		background: var(--bg-card);
-		display: flex;
-		flex-direction: column;
-		gap: 0.6rem;
-	}
-
-	.mobile-tools-grid {
-		display: flex;
-		flex-direction: column;
-		gap: 0.45rem;
-	}
-
-	.mobile-model-label {
-		font-size: 0.73rem;
-		font-weight: 600;
-		color: var(--text-muted);
-	}
-
-	.mobile-model-select {
-		width: 100%;
+		max-width: 260px;
 	}
 
 	.input-container {
@@ -3350,13 +3220,8 @@
 	}
 
 	@media (max-width: 768px) {
-		.desktop-only,
-		.desktop-options {
+		.desktop-only {
 			display: none;
-		}
-
-		.mobile-tools-row {
-			display: block;
 		}
 
 		.app-shell {
@@ -3454,6 +3319,20 @@
 				calc(0.74rem + env(safe-area-inset-bottom)) calc(0.76rem + env(safe-area-inset-left));
 		}
 
+		.input-toolbar {
+			gap: 0.5rem;
+		}
+
+		.schema-check-btn {
+			flex: 1;
+			justify-content: space-between;
+		}
+
+		.mobile-model-inline {
+			display: block;
+			max-width: 50%;
+		}
+
 		.input-container {
 			gap: 0.52rem;
 			padding: 0.44rem 0.56rem;
@@ -3486,8 +3365,16 @@
 			font-size: 0.94rem;
 		}
 
-		.schema-toggle {
+		.schema-check-btn {
+			padding: 0.34rem 0.56rem;
+		}
+
+		.schema-check-title {
 			font-size: 0.72rem;
+		}
+
+		.schema-check-state {
+			font-size: 0.64rem;
 		}
 
 		.share-menu {
