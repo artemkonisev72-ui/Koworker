@@ -1876,10 +1876,11 @@
 					onclick={toggleSchemaCheckMode}
 					disabled={schemaCheckToggleDisabled}
 					aria-pressed={schemaCheckEnabled}
+					aria-label={schemaCheckEnabled ? 'Проверка схемы включена' : 'Проверка схемы выключена'}
 					title="Включить или выключить проверку схемы для текущего чата"
 				>
 					<span class="schema-check-title">Проверка схемы</span>
-					<span class="schema-check-state">{schemaCheckEnabled ? 'ВКЛ' : 'ВЫКЛ'}</span>
+					<span class="schema-check-indicator" aria-hidden="true"></span>
 				</button>
 
 				<select
@@ -2885,11 +2886,19 @@
 		white-space: nowrap;
 	}
 
-	.schema-check-state {
-		font-size: 0.68rem;
-		font-weight: 700;
-		letter-spacing: 0.04em;
-		opacity: 0.88;
+	.schema-check-indicator {
+		--schema-dot-color: var(--error);
+		width: 0.58rem;
+		height: 0.58rem;
+		border-radius: 999px;
+		background: var(--schema-dot-color);
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--schema-dot-color) 18%, transparent);
+		animation: schemaDotPulse 1.6s ease-in-out infinite;
+		flex-shrink: 0;
+	}
+
+	.schema-check-btn.active .schema-check-indicator {
+		--schema-dot-color: #2ea66b;
 	}
 
 	.mobile-model-inline {
@@ -3373,12 +3382,30 @@
 			font-size: 0.72rem;
 		}
 
-		.schema-check-state {
-			font-size: 0.64rem;
+		.schema-check-indicator {
+			width: 0.52rem;
+			height: 0.52rem;
 		}
 
 		.share-menu {
 			right: -0.15rem;
+		}
+	}
+
+	@keyframes schemaDotPulse {
+		0% {
+			transform: scale(0.92);
+			opacity: 0.74;
+		}
+
+		50% {
+			transform: scale(1.08);
+			opacity: 1;
+		}
+
+		100% {
+			transform: scale(0.92);
+			opacity: 0.74;
 		}
 	}
 
