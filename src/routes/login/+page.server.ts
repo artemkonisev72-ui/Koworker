@@ -14,7 +14,7 @@ import { enforceAuthRateLimit } from '$lib/server/auth-throttle';
 
 export const load: PageServerLoad = async ({ locals, url }) => {
 	if (locals.user) {
-		throw redirect(302, '/');
+		throw redirect(302, '/?postLogin=1');
 	}
 
 	return {
