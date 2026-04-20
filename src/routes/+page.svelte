@@ -56,6 +56,11 @@
 		placeholderId: string | null;
 	}
 	type ThemeMode = 'light' | 'dark';
+	const MODEL_OPTIONS = [
+		{ value: 'auto', label: 'Авто' },
+		{ value: 'gemini-3.1-flash-lite-preview', label: 'Gemini 3.1 Flash-lite' },
+		{ value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro' }
+	] as const;
 
 	let { data }: { data: import('./$types').PageData } = $props();
 
@@ -137,10 +142,6 @@
 
 	const THEME_STORAGE_KEY = 'coworker-theme';
 	const PROCESSING_POLL_INTERVAL_MS = 2000;
-
-	function shouldOpenFreshChatAfterLogin(): boolean {
-		return Boolean(data.postLogin);
-	}
 
 	function idleProcessingState(): ChatProcessingState {
 		return {
@@ -414,11 +415,7 @@
 
 		void (async () => {
 			await loadChats();
-			if (shouldOpenFreshChatAfterLogin()) {
-				await startNewChat();
-			} else if (chats.length > 0) {
-				await selectChat(chats[0].id);
-			}
+			await startNewChat();
 		})();
 
 		return () => {
@@ -592,41 +589,49 @@
 		});
 	}
 
+	function normalizeModelPreference(preference: string | null | undefined): string {
+		if (typeof preference !== 'string') return 'auto';
+		return MODEL_OPTIONS.some((option) => option.value === preference) ? preference : 'auto';
+	}
+
 	function currentModelPreference(): string {
-		return selectedModelPreference;
+		return normalizeModelPreference(selectedModelPreference);
 	}
 
 	async function updateModelPreference(preference: string) {
-		selectedModelPreference = preference;
+		const normalizedPreference = normalizeModelPreference(preference);
+		selectedModelPreference = normalizedPreference;
 		console.log('[ModelPreference:UI] update requested', {
 			chatId: activeChatId,
 			currentPreference: currentModelPreference(),
-			nextPreference: preference
+			nextPreference: normalizedPreference
 		});
 		if (!activeChatId) {
 			console.log('[ModelPreference:UI] update stored locally: no active chat yet');
 			return;
 		}
-		chats = chats.map((c) => (c.id === activeChatId ? { ...c, modelPreference: preference } : c));
+		chats = chats.map((c) =>
+			c.id === activeChatId ? { ...c, modelPreference: normalizedPreference } : c
+		);
 		try {
 			const res = await fetch(`/api/chats/${activeChatId}`, {
 				method: 'PATCH',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ modelPreference: preference })
+				body: JSON.stringify({ modelPreference: normalizedPreference })
 			});
 			if (res.ok) {
 				const updated = await res.json();
 				chats = chats.map((c) => (c.id === activeChatId ? updated : c));
-				selectedModelPreference = updated.modelPreference;
+				selectedModelPreference = normalizeModelPreference(updated.modelPreference);
 				console.log('[ModelPreference:UI] update saved', {
 					chatId: activeChatId,
-					requestedPreference: preference,
-					savedPreference: updated.modelPreference
+					requestedPreference: normalizedPreference,
+					savedPreference: selectedModelPreference
 				});
 			} else {
 				console.warn('[ModelPreference:UI] update failed', {
 					chatId: activeChatId,
-					requestedPreference: preference,
+					requestedPreference: normalizedPreference,
 					status: res.status
 				});
 				await loadChats();
@@ -640,7 +645,7 @@
 	async function selectChat(chatId: string) {
 		if (activeChatId === chatId) return;
 		const selectedChat = chats.find((c) => c.id === chatId);
-		selectedModelPreference = selectedChat?.modelPreference || 'auto';
+		selectedModelPreference = normalizeModelPreference(selectedChat?.modelPreference || 'auto');
 		activeChatId = chatId;
 		showRevisionBox = false;
 		revisionNotes = '';
@@ -1684,23 +1689,9 @@
 					class="model-select desktop-only"
 					disabled={hasAnyProcessing}
 				>
-					<option value="auto">✨ Авто-режим</option>
-					<optgroup label="Gemini 3.1">
-						<option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Умная)</option>
-						<option value="gemini-3.1-flash-preview">Gemini 3.1 Flash (Быстрая)</option>
-						<option value="gemini-3.1-flash-lite-preview"
-							>Gemini 3.1 Flash-Lite (Самая быстрая)</option
-						>
-					</optgroup>
-					<optgroup label="Gemini 3.0">
-						<option value="gemini-3-pro-preview">Gemini 3.0 Pro</option>
-						<option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
-					</optgroup>
-					<optgroup label="Gemini 2.5">
-						<option value="gemini-2.5-pro">Gemini 2.5 Pro (Умная)</option>
-						<option value="gemini-2.5-flash">Gemini 2.5 Flash (Быстрая)</option>
-						<option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite (Самая быстрая)</option>
-					</optgroup>
+					{#each MODEL_OPTIONS as option (option.value)}
+						<option value={option.value}>{option.label}</option>
+					{/each}
 				</select>
 			</div>
 		</header>
@@ -1889,23 +1880,9 @@
 					class="model-select mobile-model-inline"
 					disabled={hasAnyProcessing}
 				>
-					<option value="auto">✨ Авто-режим</option>
-					<optgroup label="Gemini 3.1">
-						<option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Умная)</option>
-						<option value="gemini-3.1-flash-preview">Gemini 3.1 Flash (Быстрая)</option>
-						<option value="gemini-3.1-flash-lite-preview"
-							>Gemini 3.1 Flash-Lite (Самая быстрая)</option
-						>
-					</optgroup>
-					<optgroup label="Gemini 3.0">
-						<option value="gemini-3-pro-preview">Gemini 3.0 Pro</option>
-						<option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
-					</optgroup>
-					<optgroup label="Gemini 2.5">
-						<option value="gemini-2.5-pro">Gemini 2.5 Pro (Умная)</option>
-						<option value="gemini-2.5-flash">Gemini 2.5 Flash (Быстрая)</option>
-						<option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite (Самая быстрая)</option>
-					</optgroup>
+					{#each MODEL_OPTIONS as option (option.value)}
+						<option value={option.value}>{option.label}</option>
+					{/each}
 				</select>
 			</div>
 
@@ -2517,13 +2494,6 @@
 	.model-select:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
-	}
-
-	.model-select optgroup {
-		background: var(--bg-surface);
-		color: var(--text-muted);
-		font-style: normal;
-		font-weight: 700;
 	}
 
 	.model-select option {
