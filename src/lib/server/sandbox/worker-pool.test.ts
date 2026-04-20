@@ -1,26 +1,57 @@
 /**
  * worker-pool.test.ts
- * Unit-тест Ядра Песочницы.
- * Проверяет:
- *  1. Нормальное выполнение корректного Python-кода
- *  2. Rejection при запрещённом импорте (Pre-flight)
- *  3. Rejection при синтаксической ошибке Python (PythonError)
- *  4. Rejection при бесконечном цикле (External Heartbeat timeout)
- *  5. Lifecycle Policy: воркер переживает 10 задач и пересоздаётся
+ * Sandbox core unit tests:
+ * 1) valid Python execution
+ * 2) forbidden import pre-flight rejection
+ * 3) syntax error rejection
+ * 4) infinite loop timeout
+ * 5) worker lifecycle rotation smoke
+ * 6) trace regression checks for sympy handling
  */
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore Vitest resolves .js → .ts at runtime; svelte-check reports false positive
+// @ts-ignore Vitest resolves .js to .ts at runtime; svelte-check may report false positive
 import { workerPool, SandboxError } from './worker-pool.ts';
 
-// Бесконечный цикл — Wasm заблокирует внутренние таймеры воркера,
-// поэтому External Heartbeat (setTimeout в главном потоке) обязан его убить.
 const INFINITE_LOOP = `while True: pass`;
 
 const VALID_CODE = `
 import json
 result = {"answer": 42}
 print(json.dumps(result))
+`;
+
+const TRACE_EQUATION_CODE = `
+import json
+import sympy
+
+x = sympy.Symbol("x")
+eq = sympy.Eq(x + 1, 2)
+trace.equation(eq)
+
+print(json.dumps({"solutionDoc": trace.export()}))
+`;
+
+const TRACE_FORMAT_CODE = `
+import json
+import sympy
+
+x = sympy.Symbol("x")
+trace.note(x)
+trace.result("symbol", x + 1)
+
+print(json.dumps({"solutionDoc": trace.export()}))
+`;
+
+const TRACE_DEFINE_VALUE_CODE = `
+import json
+import sympy
+
+x = sympy.Symbol("x")
+trace.define("x_expr", x + 1, x + 1)
+trace.define("x_expr_kw", x + 2, value=x + 2, title="Def by keyword")
+
+print(json.dumps({"solutionDoc": trace.export()}))
 `;
 
 const FORBIDDEN_CODE = `
@@ -44,43 +75,59 @@ def foo(
   print("unclosed")
 `;
 
-describe('WorkerPool — Sandbox Safety', () => {
-	it('выполняет корректный Python и возвращает stdout', async () => {
+describe('WorkerPool - Sandbox Safety', () => {
+	it('executes valid Python and returns stdout', async () => {
 		const result = await workerPool.execute(VALID_CODE);
 		expect(result.stdout).toContain('"answer": 42');
 	}, 30_000);
 
-	it('отклоняет код с запрещённым импортом (Pre-flight)', async () => {
+	it('supports trace.equation(sympy.Eq(...)) without name-mangling failures', async () => {
+		const result = await workerPool.execute(TRACE_EQUATION_CODE);
+		expect(result.stdout).toContain('"solutionDoc"');
+		expect(result.stdout).toContain('x + 1');
+	}, 30_000);
+
+	it('formats sympy.Basic values in trace blocks via sympy.sstr path', async () => {
+		const result = await workerPool.execute(TRACE_FORMAT_CODE);
+		expect(result.stdout).toContain('"solutionDoc"');
+		expect(result.stdout).toContain('x + 1');
+	}, 30_000);
+
+	it('accepts trace.define with positional and keyword value arguments', async () => {
+		const result = await workerPool.execute(TRACE_DEFINE_VALUE_CODE);
+		expect(result.stdout).toContain('"solutionDoc"');
+		expect(result.stdout).toContain('x + 1');
+		expect(result.stdout).toContain('x + 2');
+	}, 30_000);
+
+	it('rejects forbidden import code at pre-flight', async () => {
 		await expect(workerPool.execute(FORBIDDEN_CODE)).rejects.toThrow(SandboxError);
 	});
 
-	it('отклоняет multi-import обход (import json, os)', async () => {
+	it('rejects multi-import bypass attempt (import json, os)', async () => {
 		await expect(workerPool.execute(FORBIDDEN_MULTI_IMPORT_CODE)).rejects.toThrow(SandboxError);
 	});
 
-	it('отклоняет попытку выхода через __builtins__', async () => {
+	it('rejects escape attempt via __builtins__ access', async () => {
 		await expect(workerPool.execute(FORBIDDEN_BUILTINS_ESCAPE_CODE)).rejects.toThrow(SandboxError);
 	});
 
-	it('отклоняет синтаксически некорректный Python', async () => {
+	it('rejects syntactically invalid Python', async () => {
 		await expect(workerPool.execute(SYNTAX_ERROR_CODE)).rejects.toThrow(SandboxError);
 	}, 30_000);
 
-	it('убивает бесконечный цикл через External Heartbeat (<= 32 сек)', async () => {
+	it('kills infinite loop via external heartbeat (<= 32s)', async () => {
 		const start = Date.now();
-		await expect(workerPool.execute(INFINITE_LOOP)).rejects.toThrow(/timeout|лимит времени/i);
+		await expect(workerPool.execute(INFINITE_LOOP)).rejects.toThrow(/timeout|time limit|Execution timeout exceeded/i);
 		const elapsed = Date.now() - start;
-		// Должно завершиться не позже чем через ~32 секунды (30с таймаут + небольшой overhead)
 		expect(elapsed).toBeLessThan(32_000);
 	}, 35_000);
 
-	it('Lifecycle Policy: успешно выполняет серию задач при строгой ротации воркеров', async () => {
-		const tasks = Array.from({ length: 4 }, (_, i) =>
-			workerPool.execute(`print(${i})`)
-		);
+	it('lifecycle policy: executes a small task burst successfully', async () => {
+		const tasks = Array.from({ length: 4 }, (_, i) => workerPool.execute(`print(${i})`));
 		const results = await Promise.all(tasks);
-		results.forEach((r: { stdout: string }, i: number) => {
-			expect(r.stdout).toContain(String(i));
+		results.forEach((result: { stdout: string }, i: number) => {
+			expect(result.stdout).toContain(String(i));
 		});
 	}, 120_000);
 });

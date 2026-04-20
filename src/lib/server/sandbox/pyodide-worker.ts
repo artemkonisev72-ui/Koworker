@@ -18,10 +18,11 @@ let currentStdout = '';
 
 const SANDBOX_BOOTSTRAP = `
 import builtins as __builtins_mod
-import math as __sandbox_math
-import sympy as __sandbox_sympy
-import numpy as __sandbox_numpy
-import json as __sandbox_json
+# Keep single-underscore aliases to avoid Python name-mangling inside _TraceHelper methods.
+import math as _sandbox_math
+import sympy as _sandbox_sympy
+import numpy as _sandbox_numpy
+import json as _sandbox_json
 
 _ALLOWED_IMPORTS = {"math", "sympy", "numpy", "json"}
 _REAL_IMPORT = __builtins_mod.__import__
@@ -79,8 +80,8 @@ class _TraceHelper:
 
     def _format(self, value):
         try:
-            if isinstance(value, __sandbox_sympy.Basic):
-                return __sandbox_sympy.sstr(value)
+            if isinstance(value, _sandbox_sympy.Basic):
+                return _sandbox_sympy.sstr(value)
         except Exception:
             pass
 
@@ -137,7 +138,7 @@ class _TraceHelper:
         return self._add_block("definition", payload)
 
     def equation(self, lhs, rhs=None, title=None):
-        if rhs is None and isinstance(lhs, __sandbox_sympy.Equality):
+        if rhs is None and isinstance(lhs, _sandbox_sympy.Equality):
             expression = self._format(lhs)
         elif rhs is None:
             expression = self._format(lhs)
@@ -185,11 +186,11 @@ def _run_sandbox(__sandbox_code):
     __trace = _TraceHelper()
     _globals = {
         "__builtins__": _SAFE_BUILTINS,
-        "math": __sandbox_math,
-        "sympy": __sandbox_sympy,
-        "numpy": __sandbox_numpy,
-        "np": __sandbox_numpy,
-        "json": __sandbox_json,
+        "math": _sandbox_math,
+        "sympy": _sandbox_sympy,
+        "numpy": _sandbox_numpy,
+        "np": _sandbox_numpy,
+        "json": _sandbox_json,
         "trace": __trace
     }
     exec(compile(__sandbox_code, "<sandbox>", "exec"), _globals, None)
