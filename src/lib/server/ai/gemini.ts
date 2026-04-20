@@ -1,4 +1,4 @@
-﻿/**
+/**
  * gemini.ts
  * Thin wrapper around Gemini API.
  */
@@ -505,18 +505,25 @@ export async function generatePythonCode(
 	const solverModelSection = solverModelContract ? `${solverModelContract}\n` : '';
 	const schemeDescriptionSection = schemeDescriptionContract ? `${schemeDescriptionContract}\n` : '';
 	const detailedSolutionContract = detailedSolution
-		? `Detailed-solution mode is ON.
-Use runtime helper "trace" to emit compact step-by-step blocks while computing:
-- trace.section("...")
-- trace.note("...")
-- trace.define("x", expr)
-- trace.equation(lhs, rhs) or trace.equation(eq_expr)
-- trace.solve(target, variable, result)
-- trace.result("label", value)
-- trace.code("short code fragment")
-Never build manual AST dictionaries (no objects like {"type":"apply","op":"plus"...}).
-Do not serialize tree nodes by hand.
-In final JSON include key "solutionDoc" with trace.export().`
+		? `DETAILED-SOLUTION MODE IS ON. Critical rules:
+The runtime provides a pre-defined "trace" object (class _SolutionTrace). Do NOT redefine or re-create it.
+You MUST use trace calls for EVERY computation step:
+- trace.section("Section title") — start a new logical section
+- trace.note("explanation text") — explain reasoning or assumptions
+- trace.define("variable_name", "expression_string", value=computed_value) — define a variable
+- trace.equation("lhs", "rhs") or trace.equation("full_equation_string") — state an equation
+- trace.solve("what we're solving for", "variable", computed_result) — show solution of equation
+- trace.result("label", value) — declare a final or intermediate result
+
+Workflow requirements:
+1. Start with trace.section("Исходные данные") and use trace.define/trace.note for all given values.
+2. Create a new trace.section for each major solution phase (e.g. "Реакции опор", "Эпюры", "Проверка").
+3. Every symbolic/numeric computation MUST be preceded by trace.equation or trace.define.
+4. Every final answer MUST use trace.result("Answer label", value).
+5. In the final JSON output, ALWAYS include "solutionDoc": trace.export().
+6. Never build manual AST dictionaries (no objects like {"type":"apply","op":"plus"...}).
+7. Do not serialize tree nodes by hand.
+8. trace.code() — use ONLY if user explicitly asks to see code.`
 		: '';
 
 	const systemPrompt = `You generate Python code for exact scientific computation.

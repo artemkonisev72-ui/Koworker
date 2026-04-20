@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
 	/**
 	 * +page.svelte - Main chat interface
 	 * SSE client + sidebar + message list + input
@@ -269,7 +269,10 @@
 
 	function toggleSchemaCheckMode() {
 		if (schemaCheckToggleDisabled) return;
-		setSchemaCheckEnabledForCurrentContext(!schemaCheckEnabled);
+		const next = !schemaCheckEnabled;
+		setSchemaCheckEnabledForCurrentContext(next);
+		// Mutual exclusivity: disable detailed solution when schema check is enabled
+		if (next) setDetailedSolutionForCurrentContext(false);
 	}
 
 	function setDetailedSolutionForChat(chatId: string, enabled: boolean) {
@@ -289,7 +292,10 @@
 
 	function toggleDetailedSolutionMode() {
 		if (detailedSolutionToggleDisabled) return;
-		setDetailedSolutionForCurrentContext(!detailedSolutionEnabled);
+		const next = !detailedSolutionEnabled;
+		setDetailedSolutionForCurrentContext(next);
+		// Mutual exclusivity: disable schema check when detailed solution is enabled
+		if (next) setSchemaCheckEnabledForCurrentContext(false);
 	}
 
 	function removeProcessingPlaceholder(chatId: string) {

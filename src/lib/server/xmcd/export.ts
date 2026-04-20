@@ -8,6 +8,14 @@ interface XmcdRegion {
 	text: string;
 }
 
+interface XmcdBlockContext {
+	sectionId: string;
+	blockId: string;
+	sectionIndex: number;
+	blockIndex: number;
+	kind: SolutionBlockV1['kind'];
+}
+
 function xmlEscape(value: string): string {
 	return value
 		.replaceAll('&', '&amp;')
@@ -24,9 +32,10 @@ function normalizeLineBreaks(value: string): string[] {
 		.split('\n');
 }
 
-function blockToText(block: SolutionBlockV1): string {
+function blockToText(block: SolutionBlockV1, context: XmcdBlockContext): string {
 	const title = block.title ? `${block.title}: ` : '';
 	if (block.kind === 'code') {
+		console.warn('[XMCD] code_block_degraded_to_text', context);
 		return `${title}${block.code ?? ''}`;
 	}
 	if (block.kind === 'definition' || block.kind === 'equation' || block.kind === 'solve') {
@@ -39,7 +48,23 @@ function blockToText(block: SolutionBlockV1): string {
 		const value = block.value ?? '';
 		return label ? `${label}${value ? `: ${value}` : ''}` : value;
 	}
+	if (block.kind === 'graph') {
+		const graphTitle = block.title ?? 'Graph';
+		const graphDetail = block.text ?? '';
+		const dataInfo = block.data
+			? ` (${typeof block.data.type === 'string' ? block.data.type : 'data'}${typeof block.data.points === 'number' ? `, ${block.data.points} points` : ''})`
+			: '';
+		return `${graphTitle}${graphDetail ? ': ' + graphDetail : ''}${dataInfo}`;
+	}
+	if (block.kind === 'table') {
+		const tableTitle = block.title ?? 'Table';
+		const tableText = block.text ?? '';
+		return tableTitle + (tableText ? ': ' + tableText : '');
+	}
 	const text = block.text ?? block.expression ?? '';
+	if (!text.trim() && !title.trim()) {
+		console.warn('[XMCD] empty_block_content', context);
+	}
 	return `${title}${text}`;
 }
 
@@ -60,17 +85,37 @@ function buildRegions(solutionDoc: SolutionDocumentV1): XmcdRegion[] {
 		pushRegion(solutionDoc.summary, 28);
 	}
 
-	for (const section of solutionDoc.sections) {
+	for (const [sectionIndex, section] of solutionDoc.sections.entries()) {
 		pushRegion(section.title, 26);
 		if (section.blocks.length === 0) {
 			pushRegion(solutionDoc.locale === 'ru' ? 'Раздел пуст.' : 'Section is empty.', 22);
 			continue;
 		}
-		for (const block of section.blocks) {
-			const lines = normalizeLineBreaks(blockToText(block));
-			const text = lines.join('\n');
-			const dynamicHeight = Math.min(180, Math.max(24, lines.length * 18));
-			pushRegion(text, dynamicHeight);
+		for (const [blockIndex, block] of section.blocks.entries()) {
+			const context: XmcdBlockContext = {
+				sectionId: section.id,
+				blockId: block.id,
+				sectionIndex,
+				blockIndex,
+				kind: block.kind
+			};
+			try {
+				const lines = normalizeLineBreaks(blockToText(block, context));
+				const text = lines.join('\n');
+				const dynamicHeight = Math.min(180, Math.max(24, lines.length * 18));
+				pushRegion(text, dynamicHeight);
+			} catch (err) {
+				console.error('[XMCD] block_serialization_failed', {
+					...context,
+					error: err instanceof Error ? err.message : String(err)
+				});
+				pushRegion(
+					solutionDoc.locale === 'ru'
+						? 'Шаг пропущен из-за ошибки сериализации.'
+						: 'Step omitted due to serialization error.',
+					24
+				);
+			}
 		}
 	}
 
@@ -92,7 +137,17 @@ export function buildXmcdFromSolutionDocument(
 	solutionDoc: SolutionDocumentV1,
 	options?: { author?: string; title?: string }
 ): string {
-	const regions = buildRegions(solutionDoc);
+	let regions: XmcdRegion[];
+	try {
+		regions = buildRegions(solutionDoc);
+	} catch (err) {
+		console.error('[XMCD] build_regions_failed', {
+			sections: solutionDoc.sections.length,
+			error: err instanceof Error ? err.message : String(err)
+		});
+		throw err;
+	}
+
 	const documentId = randomUUID();
 	const versionId = randomUUID();
 	const parentVersionId = randomUUID();
@@ -122,4 +177,3 @@ export function buildXmcdFromSolutionDocument(
 </worksheet>
 `;
 }
-

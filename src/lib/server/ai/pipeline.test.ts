@@ -40,6 +40,7 @@ describe('runPipeline status sink', () => {
 
 	it('awaits async status callbacks before continuing pipeline steps', async () => {
 		let stage = 'initial';
+		let statusCount = 0;
 
 		routeQuestionMock.mockImplementation(async () => {
 			expect(stage).toBe('route-status-finished');
@@ -60,11 +61,15 @@ describe('runPipeline status sink', () => {
 		});
 
 		await runPipeline('test message', [], async (event) => {
-			if (event.type === 'status' && event.message === 'Анализ задачи...') {
+			if (event.type !== 'status') return;
+			if (statusCount === 0) {
+				statusCount += 1;
 				await Promise.resolve();
 				stage = 'route-status-finished';
+				return;
 			}
-			if (event.type === 'status' && event.message === 'Формирование ответа...') {
+			if (statusCount === 1) {
+				statusCount += 1;
 				await Promise.resolve();
 				stage = 'final-status-finished';
 			}

@@ -136,7 +136,7 @@ function launchSchemaSolveInBackground(params: {
 						executionLogs: resultEvent.executionLogs ?? null,
 						graphData: resultEvent.graphData ? JSON.stringify(resultEvent.graphData) : undefined,
 						schemaData: resultEvent.schemaData ? JSON.stringify(resultEvent.schemaData) : undefined,
-						solutionDoc: resultEvent.solutionDoc ? JSON.stringify(resultEvent.solutionDoc) : undefined,
+						solutionDoc: resultEvent.solutionDoc ?? undefined,
 						schemaVersion: resultEvent.schemaVersion ?? params.schemaVersion,
 						usedModels: resultEvent.usedModels ? JSON.stringify(resultEvent.usedModels) : undefined
 					}

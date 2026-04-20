@@ -282,7 +282,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 									executionLogs: event.executionLogs ?? null,
 									graphData: event.graphData ? JSON.stringify(event.graphData) : undefined,
 									schemaData: event.schemaData ? JSON.stringify(event.schemaData) : undefined,
-									solutionDoc: event.solutionDoc ? JSON.stringify(event.solutionDoc) : undefined,
+									solutionDoc: event.solutionDoc ?? undefined,
 									schemaDescription:
 										typeof event.schemaDescription === 'string' ? event.schemaDescription : undefined,
 									schemaVersion: event.schemaVersion ?? undefined,

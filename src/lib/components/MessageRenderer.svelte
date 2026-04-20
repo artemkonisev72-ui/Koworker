@@ -18,6 +18,7 @@
 		normalizeSolutionDocument,
 		type SolutionDocumentV1
 	} from '$lib/solution/document.js';
+	import { presentSolutionDocument } from '$lib/solution/presenter.js';
 	interface GraphGroup {
 		memberId: string | null;
 		items: GraphData[];
@@ -72,7 +73,14 @@
 	let solutionDoc = $derived.by(() => {
 		if (!message.solutionDoc) return null as SolutionDocumentV1 | null;
 		const raw = typeof message.solutionDoc === 'string' ? parseJsonSafe(message.solutionDoc) : message.solutionDoc;
-		return normalizeSolutionDocument(raw);
+		const normalized = normalizeSolutionDocument(raw);
+		if (!normalized) return null as SolutionDocumentV1 | null;
+		const sourceMeta = isRecord(normalized.meta) ? normalized.meta.source : null;
+		const source =
+			sourceMeta === 'trace' || sourceMeta === 'fallback' || sourceMeta === 'legacy'
+				? sourceMeta
+				: 'legacy';
+		return presentSolutionDocument(normalized, { source });
 	});
 
 	let exportActions = $derived.by(() => {
@@ -126,6 +134,10 @@
 		} catch {
 			return '';
 		}
+	}
+
+	function solutionDebugLabel(locale: 'ru' | 'en'): string {
+		return locale === 'ru' ? 'Технические детали' : 'Technical details';
 	}
 
 	function normalizeStructureKind(value: unknown): StructureKind {
@@ -847,7 +859,9 @@
 						<div class="solution-doc-section-title">{section.title}</div>
 
 						{#if section.blocks.length === 0}
-							<div class="solution-doc-empty">No steps in this section.</div>
+							<div class="solution-doc-empty">
+								{solutionDoc.locale === 'ru' ? 'В этом разделе нет шагов.' : 'No steps in this section.'}
+							</div>
 						{:else}
 							{#each section.blocks as block}
 								<article class="solution-doc-block" data-kind={block.kind}>
@@ -863,11 +877,16 @@
 									{#if block.value}
 										<div class="solution-doc-value">{block.value}</div>
 									{/if}
-									{#if block.code}
-										<pre class="solution-doc-code"><code>{block.code}</code></pre>
-									{/if}
-									{#if block.data}
-										<pre class="solution-doc-data"><code>{stringifyBlockData(block.data)}</code></pre>
+									{#if block.code || block.data}
+										<details class="solution-doc-debug">
+											<summary>{solutionDebugLabel(solutionDoc.locale)}</summary>
+											{#if block.code}
+												<pre class="solution-doc-code"><code>{block.code}</code></pre>
+											{/if}
+											{#if block.data}
+												<pre class="solution-doc-data"><code>{stringifyBlockData(block.data)}</code></pre>
+											{/if}
+										</details>
 									{/if}
 								</article>
 							{/each}
@@ -1069,6 +1088,18 @@
 		overflow-x: auto;
 		font-size: 0.75rem;
 		line-height: 1.35;
+	}
+
+	.solution-doc-debug {
+		display: flex;
+		flex-direction: column;
+		gap: 0.45rem;
+	}
+
+	.solution-doc-debug > summary {
+		cursor: pointer;
+		font-size: 0.74rem;
+		color: var(--text-secondary);
 	}
 
 	.models-attribution {

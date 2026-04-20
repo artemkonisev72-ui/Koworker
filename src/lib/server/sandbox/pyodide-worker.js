@@ -59,11 +59,11 @@ class _TraceHelper:
             "sections": []
         }
         self._current_section = None
-        self.section("Решение")
+        self.section("Solution")
 
     def _ensure_section(self):
         if self._current_section is None:
-            self.section("Решение")
+            self.section("Solution")
         return self._current_section
 
     def _format(self, value):
@@ -116,6 +116,8 @@ class _TraceHelper:
         return self._add_block(
             "definition",
             {
+                "title": "Definition",
+                "text": "Define notation.",
                 "expression": f"{self._format(name)} := {self._format(expr)}"
             }
         )
@@ -127,27 +129,46 @@ class _TraceHelper:
             expression = self._format(lhs)
         else:
             expression = f"{self._format(lhs)} = {self._format(rhs)}"
-        return self._add_block("equation", {"expression": expression})
+        return self._add_block(
+            "equation",
+            {
+                "title": "Equation",
+                "text": "Apply relation.",
+                "expression": expression
+            }
+        )
 
     def solve(self, target, variable=None, result=None):
-        payload = {"expression": self._format(target)}
+        payload = {
+            "title": "Solve",
+            "text": "Solve for target quantity.",
+            "expression": self._format(target)
+        }
         if variable is not None:
-            payload["title"] = f"solve for {self._format(variable)}"
+            payload["text"] = f"Solve for {self._format(variable)}"
         if result is not None:
             payload["value"] = self._format(result)
         return self._add_block("solve", payload)
 
     def result(self, label, value):
+        label_text = self._format(label)
         return self._add_block(
             "result",
             {
-                "title": self._format(label),
+                "title": "Answer",
+                "text": label_text,
                 "value": self._format(value)
             }
         )
 
     def code(self, code_text):
-        return self._add_block("code", {"code": self._format(code_text)})
+        return self._add_block(
+            "code",
+            {
+                "title": "Technical details",
+                "code": self._format(code_text)
+            }
+        )
 
     def export(self):
         return self._doc
@@ -212,3 +233,4 @@ init().catch((err) => {
   parentPort.postMessage({ type: "init_error", error: String(err) });
   process.exit(1);
 });
+

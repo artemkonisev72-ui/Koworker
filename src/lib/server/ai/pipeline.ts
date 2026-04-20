@@ -29,6 +29,7 @@ import {
 	normalizeSolutionDocument,
 	type SolutionDocumentV1
 } from '$lib/solution/document.js';
+import { presentSolutionDocument } from '$lib/solution/presenter.js';
 
 export type PipelineStatus =
 	| { type: 'ping' }
@@ -84,6 +85,103 @@ const APPROVED_SCHEMA_MARKER = '\n\n[APPROVED_SCHEMA_JSON]\n';
 const SOLVER_MODEL_MARKER = '\n\n[SOLVER_MODEL_JSON]\n';
 
 type FinalizerPayloadMode = 'normal' | 'compact' | 'minimal';
+
+const TRACE_PREAMBLE = `# ── trace helper (auto-injected) ──────────────────────────────────
+import json as _json
+
+class _SolutionTrace:
+    def __init__(self):
+        self._sections = []
+        self._current = None
+        self._block_counter = 0
+
+    def _ensure_section(self):
+        if self._current is None:
+            self.section("Решение")
+
+    def _next_block_id(self):
+        self._block_counter += 1
+        return f"b{self._block_counter}"
+
+    def section(self, title):
+        self._current = {
+            "id": f"s{len(self._sections) + 1}",
+            "title": str(title),
+            "blocks": []
+        }
+        self._sections.append(self._current)
+
+    def note(self, text, title=None):
+        self._ensure_section()
+        block = {"id": self._next_block_id(), "kind": "note", "text": str(text)}
+        if title is not None:
+            block["title"] = str(title)
+        self._current["blocks"].append(block)
+
+    def define(self, name, expression, value=None, title=None):
+        self._ensure_section()
+        block = {
+            "id": self._next_block_id(),
+            "kind": "definition",
+            "title": str(title) if title else str(name),
+            "expression": str(expression)
+        }
+        if value is not None:
+            block["value"] = str(value)
+        self._current["blocks"].append(block)
+
+    def equation(self, lhs, rhs=None, title=None):
+        self._ensure_section()
+        if rhs is not None:
+            expr = f"{lhs} = {rhs}"
+        else:
+            expr = str(lhs)
+        block = {"id": self._next_block_id(), "kind": "equation", "expression": expr}
+        if title is not None:
+            block["title"] = str(title)
+        self._current["blocks"].append(block)
+
+    def solve(self, description, variable, result, title=None):
+        self._ensure_section()
+        block = {
+            "id": self._next_block_id(),
+            "kind": "solve",
+            "title": str(title) if title else str(description),
+            "expression": f"{variable}",
+            "value": str(result)
+        }
+        self._current["blocks"].append(block)
+
+    def result(self, label, value, title=None):
+        self._ensure_section()
+        block = {
+            "id": self._next_block_id(),
+            "kind": "result",
+            "text": str(label),
+            "value": str(value)
+        }
+        if title is not None:
+            block["title"] = str(title)
+        self._current["blocks"].append(block)
+
+    def code(self, code_text, title=None):
+        self._ensure_section()
+        block = {"id": self._next_block_id(), "kind": "code", "code": str(code_text)}
+        if title is not None:
+            block["title"] = str(title)
+        self._current["blocks"].append(block)
+
+    def export(self):
+        return {
+            "version": "solution-doc-1.0",
+            "locale": "ru",
+            "summary": "Подробное пошаговое решение задачи.",
+            "sections": self._sections
+        }
+
+trace = _SolutionTrace()
+# ── end trace helper ──────────────────────────────────────────────
+`;
 
 const FINALIZER_HISTORY_LIMIT = readIntEnv('FINALIZER_HISTORY_LIMIT', 2, 0, 6);
 const FINALIZER_HISTORY_ENTRY_MAX_CHARS = readIntEnv('FINALIZER_HISTORY_ENTRY_MAX_CHARS', 1200, 200, 6000);
@@ -910,7 +1008,14 @@ export async function runPipeline(
 			{ detailedSolution: detailedSolutionRequested }
 		);
 		usedModelsList.push(`${codeModel} (CodeGen): ${codeTokens.toLocaleString('ru-RU')} токенов`);
-		console.log('[Pipeline] Step 2 done, code length:', pythonCode.length);
+
+		// Inject trace preamble for detailed solutions
+		if (detailedSolutionRequested) {
+			pythonCode = TRACE_PREAMBLE + '\n' + pythonCode;
+			console.log('[Pipeline] Step 2: trace preamble injected, total code length:', pythonCode.length);
+		} else {
+			console.log('[Pipeline] Step 2 done, code length:', pythonCode.length);
+		}
 
 		// ── Шаг 3: Выполнение в Sandbox + Retry ──────────────────────────────
 		let lastError: string | null = null;
@@ -1043,7 +1148,7 @@ export async function runPipeline(
 			console.log('[Pipeline] Step 4: assembling detailed solution document...');
 			await emitStatus({ type: 'status', message: 'Сборка подробного решения...' });
 
-			const solutionDoc =
+			const rawSolutionDoc =
 				detailedSolutionDoc ??
 				buildFallbackSolutionDoc({
 					userMessage,
@@ -1052,6 +1157,9 @@ export async function runPipeline(
 					rawStdout,
 					graphData
 				});
+			const solutionDoc = presentSolutionDocument(rawSolutionDoc, {
+				source: detailedSolutionDoc ? 'trace' : 'fallback'
+			});
 			const content = summarizeSolutionDoc(solutionDoc);
 
 			await emitStatus({
