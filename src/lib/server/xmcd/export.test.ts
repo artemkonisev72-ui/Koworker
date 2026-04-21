@@ -135,4 +135,283 @@ describe('buildXmcdFromSolutionDocument', () => {
 		expect(xmcd).toContain('<ml:and/>');
 		expect(xmcd).toContain('subscript="1"');
 	});
+
+	it('does not render nested <ml:apply> as operator for call nodes', () => {
+		const doc: SolutionDocumentV1 = {
+			version: 'solution-doc-2.0',
+			locale: 'ru',
+			sections: [
+				{
+					id: 'section_1',
+					title: 'Solution',
+					blocks: [
+						{
+							id: 'block_1',
+							kind: 'equation',
+							mathAst: {
+								type: 'call',
+								fn: {
+									type: 'apply',
+									op: 'plus',
+									args: [{ type: 'id', name: 'x' }, { type: 'id', name: 'y' }]
+								},
+								args: [{ type: 'id', name: 'z' }]
+							}
+						}
+					]
+				}
+			]
+		};
+
+		const xmcd = buildXmcdFromSolutionDocument(doc);
+		expect(xmcd).not.toMatch(/<ml:apply>\s*<ml:apply>/);
+		expect(xmcd).toContain('<ml:id xml:space="preserve">x + y</ml:id>');
+	});
+
+	it('wraps multi-argument function calls into ml:sequence', () => {
+		const doc: SolutionDocumentV1 = {
+			version: 'solution-doc-2.0',
+			locale: 'ru',
+			sections: [
+				{
+					id: 'section_1',
+					title: 'Solution',
+					blocks: [
+						{
+							id: 'block_1',
+							kind: 'equation',
+							mathAst: {
+								type: 'call',
+								fn: { type: 'id', name: 'lsolve' },
+								args: [
+									{ type: 'id', name: 'M' },
+									{ type: 'id', name: 'v' }
+								]
+							}
+						}
+					]
+				}
+			]
+		};
+
+		const xmcd = buildXmcdFromSolutionDocument(doc);
+		expect(xmcd).toContain(
+			'<ml:apply><ml:id xml:space="preserve">lsolve</ml:id><ml:sequence><ml:id xml:space="preserve">M</ml:id><ml:id xml:space="preserve">v</ml:id></ml:sequence></ml:apply>'
+		);
+		expect(xmcd).not.toContain(
+			'<ml:apply><ml:id xml:space="preserve">lsolve</ml:id><ml:id xml:space="preserve">M</ml:id><ml:id xml:space="preserve">v</ml:id></ml:apply>'
+		);
+	});
+
+	it('folds n-ary arithmetic operators into binary apply trees', () => {
+		const doc: SolutionDocumentV1 = {
+			version: 'solution-doc-2.0',
+			locale: 'ru',
+			sections: [
+				{
+					id: 'section_1',
+					title: 'Solution',
+					blocks: [
+						{
+							id: 'block_1',
+							kind: 'equation',
+							mathAst: {
+								type: 'apply',
+								op: 'plus',
+								args: [
+									{ type: 'num', value: '1' },
+									{ type: 'num', value: '2' },
+									{ type: 'num', value: '3' }
+								]
+							}
+						}
+					]
+				}
+			]
+		};
+
+		const xmcd = buildXmcdFromSolutionDocument(doc);
+		expect(xmcd).toContain(
+			'<ml:apply><ml:plus/><ml:apply><ml:plus/><ml:real>1</ml:real><ml:real>2</ml:real></ml:apply><ml:real>3</ml:real></ml:apply>'
+		);
+		expect(xmcd).not.toContain(
+			'<ml:apply><ml:plus/><ml:real>1</ml:real><ml:real>2</ml:real><ml:real>3</ml:real></ml:apply>'
+		);
+	});
+
+	it('keeps derivative-style call trees schema-safe for Mathcad', () => {
+		const yOfX = {
+			type: 'call' as const,
+			fn: { type: 'id' as const, name: 'y' },
+			args: [{ type: 'id' as const, name: 'x' }]
+		};
+		const firstDerivative = {
+			type: 'call' as const,
+			fn: { type: 'id' as const, name: 'Derivative' },
+			args: [
+				yOfX,
+				{
+					type: 'call' as const,
+					fn: { type: 'id' as const, name: 'Tuple' },
+					args: [{ type: 'id' as const, name: 'x' }, { type: 'num' as const, value: '1' }]
+				}
+			]
+		};
+		const secondDerivative = {
+			type: 'call' as const,
+			fn: { type: 'id' as const, name: 'Derivative' },
+			args: [
+				yOfX,
+				{
+					type: 'call' as const,
+					fn: { type: 'id' as const, name: 'Tuple' },
+					args: [{ type: 'id' as const, name: 'x' }, { type: 'num' as const, value: '2' }]
+				}
+			]
+		};
+
+		const doc: SolutionDocumentV1 = {
+			version: 'solution-doc-2.0',
+			locale: 'ru',
+			sections: [
+				{
+					id: 'section_1',
+					title: 'Solution',
+					blocks: [
+						{
+							id: 'block_1',
+							kind: 'definition',
+							mathAst: {
+								type: 'define',
+								lhs: { type: 'id', name: 'ODE' },
+								rhs: {
+									type: 'apply',
+									op: 'equal',
+									args: [
+										{
+											type: 'apply',
+											op: 'plus',
+											args: [
+												{
+													type: 'apply',
+													op: 'mult',
+													args: [{ type: 'num', value: '-1' }, firstDerivative]
+												},
+												{
+													type: 'apply',
+													op: 'mult',
+													args: [{ type: 'num', value: '-2' }, yOfX]
+												},
+												secondDerivative
+											]
+										},
+										{ type: 'num', value: '4' }
+									]
+								}
+							}
+						}
+					]
+				}
+			]
+		};
+
+		const xmcd = buildXmcdFromSolutionDocument(doc);
+		expect((xmcd.match(/<ml:plus\/>/g) ?? []).length).toBe(2);
+		expect(xmcd).toContain('<ml:id xml:space="preserve">Derivative</ml:id><ml:sequence>');
+		expect(xmcd).not.toContain('<ml:id xml:space="preserve">Derivative</ml:id><ml:apply>');
+		expect(xmcd).toContain('<ml:id xml:space="preserve">Tuple</ml:id><ml:sequence>');
+		expect(xmcd).not.toContain('<ml:id xml:space="preserve">Tuple</ml:id><ml:id xml:space="preserve">x</ml:id>');
+	});
+
+	it('degrades unsafe math ids with spaces to text blocks', () => {
+		const doc: SolutionDocumentV1 = {
+			version: 'solution-doc-2.0',
+			locale: 'ru',
+			sections: [
+				{
+					id: 'section_1',
+					title: 'Solution',
+					blocks: [
+						{
+							id: 'block_1',
+							kind: 'definition',
+							title: 'Definition',
+							expression: 'L := Длина балки',
+							mathAst: {
+								type: 'define',
+								lhs: { type: 'id', name: 'L' },
+								rhs: { type: 'id', name: 'Длина балки' }
+							}
+						}
+					]
+				}
+			]
+		};
+
+		const xmcd = buildXmcdFromSolutionDocument(doc);
+		expect(xmcd).toContain('L := Длина балки');
+		expect(xmcd).not.toContain('<ml:define><ml:id xml:space="preserve">L</ml:id><ml:id xml:space="preserve">Длина балки</ml:id></ml:define>');
+	});
+
+	it('degrades text math nodes to text regions', () => {
+		const doc: SolutionDocumentV1 = {
+			version: 'solution-doc-2.0',
+			locale: 'ru',
+			sections: [
+				{
+					id: 'section_1',
+					title: 'Solution',
+					blocks: [
+						{
+							id: 'block_1',
+							kind: 'solve',
+							title: 'Solve',
+							expression: 'Реакции в заделке',
+							mathAst: {
+								type: 'text',
+								value: 'Реакции в заделке'
+							}
+						}
+					]
+				}
+			]
+		};
+
+		const xmcd = buildXmcdFromSolutionDocument(doc);
+		expect(xmcd).toContain('Реакции в заделке');
+		expect(xmcd).not.toContain('<math optimize="false" disable-calc="false"><ml:id xml:space="preserve">Реакции в заделке</ml:id></math>');
+	});
+
+	it('serializes rational num literals as division apply nodes', () => {
+		const doc: SolutionDocumentV1 = {
+			version: 'solution-doc-2.0',
+			locale: 'ru',
+			sections: [
+				{
+					id: 'section_1',
+					title: 'Solution',
+					blocks: [
+						{
+							id: 'block_1',
+							kind: 'equation',
+							mathAst: {
+								type: 'apply',
+								op: 'plus',
+								args: [
+									{ type: 'num', value: '1/2' },
+									{ type: 'num', value: '-1/2' }
+								]
+							}
+						}
+					]
+				}
+			]
+		};
+
+		const xmcd = buildXmcdFromSolutionDocument(doc);
+		expect(xmcd).toContain('<ml:apply><ml:div/><ml:real>1</ml:real><ml:real>2</ml:real></ml:apply>');
+		expect(xmcd).toContain('<ml:apply><ml:div/><ml:real>-1</ml:real><ml:real>2</ml:real></ml:apply>');
+		expect(xmcd).not.toContain('<ml:real>1/2</ml:real>');
+		expect(xmcd).not.toContain('<ml:real>-1/2</ml:real>');
+	});
 });

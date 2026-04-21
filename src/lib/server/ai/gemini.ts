@@ -11,6 +11,7 @@ import { parseSchemeIntentResponse } from '$lib/schema/intent.js';
 import type { SchemeUnderstandingV1 } from '$lib/schema/understanding.js';
 import { parseSchemeUnderstandingResponse } from '$lib/schema/understanding.js';
 import { detectPromptLanguage } from '$lib/server/schema/language.js';
+import { classifyGeminiError, computeRetryDelayMs, sleepMs } from './gemini-retry.js';
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -203,25 +204,59 @@ async function generateWithFallback(
 		effectiveChain
 	});
 
+	const MAX_ATTEMPTS_PER_MODEL = 3;
+	const RETRY_BASE_MS = 500;
+	const RETRY_MAX_MS = 4_000;
+	let lastError: unknown = null;
+
 	for (let i = 0; i < effectiveChain.length; i++) {
 		const model = effectiveChain[i];
-		try {
-			const { text, tokens } = await generate(model, messages);
-			console.log(`[Gemini] Using: ${model}${normalizedForcedModel ? ' (FORCED)' : ''}`);
-			return { text, model, tokens };
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			const isRetryable = ['400', '404', '429', '503', 'not found', 'NOT_FOUND', 'Model not supported'].some((token) =>
-				msg.includes(token)
-			);
-			if (isRetryable && i < effectiveChain.length - 1) {
-				console.warn(`[Gemini] Model ${model} unavailable, falling back...`);
-				continue;
+		for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_MODEL; attempt++) {
+			try {
+				const { text, tokens } = await generate(model, messages);
+				console.log(
+					`[Gemini] Using: ${model}${normalizedForcedModel ? ' (FORCED)' : ''} (attempt ${attempt}/${MAX_ATTEMPTS_PER_MODEL})`
+				);
+				return { text, model, tokens };
+			} catch (err) {
+				lastError = err;
+				const classification = classifyGeminiError(err);
+				const hasNextAttempt = attempt < MAX_ATTEMPTS_PER_MODEL;
+				const hasNextModel = i < effectiveChain.length - 1;
+
+				console.warn('[Gemini] Request failed', {
+					model,
+					attempt,
+					maxAttempts: MAX_ATTEMPTS_PER_MODEL,
+					reason: classification.reason,
+					retryable: classification.retryable,
+					nextModelAllowed: classification.shouldTryNextModel,
+					code: classification.code,
+					status: classification.status
+				});
+
+				if (classification.retryable && hasNextAttempt) {
+					const delayMs = computeRetryDelayMs(attempt, RETRY_BASE_MS, RETRY_MAX_MS);
+					console.warn(`[Gemini] Retrying model ${model} in ${delayMs}ms...`);
+					await sleepMs(delayMs);
+					continue;
+				}
+
+				if (classification.shouldTryNextModel && hasNextModel) {
+					if (classification.retryable) {
+						console.warn(`[Gemini] Retries exhausted for ${model}, falling back to next model...`);
+					} else {
+						console.warn(`[Gemini] Model ${model} is unavailable, falling back to next model...`);
+					}
+					break;
+				}
+
+				throw err;
 			}
-			throw err;
 		}
 	}
 
+	if (lastError) throw lastError;
 	throw new Error(`[Gemini] All models exhausted for ${forcedModel || 'chain'}`);
 }
 

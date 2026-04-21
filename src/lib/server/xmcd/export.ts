@@ -32,6 +32,24 @@ interface XmcdBlockContext {
 	kind: SolutionBlockV1['kind'];
 }
 
+type XmcdOperatorFoldDirection = 'left' | 'right';
+
+interface XmcdOperatorSpec {
+	tag: string;
+	minArgs: number;
+	maxArgs: number;
+	foldDirection?: XmcdOperatorFoldDirection;
+}
+
+interface XmcdMathNodeValidation {
+	ok: boolean;
+	reason?: string;
+}
+
+type XmcdNumericLiteral =
+	| { kind: 'real'; value: string }
+	| { kind: 'fraction'; numerator: string; denominator: string };
+
 const XMCD_WORKSHEET_VERSION = '3.0.3';
 const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
 const PAGE_WIDTH = 612;
@@ -45,6 +63,22 @@ const REGION_VERTICAL_GAP = 6;
 const TEXT_BASELINE_OFFSET = 9.75;
 const MAX_REGION_HEIGHT = 260;
 const ESTIMATED_CHAR_WIDTH = 5.8;
+const XMCD_OPERATOR_SPECS: Record<string, XmcdOperatorSpec> = {
+	plus: { tag: 'plus', minArgs: 2, maxArgs: 2, foldDirection: 'left' },
+	minus: { tag: 'minus', minArgs: 1, maxArgs: 2, foldDirection: 'left' },
+	mult: { tag: 'mult style="auto-select"', minArgs: 2, maxArgs: 2, foldDirection: 'left' },
+	div: { tag: 'div', minArgs: 2, maxArgs: 2, foldDirection: 'left' },
+	pow: { tag: 'pow', minArgs: 2, maxArgs: 2, foldDirection: 'right' },
+	equal: { tag: 'equal', minArgs: 2, maxArgs: 2, foldDirection: 'left' },
+	lessThan: { tag: 'lessThan', minArgs: 2, maxArgs: 2, foldDirection: 'left' },
+	lessOrEqual: { tag: 'lessOrEqual', minArgs: 2, maxArgs: 2, foldDirection: 'left' },
+	greaterThan: { tag: 'greaterThan', minArgs: 2, maxArgs: 2, foldDirection: 'left' },
+	greaterOrEqual: { tag: 'greaterOrEqual', minArgs: 2, maxArgs: 2, foldDirection: 'left' },
+	sqrt: { tag: 'sqrt', minArgs: 1, maxArgs: 1 },
+	and: { tag: 'and', minArgs: 2, maxArgs: 2, foldDirection: 'left' },
+	or: { tag: 'or', minArgs: 2, maxArgs: 2, foldDirection: 'left' },
+	not: { tag: 'not', minArgs: 1, maxArgs: 1 }
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -96,6 +130,140 @@ function estimateMathRegionSize(mathAst: MathNodeV1): { width: number; height: n
 		width,
 		height: Math.min(MAX_REGION_HEIGHT, height)
 	};
+}
+
+function parseNumericLiteral(value: string): XmcdNumericLiteral | null {
+	const trimmed = value.trim();
+	if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) {
+		return { kind: 'real', value: trimmed };
+	}
+
+	const fractionMatch = trimmed.match(/^([+-]?\d+)\/([+-]?\d+)$/);
+	if (!fractionMatch) return null;
+
+	try {
+		let numerator = BigInt(fractionMatch[1]);
+		let denominator = BigInt(fractionMatch[2]);
+		if (denominator === 0n) return null;
+		if (denominator < 0n) {
+			numerator = -numerator;
+			denominator = -denominator;
+		}
+		return {
+			kind: 'fraction',
+			numerator: numerator.toString(),
+			denominator: denominator.toString()
+		};
+	} catch {
+		return null;
+	}
+}
+
+function isSafeMathIdentifier(value: string): boolean {
+	const trimmed = value.trim();
+	if (trimmed.length === 0) return false;
+	// Mathcad identifiers with spaces frequently break file opening; keep exported math ids strict.
+	return !/\s/.test(trimmed);
+}
+
+function validateMathNodeForXmcd(node: MathNodeV1, depth = 0): XmcdMathNodeValidation {
+	if (depth > 64) return { ok: false, reason: 'max_depth_exceeded' };
+
+	if (node.type === 'id') {
+		if (!isSafeMathIdentifier(node.name)) return { ok: false, reason: 'unsafe_id_name' };
+		if (node.subscript && /\s/.test(node.subscript)) return { ok: false, reason: 'unsafe_id_subscript' };
+		return { ok: true };
+	}
+
+	if (node.type === 'num') {
+		return parseNumericLiteral(node.value) ? { ok: true } : { ok: false, reason: 'invalid_num_literal' };
+	}
+
+	if (node.type === 'text') {
+		// Plain text AST nodes are better rendered as text regions, not math AST.
+		return { ok: false, reason: 'text_node' };
+	}
+
+	if (node.type === 'apply') {
+		if (node.op.trim().length === 0 || /\s/.test(node.op)) return { ok: false, reason: 'unsafe_apply_op' };
+		for (const arg of node.args) {
+			const validation = validateMathNodeForXmcd(arg, depth + 1);
+			if (!validation.ok) return validation;
+		}
+		return { ok: true };
+	}
+
+	if (node.type === 'define') {
+		const leftValidation = validateMathNodeForXmcd(node.lhs, depth + 1);
+		if (!leftValidation.ok) return leftValidation;
+		return validateMathNodeForXmcd(node.rhs, depth + 1);
+	}
+
+	if (node.type === 'function_def') {
+		const nameValidation = validateMathNodeForXmcd(node.name, depth + 1);
+		if (!nameValidation.ok) return nameValidation;
+		for (const entry of node.params) {
+			const paramValidation = validateMathNodeForXmcd(entry, depth + 1);
+			if (!paramValidation.ok) return paramValidation;
+		}
+		return validateMathNodeForXmcd(node.body, depth + 1);
+	}
+
+	if (node.type === 'call') {
+		const fnValidation = validateMathNodeForXmcd(node.fn, depth + 1);
+		if (!fnValidation.ok) return fnValidation;
+		for (const entry of node.args) {
+			const argValidation = validateMathNodeForXmcd(entry, depth + 1);
+			if (!argValidation.ok) return argValidation;
+		}
+		return { ok: true };
+	}
+
+	if (node.type === 'integral') {
+		const variableValidation = validateMathNodeForXmcd(node.variable, depth + 1);
+		if (!variableValidation.ok) return variableValidation;
+		const lowerValidation = validateMathNodeForXmcd(node.lower, depth + 1);
+		if (!lowerValidation.ok) return lowerValidation;
+		const upperValidation = validateMathNodeForXmcd(node.upper, depth + 1);
+		if (!upperValidation.ok) return upperValidation;
+		return validateMathNodeForXmcd(node.body, depth + 1);
+	}
+
+	if (node.type === 'matrix') {
+		if (node.rows <= 0 || node.cols <= 0) return { ok: false, reason: 'invalid_matrix_shape' };
+		for (const entry of node.values) {
+			const validation = validateMathNodeForXmcd(entry, depth + 1);
+			if (!validation.ok) return validation;
+		}
+		return { ok: true };
+	}
+
+	if (node.type === 'program') {
+		for (const branch of node.branches) {
+			const conditionValidation = validateMathNodeForXmcd(branch.condition, depth + 1);
+			if (!conditionValidation.ok) return conditionValidation;
+			const valueValidation = validateMathNodeForXmcd(branch.value, depth + 1);
+			if (!valueValidation.ok) return valueValidation;
+		}
+		if (node.otherwise) {
+			return validateMathNodeForXmcd(node.otherwise, depth + 1);
+		}
+		return { ok: true };
+	}
+
+	if (node.type === 'eval') {
+		return validateMathNodeForXmcd(node.expr, depth + 1);
+	}
+
+	if (node.type === 'lambda') {
+		for (const entry of node.params) {
+			const paramValidation = validateMathNodeForXmcd(entry, depth + 1);
+			if (!paramValidation.ok) return paramValidation;
+		}
+		return validateMathNodeForXmcd(node.body, depth + 1);
+	}
+
+	return { ok: false, reason: 'unknown_node_type' };
 }
 
 function blockToText(block: SolutionBlockV1, context: XmcdBlockContext): string {
@@ -230,12 +398,25 @@ function buildRegions(solutionDoc: SolutionDocumentV1): XmcdRegion[] {
 				if (block.title && block.kind !== 'note') {
 					pushTextRegion(block.title, TEXT_LINE_HEIGHT);
 				}
-				if (mathNode && block.kind !== 'note' && block.kind !== 'table' && block.kind !== 'code') {
+				const validation = mathNode ? validateMathNodeForXmcd(mathNode) : null;
+				const canRenderMath =
+					Boolean(mathNode) &&
+					block.kind !== 'note' &&
+					block.kind !== 'table' &&
+					block.kind !== 'code' &&
+					Boolean(validation?.ok);
+				if (canRenderMath && mathNode) {
 					pushMathRegion(mathNode);
 					if (block.text && block.kind === 'result') {
 						pushTextRegion(block.text, TEXT_LINE_HEIGHT);
 					}
 				} else {
+					if (mathNode && validation && !validation.ok) {
+						console.warn('[XMCD] math_block_degraded_to_text', {
+							...context,
+							reason: validation.reason
+						});
+					}
 					const text = normalizeLineBreaks(blockToText(block, context)).join('\n');
 					pushTextRegion(text);
 				}
@@ -256,6 +437,61 @@ function buildRegions(solutionDoc: SolutionDocumentV1): XmcdRegion[] {
 	return regions;
 }
 
+function renderOperatorApplyNode(tag: string, args: string[]): string {
+	return `<ml:apply><ml:${tag}/>${args.join('')}</ml:apply>`;
+}
+
+function renderFunctionLikeApply(op: string, args: string[]): string {
+	return `<ml:apply><ml:id xml:space="preserve">${xmlEscape(op)}</ml:id>${args.join('')}</ml:apply>`;
+}
+
+function foldOperatorApply(tag: string, args: string[], direction: XmcdOperatorFoldDirection): string {
+	if (direction === 'right') {
+		let acc = renderOperatorApplyNode(tag, [args[args.length - 2], args[args.length - 1]]);
+		for (let index = args.length - 3; index >= 0; index -= 1) {
+			acc = renderOperatorApplyNode(tag, [args[index], acc]);
+		}
+		return acc;
+	}
+
+	let acc = renderOperatorApplyNode(tag, [args[0], args[1]]);
+	for (let index = 2; index < args.length; index += 1) {
+		acc = renderOperatorApplyNode(tag, [acc, args[index]]);
+	}
+	return acc;
+}
+
+function renderOperatorApply(op: string, args: string[], context: XmcdBlockContext): string {
+	const spec = XMCD_OPERATOR_SPECS[op];
+	if (!spec) return renderFunctionLikeApply(op, args);
+
+	if (args.length < spec.minArgs) {
+		console.warn('[XMCD] operator_args_insufficient', {
+			...context,
+			op,
+			argCount: args.length,
+			minArgs: spec.minArgs
+		});
+		return renderFunctionLikeApply(op, args);
+	}
+
+	if (args.length <= spec.maxArgs) {
+		return renderOperatorApplyNode(spec.tag, args);
+	}
+
+	if (!spec.foldDirection) {
+		console.warn('[XMCD] operator_args_excess', {
+			...context,
+			op,
+			argCount: args.length,
+			maxArgs: spec.maxArgs
+		});
+		return renderFunctionLikeApply(op, args);
+	}
+
+	return foldOperatorApply(spec.tag, args, spec.foldDirection);
+}
+
 function renderMathNode(node: MathNodeV1, context: XmcdBlockContext): string {
 	if (node.type === 'id') {
 		const subscriptAttr = node.subscript ? ` subscript="${xmlEscape(node.subscript)}"` : '';
@@ -263,7 +499,18 @@ function renderMathNode(node: MathNodeV1, context: XmcdBlockContext): string {
 	}
 
 	if (node.type === 'num') {
-		return `<ml:real>${xmlEscape(node.value)}</ml:real>`;
+		const numeric = parseNumericLiteral(node.value);
+		if (!numeric) {
+			console.warn('[XMCD] invalid_num_literal_fallback', {
+				...context,
+				value: node.value
+			});
+			return `<ml:id xml:space="preserve">${xmlEscape(node.value)}</ml:id>`;
+		}
+		if (numeric.kind === 'real') {
+			return `<ml:real>${xmlEscape(numeric.value)}</ml:real>`;
+		}
+		return `<ml:apply><ml:div/><ml:real>${xmlEscape(numeric.numerator)}</ml:real><ml:real>${xmlEscape(numeric.denominator)}</ml:real></ml:apply>`;
 	}
 
 	if (node.type === 'text') {
@@ -272,28 +519,8 @@ function renderMathNode(node: MathNodeV1, context: XmcdBlockContext): string {
 
 	if (node.type === 'apply') {
 		const op = node.op.trim();
-		const opTagMap: Record<string, string> = {
-			plus: 'plus',
-			minus: 'minus',
-			mult: 'mult style="auto-select"',
-			div: 'div',
-			pow: 'pow',
-			equal: 'equal',
-			lessThan: 'lessThan',
-			lessOrEqual: 'lessOrEqual',
-			greaterThan: 'greaterThan',
-			greaterOrEqual: 'greaterOrEqual',
-			sqrt: 'sqrt',
-			and: 'and',
-			or: 'or',
-			not: 'not'
-		};
-		const opTag = opTagMap[op] ?? null;
-		const args = node.args.map((arg) => renderMathNode(arg, context)).join('');
-		if (opTag) {
-			return `<ml:apply><ml:${opTag}/>${args}</ml:apply>`;
-		}
-		return `<ml:apply><ml:id xml:space="preserve">${xmlEscape(op)}</ml:id>${args}</ml:apply>`;
+		const args = node.args.map((arg) => renderMathNode(arg, context));
+		return renderOperatorApply(op, args, context);
 	}
 
 	if (node.type === 'define') {
@@ -306,9 +533,25 @@ function renderMathNode(node: MathNodeV1, context: XmcdBlockContext): string {
 	}
 
 	if (node.type === 'call') {
-		const fn = renderMathNode(node.fn, context);
-		const args = node.args.map((entry) => renderMathNode(entry, context)).join('');
-		return `<ml:apply>${fn}${args}</ml:apply>`;
+		let fn: string;
+		if (node.fn.type === 'id') {
+			fn = renderMathNode(node.fn, context);
+		} else if (node.fn.type === 'text') {
+			fn = `<ml:id xml:space="preserve">${xmlEscape(node.fn.value)}</ml:id>`;
+		} else {
+			// Mathcad apply requires the first child to be an operator/id, not nested apply.
+			const fallbackFnText = mathAstToText(node.fn) ?? 'fn';
+			console.warn('[XMCD] call_fn_degraded_to_id', {
+				...context,
+				callFnType: node.fn.type
+			});
+			fn = `<ml:id xml:space="preserve">${xmlEscape(fallbackFnText)}</ml:id>`;
+		}
+		const renderedArgs = node.args.map((entry) => renderMathNode(entry, context));
+		if (renderedArgs.length <= 1) {
+			return `<ml:apply>${fn}${renderedArgs.join('')}</ml:apply>`;
+		}
+		return `<ml:apply>${fn}<ml:sequence>${renderedArgs.join('')}</ml:sequence></ml:apply>`;
 	}
 
 	if (node.type === 'integral') {

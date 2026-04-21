@@ -25,6 +25,10 @@ import {
 	type ChatProcessingHandle
 } from '$lib/server/chat-processing.js';
 import { prisma } from '$lib/server/db.js';
+import {
+	buildDiagnosticDetailedContent,
+	buildDiagnosticDetailedSolutionDoc
+} from '$lib/solution/failure.js';
 import { json, error } from '@sveltejs/kit';
 
 const MAX_MESSAGE_LENGTH = 8_000;
@@ -260,6 +264,49 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				async (event) => {
 					if (event.type === 'status') {
 						processingHandle.updateStatus(event.message);
+					}
+					if (event.type === 'error' && body.detailedSolution === true) {
+						if (request.signal.aborted) {
+							console.log('[SSE] Request aborted, skipping DB save for detailed diagnostic result');
+							return;
+						}
+						processingHandle.updateStatus('Сохраняю диагностический результат...');
+						const diagnosticSolutionDoc = buildDiagnosticDetailedSolutionDoc({
+							userMessage: message,
+							errorMessage: event.message,
+							stage: 'pipeline'
+						});
+						const diagnosticContent = buildDiagnosticDetailedContent({
+							userMessage: message,
+							errorMessage: event.message,
+							stage: 'pipeline'
+						});
+
+						try {
+							const assistantMessage = await (prisma as any).message.create({
+								data: {
+									chatId,
+									role: 'ASSISTANT',
+									content: diagnosticContent,
+									solutionDoc: diagnosticSolutionDoc
+								}
+							});
+
+							send({
+								type: 'result',
+								content: diagnosticContent,
+								solutionDoc: diagnosticSolutionDoc,
+								messageId: assistantMessage.id
+							});
+						} catch (dbErr) {
+							console.error('[SSE] DB save error for diagnostic detailed result:', dbErr);
+							send({
+								type: 'result',
+								content: diagnosticContent,
+								solutionDoc: diagnosticSolutionDoc
+							});
+						}
+						return;
 					}
 					if (event.type !== 'result') {
 						send(event);

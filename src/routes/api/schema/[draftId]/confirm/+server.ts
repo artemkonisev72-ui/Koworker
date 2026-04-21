@@ -16,6 +16,7 @@ import {
 	validateSchemeUnderstanding
 } from '$lib/schema/understanding.js';
 import { buildAdaptiveSchemeDescription } from '$lib/server/schema/description.js';
+import { persistSchemaSolveFailure } from '$lib/server/schema/solve-failure.js';
 import { buildSolverModelFromSchema, type SolverModelV1 } from '$lib/solver/model.js';
 import {
 	acquireChatProcessing,
@@ -150,18 +151,15 @@ function launchSchemaSolveInBackground(params: {
 				error: messageText,
 				durationMs: Date.now() - params.startedAt
 			});
-			await db.taskDraft.update({ where: { id: params.draftId }, data: { status: 'FAILED' } }).catch(() => undefined);
-			await db.message
-				.create({
-					data: {
-						chatId: params.chatId,
-						draftId: params.draftId,
-						role: 'ASSISTANT',
-						content: `Schema-confirmed solve failed: ${messageText}`,
-						schemaVersion: params.schemaVersion
-					}
-				})
-				.catch(() => undefined);
+			await persistSchemaSolveFailure({
+				db,
+				draftId: params.draftId,
+				chatId: params.chatId,
+				schemaVersion: params.schemaVersion,
+				userMessage: params.userMessage,
+				errorMessage: messageText,
+				detailedSolution: params.detailedSolution === true
+			});
 		} finally {
 			params.processingHandle.release();
 			logSchemaCheck('confirm.finished', {
