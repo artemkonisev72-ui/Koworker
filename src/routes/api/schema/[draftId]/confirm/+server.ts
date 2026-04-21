@@ -112,6 +112,7 @@ function launchSchemaSolveInBackground(params: {
 				draftId: params.draftId,
 				contentLength: resultEvent.content.length,
 				graphs: resultEvent.graphData?.length ?? 0,
+				exactAnswers: resultEvent.exactAnswers?.length ?? 0,
 				modelEntries: resultEvent.usedModels?.length ?? 0
 			});
 
@@ -131,7 +132,12 @@ function launchSchemaSolveInBackground(params: {
 						generatedCode: resultEvent.generatedCode ?? null,
 						executionLogs: resultEvent.executionLogs ?? null,
 						graphData: resultEvent.graphData ? JSON.stringify(resultEvent.graphData) : undefined,
+						exactAnswers: resultEvent.exactAnswers ? JSON.stringify(resultEvent.exactAnswers) : undefined,
 						schemaData: resultEvent.schemaData ? JSON.stringify(resultEvent.schemaData) : undefined,
+						schemaDescription:
+							typeof resultEvent.schemaDescription === 'string'
+								? resultEvent.schemaDescription
+								: undefined,
 						schemaVersion: resultEvent.schemaVersion ?? params.schemaVersion,
 						usedModels: resultEvent.usedModels ? JSON.stringify(resultEvent.usedModels) : undefined
 					}

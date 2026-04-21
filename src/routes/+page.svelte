@@ -26,6 +26,7 @@
 		role: 'USER' | 'ASSISTANT' | 'SYSTEM';
 		content: string;
 		graphData?: GraphData[] | string | null;
+		exactAnswers?: unknown;
 		schemaData?: unknown;
 		schemaDescription?: string | null;
 		schemaVersion?: string | null;
@@ -734,6 +735,7 @@
 				const nextMessages = data.map((m: any) => ({
 					...m,
 					graphData: typeof m.graphData === 'string' ? JSON.parse(m.graphData) : m.graphData,
+					exactAnswers: parseMaybeJson(m.exactAnswers),
 					schemaData: parseMaybeJson(m.schemaData),
 					schemaDescription: typeof m.schemaDescription === 'string' ? m.schemaDescription : null,
 					schemaVersion: typeof m.schemaVersion === 'string' ? m.schemaVersion : null,
@@ -1221,6 +1223,7 @@
 							messageId?: string;
 							content?: string;
 							graphData?: GraphData[];
+							exactAnswers?: unknown;
 							schemaData?: unknown;
 							schemaDescription?: string;
 							schemaVersion?: string;
@@ -1249,6 +1252,7 @@
 							patchMessageById(originChatId, assistantMessageId, {
 								content: event.content ?? '',
 								graphData: event.graphData ?? null,
+								exactAnswers: event.exactAnswers ?? null,
 								schemaData: event.schemaData ?? null,
 								schemaDescription: event.schemaDescription ?? null,
 								schemaVersion: event.schemaVersion ?? null,

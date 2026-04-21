@@ -1,12 +1,11 @@
 /**
  * pipeline.ts
- * Стейт-машина пайплайна решения задачи.
+ * Solver pipeline:
+ *   Router -> CodeGen -> Sandbox -> Retry -> Finalizer
  *
- * Архитектура (строго по спецификации):
- *   Complexity → Router (Flash) → CodeGen (Pro) → Sandbox (Pyodide) → [Retry ≤2] → Assembler (Flash)
- *
- * Модель выбирается автоматически на основе оценки сложности (1-4 tier).
- * При недоступности модели — автоматический откат на модель ниже.
+ * Updated contract:
+ *   CodeGen must return SolveArtifactsV1 with exactAnswers + graphData.
+ *   Finalizer receives canonical task context + exact answers and writes full narrative solution.
  */
 import {
 	routeQuestion,
@@ -18,13 +17,47 @@ import {
 } from './gemini.js';
 import { workerPool, SandboxError } from '../sandbox/worker-pool.js';
 import { validateSchemaAny, type SchemaAny, type SchemaVersionTag } from '$lib/schema/schema-any.js';
-import { applySchemaPatchToApprovedSchema, extractSchemaPatchFromOutput } from './schema-patch.js';
 import {
 	normalizeGraphEpure,
 	type GraphData,
 	type GraphPoint
 } from '$lib/graphs/types.js';
 import type { SolverModelV1 } from '$lib/solver/model.js';
+
+export interface ExactAnswerLocation {
+	memberId?: string;
+	x?: number;
+	s?: number;
+	note?: string;
+}
+
+export interface ExactAnswer {
+	id: string;
+	label: string;
+	valueText: string;
+	numericValue: number;
+	unit?: string;
+	targetKind?: 'global' | 'support' | 'member' | 'section';
+	targetId?: string;
+	component?: string;
+	location?: ExactAnswerLocation;
+}
+
+interface SolveArtifactsV1 {
+	version: 'solve-artifacts-1.0';
+	exactAnswers: ExactAnswer[];
+	graphData: GraphData[];
+}
+
+interface CanonicalSolveInput {
+	source: 'approved_schema' | 'raw_prompt';
+	originalTask: string;
+	imageDescription?: string;
+	approvedSchema?: SchemaAny;
+	approvedSchemeDescription?: string;
+	solverModel?: SolverModelV1;
+	revisionNotes?: string[];
+}
 
 export type PipelineStatus =
 	| { type: 'ping' }
@@ -37,6 +70,7 @@ export type PipelineStatus =
 			generatedCode?: string;
 			executionLogs?: string;
 			graphData?: GraphData[];
+			exactAnswers?: ExactAnswer[];
 			schemaData?: SchemaAny;
 			schemaDescription?: string;
 			schemaVersion?: SchemaVersionTag;
@@ -44,84 +78,30 @@ export type PipelineStatus =
 	  }
 	| { type: 'error'; message: string };
 
-interface SandboxOutput {
-	result?: unknown;
-	graph_points?: GraphPoint[]; // Для обратной совместимости
-	graphs?: GraphData[];        // Массив нескольких графиков
-	schemaData?: unknown;
-	schemaPatch?: unknown;
-	schemaVersion?: unknown;
-	[key: string]: unknown;
-}
-
 interface GraphNormalizationResult {
 	graphs: GraphData[];
 	issues: string[];
 	warnings: string[];
 }
 
-interface SchemaNormalizationResult {
-	schemaData?: SchemaAny;
-	schemaVersion?: SchemaVersionTag;
+interface SolveArtifactsNormalizationResult {
+	artifacts?: SolveArtifactsV1;
 	issues: string[];
 }
 
 const MAX_RETRIES = 2;
-const APPROVED_SCHEME_DESCRIPTION_MARKER = '\n\n[APPROVED_SCHEME_DESCRIPTION]\n';
-const APPROVED_SCHEMA_MARKER = '\n\n[APPROVED_SCHEMA_JSON]\n';
-const SOLVER_MODEL_MARKER = '\n\n[SOLVER_MODEL_JSON]\n';
 
-type FinalizerPayloadMode = 'normal' | 'compact' | 'minimal';
-
-const FINALIZER_HISTORY_LIMIT = readIntEnv('FINALIZER_HISTORY_LIMIT', 2, 0, 6);
-const FINALIZER_HISTORY_ENTRY_MAX_CHARS = readIntEnv('FINALIZER_HISTORY_ENTRY_MAX_CHARS', 1200, 200, 6000);
 const FINALIZER_TASK_MAX_CHARS = readIntEnv('FINALIZER_TASK_MAX_CHARS', 3000, 400, 20000);
 const FINALIZER_MAX_INPUT_CHARS = readIntEnv('FINALIZER_MAX_INPUT_CHARS', 12000, 2000, 120000);
+const FINALIZER_GRAPH_SAMPLE_POINTS = readIntEnv('FINALIZER_GRAPH_SAMPLE_POINTS', 8, 2, 24);
 
-const FINALIZER_PAYLOAD_CONFIG: Record<
-	FinalizerPayloadMode,
-	{
-		maxGraphSamples: number;
-		includeGraphSamples: boolean;
-		includeExtras: boolean;
-		maxDepth: number;
-		maxArray: number;
-		maxObjectKeys: number;
-		maxString: number;
-		stdoutChars: number;
-	}
-> = {
-	normal: {
-		maxGraphSamples: 12,
-		includeGraphSamples: true,
-		includeExtras: true,
-		maxDepth: 4,
-		maxArray: 24,
-		maxObjectKeys: 24,
-		maxString: 1200,
-		stdoutChars: 2000
-	},
-	compact: {
-		maxGraphSamples: 6,
-		includeGraphSamples: true,
-		includeExtras: false,
-		maxDepth: 3,
-		maxArray: 12,
-		maxObjectKeys: 12,
-		maxString: 700,
-		stdoutChars: 1000
-	},
-	minimal: {
-		maxGraphSamples: 0,
-		includeGraphSamples: false,
-		includeExtras: false,
-		maxDepth: 2,
-		maxArray: 8,
-		maxObjectKeys: 8,
-		maxString: 320,
-		stdoutChars: 600
-	}
-};
+const STATUS_ANALYZE_IMAGE = '\u0410\u043d\u0430\u043b\u0438\u0437 \u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u044f...';
+const STATUS_ANALYZE_TASK = '\u0410\u043d\u0430\u043b\u0438\u0437 \u0437\u0430\u0434\u0430\u0447\u0438...';
+const STATUS_GENERATE_CODE = '\u0413\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u044f \u043a\u043e\u0434\u0430 \u0440\u0435\u0448\u0435\u043d\u0438\u044f...';
+const STATUS_FIX_ERROR = '\u0418\u0441\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u0435 \u043e\u0448\u0438\u0431\u043a\u0438';
+const STATUS_RUN = '\u0412\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435 \u0432\u044b\u0447\u0438\u0441\u043b\u0435\u043d\u0438\u0439...';
+const STATUS_RUN_FIXED = '\u0412\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435 \u0438\u0441\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043d\u043e\u0433\u043e \u043a\u043e\u0434\u0430...';
+const STATUS_FORM_ANSWER = '\u0424\u043e\u0440\u043c\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u043e\u0442\u0432\u0435\u0442\u0430...';
 
 function readIntEnv(name: string, fallback: number, min: number, max: number): number {
 	const raw = Number(process.env[name]);
@@ -137,6 +117,12 @@ function truncateText(value: string, maxChars: number): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizeString(value: unknown): string | null {
+	if (typeof value !== 'string') return null;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : null;
 }
 
 function normalizeGraphType(value: unknown): 'function' | 'diagram' {
@@ -162,12 +148,6 @@ function looksLikeDiagramTitle(value: unknown): boolean {
 		normalized.includes('moment') ||
 		normalized.includes('axial')
 	);
-}
-
-function normalizeString(value: unknown): string | null {
-	if (typeof value !== 'string') return null;
-	const trimmed = value.trim();
-	return trimmed.length > 0 ? trimmed : null;
 }
 
 function normalizeMemberId(raw: Record<string, unknown>): string | null {
@@ -210,7 +190,13 @@ function normalizeGraphPoints(pointsRaw: unknown): GraphPoint[] {
 	if (!Array.isArray(pointsRaw)) return [];
 	const points: GraphPoint[] = [];
 	for (const entry of pointsRaw) {
-		if (isRecord(entry) && typeof entry.x === 'number' && Number.isFinite(entry.x) && typeof entry.y === 'number' && Number.isFinite(entry.y)) {
+		if (
+			isRecord(entry) &&
+			typeof entry.x === 'number' &&
+			Number.isFinite(entry.x) &&
+			typeof entry.y === 'number' &&
+			Number.isFinite(entry.y)
+		) {
 			points.push({ x: entry.x, y: entry.y });
 			continue;
 		}
@@ -247,13 +233,11 @@ function normalizeGraphEpureMeta(raw: unknown): GraphData['epure'] | undefined {
 	return Object.keys(epure).length > 0 ? (epure as GraphData['epure']) : undefined;
 }
 
-function normalizeAndValidateGraphs(output: SandboxOutput | null): GraphNormalizationResult {
-	if (!output) return { graphs: [], issues: [], warnings: [] };
-
-	const rawGraphs: unknown[] = Array.isArray(output.graphs)
-		? (output.graphs as unknown[])
-		: Array.isArray(output.graph_points)
-			? [{ title: 'График решения', type: 'function', points: output.graph_points }]
+function normalizeAndValidateGraphs(graphsRaw: unknown): GraphNormalizationResult {
+	const rawGraphs: unknown[] = Array.isArray(graphsRaw)
+		? graphsRaw
+		: Array.isArray((graphsRaw as { graph_points?: unknown })?.graph_points)
+			? [{ title: 'График решения', type: 'function', points: (graphsRaw as { graph_points: unknown[] }).graph_points }]
 			: [];
 	if (rawGraphs.length === 0) return { graphs: [], issues: [], warnings: [] };
 
@@ -264,7 +248,7 @@ function normalizeAndValidateGraphs(output: SandboxOutput | null): GraphNormaliz
 	for (let index = 0; index < rawGraphs.length; index++) {
 		const rawGraph = rawGraphs[index];
 		if (!isRecord(rawGraph)) {
-			issues.push(`graphs[${index}] must be an object`);
+			issues.push(`graphData[${index}] must be an object`);
 			continue;
 		}
 
@@ -279,15 +263,27 @@ function normalizeAndValidateGraphs(output: SandboxOutput | null): GraphNormaliz
 		}
 		const points = normalizeGraphPoints(rawGraph.points ?? rawGraph.data ?? rawGraph.values);
 		if (points.length < 2) {
-			issues.push(`graphs[${index}] must contain at least 2 points`);
+			issues.push(`graphData[${index}] must contain at least 2 points`);
 			continue;
 		}
 
 		const pointMemberIds = Array.isArray(rawGraph.points)
-			? Array.from(new Set(rawGraph.points.map(extractPointMemberId).filter((item): item is string => Boolean(item))))
+			? Array.from(
+					new Set(
+						rawGraph.points
+							.map(extractPointMemberId)
+							.filter((item): item is string => Boolean(item))
+					)
+				)
 			: [];
 		const declaredMemberIds = Array.isArray(rawGraph.memberIds)
-			? Array.from(new Set(rawGraph.memberIds.map(normalizeString).filter((item): item is string => Boolean(item))))
+			? Array.from(
+					new Set(
+						rawGraph.memberIds
+							.map(normalizeString)
+							.filter((item): item is string => Boolean(item))
+					)
+				)
 			: [];
 
 		let memberId = normalizeMemberId(rawGraph);
@@ -295,16 +291,16 @@ function normalizeAndValidateGraphs(output: SandboxOutput | null): GraphNormaliz
 		if (!memberId && declaredMemberIds.length === 1) memberId = declaredMemberIds[0];
 
 		if (pointMemberIds.length > 1) {
-			issues.push(`graphs[${index}] mixes multiple members in points: ${pointMemberIds.join(', ')}`);
+			issues.push(`graphData[${index}] mixes multiple members in points: ${pointMemberIds.join(', ')}`);
 		}
 		if (declaredMemberIds.length > 1) {
-			issues.push(`graphs[${index}] declares multiple memberIds: ${declaredMemberIds.join(', ')}`);
+			issues.push(`graphData[${index}] declares multiple memberIds: ${declaredMemberIds.join(', ')}`);
 		}
 		if (type === 'diagram' && !memberId) {
-			issues.push(`graphs[${index}] type "diagram" requires memberId (one graph per member)`);
+			issues.push(`graphData[${index}] type "diagram" requires memberId`);
 		}
 		if (memberId && /[,+;|]/.test(memberId)) {
-			issues.push(`graphs[${index}] memberId looks composite ("${memberId}"); use one member per graph`);
+			issues.push(`graphData[${index}] memberId looks composite ("${memberId}")`);
 		}
 
 		const epureNormalized = normalizeGraphEpure({
@@ -315,113 +311,173 @@ function normalizeAndValidateGraphs(output: SandboxOutput | null): GraphNormaliz
 			epure: epureMeta,
 			points
 		});
-		warnings.push(...epureNormalized.warnings.map((warning) => `graphs[${index}]: ${warning}`));
+		warnings.push(...epureNormalized.warnings.map((warning) => `graphData[${index}]: ${warning}`));
 		normalizedGraphs.push(epureNormalized.graph);
 	}
 
 	return { graphs: normalizedGraphs, issues, warnings };
 }
 
-function extractSchemaCandidate(output: SandboxOutput | null): unknown {
-	if (!output || !isRecord(output)) return null;
-	return (
-		output.schemaData ??
-		output.schema ??
-		output.scheme ??
-		output.diagram ??
-		output.jsxgraphSchema ??
-		null
-	);
+function extractFirstJsonObject(text: string): string | null {
+	const start = text.indexOf('{');
+	if (start < 0) return null;
+
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+
+	for (let i = start; i < text.length; i++) {
+		const ch = text[i];
+		if (inString) {
+			if (escaped) {
+				escaped = false;
+				continue;
+			}
+			if (ch === '\\') {
+				escaped = true;
+				continue;
+			}
+			if (ch === '"') inString = false;
+			continue;
+		}
+		if (ch === '"') {
+			inString = true;
+			continue;
+		}
+		if (ch === '{') {
+			depth += 1;
+			continue;
+		}
+		if (ch === '}') {
+			depth -= 1;
+			if (depth === 0) return text.slice(start, i + 1);
+		}
+	}
+	return null;
 }
 
-function normalizeSchemaFromOutput(output: SandboxOutput | null): SchemaNormalizationResult {
-	const candidate = extractSchemaCandidate(output);
-	if (!candidate) return { issues: [] };
+function normalizeExactAnswer(raw: unknown, index: number, issues: string[]): ExactAnswer | null {
+	if (!isRecord(raw)) {
+		issues.push(`exactAnswers[${index}] must be an object`);
+		return null;
+	}
 
-	const validation = validateSchemaAny(candidate);
-	if (!validation.ok || !validation.value) {
-		return { issues: validation.errors };
+	const numericCandidate =
+		typeof raw.numericValue === 'number'
+			? raw.numericValue
+			: typeof raw.value === 'number'
+				? raw.value
+				: Number.NaN;
+	if (!Number.isFinite(numericCandidate)) {
+		issues.push(`exactAnswers[${index}].numericValue must be a finite number`);
+		return null;
+	}
+
+	const id = normalizeString(raw.id) ?? `answer_${index + 1}`;
+	const label = normalizeString(raw.label) ?? `Answer ${index + 1}`;
+	const valueText =
+		normalizeString(raw.valueText) ??
+		normalizeString(raw.value_label) ??
+		String(numericCandidate);
+
+	const answer: ExactAnswer = {
+		id,
+		label,
+		valueText,
+		numericValue: numericCandidate
+	};
+
+	const unit = normalizeString(raw.unit);
+	if (unit) answer.unit = unit;
+	const targetKind = normalizeString(raw.targetKind);
+	if (
+		targetKind === 'global' ||
+		targetKind === 'support' ||
+		targetKind === 'member' ||
+		targetKind === 'section'
+	) {
+		answer.targetKind = targetKind;
+	}
+	const targetId = normalizeString(raw.targetId);
+	if (targetId) answer.targetId = targetId;
+	const component = normalizeString(raw.component);
+	if (component) answer.component = component;
+
+	const locationRaw = isRecord(raw.location) ? raw.location : null;
+	if (locationRaw) {
+		const location: ExactAnswerLocation = {};
+		const memberId = normalizeString(locationRaw.memberId);
+		if (memberId) location.memberId = memberId;
+		if (typeof locationRaw.x === 'number' && Number.isFinite(locationRaw.x)) location.x = locationRaw.x;
+		if (typeof locationRaw.s === 'number' && Number.isFinite(locationRaw.s)) location.s = locationRaw.s;
+		const note = normalizeString(locationRaw.note);
+		if (note) location.note = note;
+		if (Object.keys(location).length > 0) answer.location = location;
+	}
+
+	return answer;
+}
+
+function normalizeSolveArtifacts(rawStdout: string): SolveArtifactsNormalizationResult {
+	const jsonCandidate = extractFirstJsonObject(rawStdout);
+	if (!jsonCandidate) {
+		return { issues: ['Sandbox stdout does not contain JSON object'] };
+	}
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(jsonCandidate);
+	} catch {
+		return { issues: ['Sandbox JSON parsing failed'] };
+	}
+
+	if (!isRecord(parsed)) {
+		return { issues: ['Sandbox JSON root must be an object'] };
+	}
+
+	const issues: string[] = [];
+	const version = normalizeString(parsed.version);
+	if (version !== 'solve-artifacts-1.0') {
+		issues.push(`version must be "solve-artifacts-1.0" (got "${version ?? 'missing'}")`);
+	}
+
+	const exactAnswersRaw = Array.isArray(parsed.exactAnswers)
+		? parsed.exactAnswers
+		: Array.isArray(parsed.answers)
+			? parsed.answers
+			: [];
+
+	const exactAnswers: ExactAnswer[] = [];
+	for (let index = 0; index < exactAnswersRaw.length; index++) {
+		const normalized = normalizeExactAnswer(exactAnswersRaw[index], index, issues);
+		if (normalized) exactAnswers.push(normalized);
+	}
+	if (exactAnswers.length === 0) {
+		issues.push('exactAnswers must contain at least one answer');
+	}
+
+	const graphRaw = Array.isArray(parsed.graphData)
+		? parsed.graphData
+		: Array.isArray(parsed.graphs)
+			? parsed.graphs
+			: Array.isArray(parsed.graph_points)
+				? [{ title: 'Graph', type: 'function', points: parsed.graph_points }]
+				: [];
+	const graphNormalization = normalizeAndValidateGraphs(graphRaw);
+	issues.push(...graphNormalization.issues);
+
+	if (issues.length > 0) {
+		return { issues };
 	}
 
 	return {
 		issues: [],
-		schemaData: validation.value,
-		schemaVersion: validation.version ?? '2.0'
-	};
-}
-
-function normalizeSchemaForApprovedContext(
-	output: SandboxOutput | null,
-	approvedSchema: SchemaAny
-): SchemaNormalizationResult {
-	const patchExtraction = extractSchemaPatchFromOutput(output);
-	if (patchExtraction.hasPatch) {
-		if (!patchExtraction.patch || patchExtraction.issues.length > 0) {
-			return {
-				issues:
-					patchExtraction.issues.length > 0
-						? patchExtraction.issues
-						: ['schemaPatch payload is missing']
-			};
+		artifacts: {
+			version: 'solve-artifacts-1.0',
+			exactAnswers,
+			graphData: graphNormalization.graphs
 		}
-
-		const patchApplied = applySchemaPatchToApprovedSchema(approvedSchema, patchExtraction.patch);
-		if (!patchApplied.ok || !patchApplied.value) {
-			return { issues: patchApplied.issues };
-		}
-
-		return {
-			issues: [],
-			schemaData: patchApplied.value,
-			schemaVersion: patchApplied.version ?? '2.0'
-		};
-	}
-
-	const candidate = extractSchemaCandidate(output);
-	if (candidate) {
-		return {
-			issues: [
-				'schema_check solve must return schemaPatch (delete+add) for schema visuals; full schemaData is not allowed'
-			]
-		};
-	}
-
-	return { issues: [] };
-}
-
-function summarizeSchemaCandidate(output: SandboxOutput | null): Record<string, unknown> | null {
-	const candidate = extractSchemaCandidate(output);
-	if (!isRecord(candidate)) return null;
-	return {
-		version: typeof candidate.version === 'string' ? candidate.version : undefined,
-		nodes: Array.isArray(candidate.nodes) ? candidate.nodes.length : undefined,
-		objects: Array.isArray(candidate.objects) ? candidate.objects.length : undefined,
-		results: Array.isArray(candidate.results) ? candidate.results.length : undefined
 	};
-}
-
-function summarizeSchemaPatch(output: SandboxOutput | null): Record<string, unknown> | null {
-	if (!output || !isRecord(output)) return null;
-	const candidate = output.schemaPatch ?? output.schema_patch;
-	if (!isRecord(candidate)) return null;
-	return {
-		deleteObjectIds: Array.isArray(candidate.deleteObjectIds) ? candidate.deleteObjectIds.length : 0,
-		deleteResultIds: Array.isArray(candidate.deleteResultIds) ? candidate.deleteResultIds.length : 0,
-		addNodes: Array.isArray(candidate.addNodes) ? candidate.addNodes.length : 0,
-		addObjects: Array.isArray(candidate.addObjects) ? candidate.addObjects.length : 0,
-		addResults: Array.isArray(candidate.addResults) ? candidate.addResults.length : 0
-	};
-}
-
-function isFiniteGraphPoint(value: unknown): value is GraphPoint {
-	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-	const maybe = value as Record<string, unknown>;
-	return (
-		typeof maybe.x === 'number' &&
-		Number.isFinite(maybe.x) &&
-		typeof maybe.y === 'number' &&
-		Number.isFinite(maybe.y)
-	);
 }
 
 function sampleGraphPoints(points: GraphPoint[], maxSamples: number): GraphPoint[] {
@@ -442,193 +498,134 @@ function sampleGraphPoints(points: GraphPoint[], maxSamples: number): GraphPoint
 	return sampled;
 }
 
-function summarizeGraph(pointsRaw: unknown, maxSamples: number, includeSamples: boolean): Record<string, unknown> {
-	const points = Array.isArray(pointsRaw) ? pointsRaw.filter(isFiniteGraphPoint) : [];
-	const summary: Record<string, unknown> = { pointCount: points.length };
-
-	if (points.length > 0) {
-		let xMin = points[0].x;
-		let xMax = points[0].x;
-		let yMin = points[0].y;
-		let yMax = points[0].y;
-		for (const point of points) {
-			if (point.x < xMin) xMin = point.x;
-			if (point.x > xMax) xMax = point.x;
-			if (point.y < yMin) yMin = point.y;
-			if (point.y > yMax) yMax = point.y;
-		}
-		summary.bounds = { xMin, xMax, yMin, yMax };
-	}
-
-	if (includeSamples && points.length > 0) {
-		summary.samplePoints = sampleGraphPoints(points, maxSamples);
-	}
-
-	return summary;
-}
-
-function compactUnknownValue(
-	value: unknown,
-	cfg: {
-		maxDepth: number;
-		maxArray: number;
-		maxObjectKeys: number;
-		maxString: number;
-	},
-	depth = 0
-): unknown {
-	if (value === null || value === undefined) return value;
-	if (typeof value === 'number' || typeof value === 'boolean') return value;
-	if (typeof value === 'string') return truncateText(value, cfg.maxString);
-	if (depth >= cfg.maxDepth) {
-		if (Array.isArray(value)) return `[array(${value.length})]`;
-		if (typeof value === 'object') return '[object]';
-		return String(value);
-	}
-	if (Array.isArray(value)) {
-		if (value.length <= cfg.maxArray) {
-			return value.map((entry) => compactUnknownValue(entry, cfg, depth + 1));
-		}
+function summarizeGraphsForFinalizer(graphs: GraphData[], maxSamples: number): Array<Record<string, unknown>> {
+	return graphs.map((graph, index) => {
+		const points = Array.isArray(graph.points) ? graph.points : [];
 		return {
-			length: value.length,
-			sample: value.slice(0, cfg.maxArray).map((entry) => compactUnknownValue(entry, cfg, depth + 1))
+			id: `graph_${index + 1}`,
+			title: typeof graph.title === 'string' ? graph.title : undefined,
+			type: typeof graph.type === 'string' ? graph.type : undefined,
+			memberId: typeof graph.memberId === 'string' ? graph.memberId : undefined,
+			diagramType: typeof graph.diagramType === 'string' ? graph.diagramType : undefined,
+			pointCount: points.length,
+			samplePoints: sampleGraphPoints(points, maxSamples)
 		};
-	}
-	if (typeof value === 'object') {
-		const record = value as Record<string, unknown>;
-		const keys = Object.keys(record);
-		const compacted: Record<string, unknown> = {};
-		for (const key of keys.slice(0, cfg.maxObjectKeys)) {
-			compacted[key] = compactUnknownValue(record[key], cfg, depth + 1);
-		}
-		if (keys.length > cfg.maxObjectKeys) {
-			compacted._truncatedKeys = keys.length - cfg.maxObjectKeys;
-		}
-		return compacted;
-	}
-	return String(value);
+	});
 }
 
-function sanitizeFinalizerTaskContext(rawUserMessage: string): string {
-	const markerIndexes = [
-		rawUserMessage.indexOf(APPROVED_SCHEME_DESCRIPTION_MARKER.trim()),
-		rawUserMessage.indexOf('[ACCEPTED_SCHEMA_REVISIONS]'),
-		rawUserMessage.indexOf(SOLVER_MODEL_MARKER.trim()),
-		rawUserMessage.indexOf(APPROVED_SCHEMA_MARKER.trim())
-	].filter((index) => index >= 0);
-
-	const markerIndex = markerIndexes.length > 0 ? Math.min(...markerIndexes) : -1;
-	const task = markerIndex >= 0 ? rawUserMessage.slice(0, markerIndex) : rawUserMessage;
-	return task.trim();
-}
-
-function trimHistoryForFinalizer(history: GeminiHistory[]): GeminiHistory[] {
-	if (FINALIZER_HISTORY_LIMIT <= 0) return [];
-	return history
-		.slice(-FINALIZER_HISTORY_LIMIT)
-		.map((entry) => ({
-			role: entry.role,
-			content: truncateText(entry.content || '', FINALIZER_HISTORY_ENTRY_MAX_CHARS)
-		}))
-		.filter((entry) => entry.content.trim().length > 0);
-}
-
-function getHistoryChars(history: GeminiHistory[]): number {
-	return history.reduce((sum, entry) => sum + (entry.content?.length ?? 0), 0);
-}
-
-function estimateTokensByChars(chars: number): number {
-	return Math.ceil(chars / 4);
-}
-
-function countGraphPoints(output: SandboxOutput | null): number {
-	if (!output) return 0;
+function countGraphPoints(graphs: GraphData[]): number {
 	let total = 0;
-	if (Array.isArray(output.graph_points)) {
-		total += output.graph_points.filter(isFiniteGraphPoint).length;
-	}
-	if (Array.isArray(output.graphs)) {
-		for (const graph of output.graphs) {
-			if (!graph || typeof graph !== 'object') continue;
-			total += Array.isArray(graph.points) ? graph.points.filter(isFiniteGraphPoint).length : 0;
-		}
+	for (const graph of graphs) {
+		if (!graph || !Array.isArray(graph.points)) continue;
+		total += graph.points.length;
 	}
 	return total;
 }
 
-function buildFinalizerExecutionPayload(
-	output: SandboxOutput | null,
-	rawStdout: string,
-	mode: FinalizerPayloadMode
-): Record<string, unknown> {
-	const cfg = FINALIZER_PAYLOAD_CONFIG[mode];
-	const payload: Record<string, unknown> = {};
+function summarizeSchemaShape(schema: SchemaAny): {
+	nodeCount: number;
+	objectCount: number;
+	resultCount: number;
+} {
+	if (!isRecord(schema)) {
+		return { nodeCount: 0, objectCount: 0, resultCount: 0 };
+	}
 
-	if (output) {
-		if (output.result !== undefined) {
-			payload.result = compactUnknownValue(output.result, cfg);
+	const maybeNodes = Array.isArray(schema.nodes) ? schema.nodes.length : 0;
+	const maybeObjects = Array.isArray(schema.objects) ? schema.objects.length : 0;
+	const maybeResults = Array.isArray(schema.results) ? schema.results.length : 0;
+	if (maybeNodes > 0 || maybeObjects > 0 || maybeResults > 0) {
+		return {
+			nodeCount: maybeNodes,
+			objectCount: maybeObjects,
+			resultCount: maybeResults
+		};
+	}
+
+	const maybeElements = Array.isArray(schema.elements) ? schema.elements.length : 0;
+	return {
+		nodeCount: 0,
+		objectCount: maybeElements,
+		resultCount: 0
+	};
+}
+
+function buildSolverContextMessage(input: CanonicalSolveInput): string {
+	const chunks: string[] = [];
+	chunks.push(`[CANONICAL_SOLVE_SOURCE]\n${input.source}`);
+	chunks.push(`[TASK]\n${input.originalTask}`);
+	if (input.imageDescription) {
+		chunks.push(`[IMAGE_DESCRIPTION]\n${input.imageDescription}`);
+	}
+	if (input.source === 'approved_schema') {
+		if (input.approvedSchemeDescription) {
+			chunks.push(`[APPROVED_SCHEME_DESCRIPTION]\n${input.approvedSchemeDescription}`);
 		}
-
-		if (Array.isArray(output.graphs) && output.graphs.length > 0) {
-			payload.graphs = output.graphs.map((graph, index) => {
-				const summary = summarizeGraph(graph?.points, cfg.maxGraphSamples, cfg.includeGraphSamples);
-				return {
-					id: `graph_${index + 1}`,
-					title: typeof graph?.title === 'string' ? graph.title : undefined,
-					type: typeof graph?.type === 'string' ? graph.type : undefined,
-					memberId: typeof graph?.memberId === 'string' ? graph.memberId : undefined,
-					diagramType: typeof graph?.diagramType === 'string' ? graph.diagramType : undefined,
-					...summary
-				};
-			});
-		} else if (Array.isArray(output.graph_points) && output.graph_points.length > 0) {
-			payload.graph_points_summary = summarizeGraph(
-				output.graph_points,
-				cfg.maxGraphSamples,
-				cfg.includeGraphSamples
+		if (input.revisionNotes && input.revisionNotes.length > 0) {
+			chunks.push(
+				`[ACCEPTED_SCHEMA_REVISIONS]\n${input.revisionNotes.map((note, index) => `${index + 1}. ${note}`).join('\n')}`
 			);
 		}
-
-		const schemaSummary = summarizeSchemaCandidate(output);
-		if (schemaSummary) {
-			payload.schema = schemaSummary;
+		if (input.solverModel) {
+			chunks.push(`[SOLVER_MODEL_JSON]\n${JSON.stringify(input.solverModel, null, 2)}`);
 		}
-
-		const schemaPatchSummary = summarizeSchemaPatch(output);
-		if (schemaPatchSummary) {
-			payload.schemaPatch = schemaPatchSummary;
+		if (input.approvedSchema) {
+			chunks.push(`[APPROVED_SCHEMA_JSON]\n${JSON.stringify(input.approvedSchema, null, 2)}`);
 		}
+	}
+	return chunks.join('\n\n');
+}
 
-		if (cfg.includeExtras) {
-			let extrasAdded = 0;
-			for (const [key, value] of Object.entries(output)) {
-				if (
-					key === 'result' ||
-					key === 'graphs' ||
-					key === 'graph_points' ||
-					key === 'schemaData' ||
-					key === 'schema' ||
-					key === 'scheme' ||
-					key === 'diagram' ||
-					key === 'jsxgraphSchema' ||
-					key === 'schemaPatch' ||
-					key === 'schema_patch' ||
-					key === 'schemaVersion'
-				) {
-					continue;
-				}
-				payload[key] = compactUnknownValue(value, cfg);
-				extrasAdded += 1;
-				if (extrasAdded >= 6) break;
-			}
+function buildFinalizerContextPayload(
+	input: CanonicalSolveInput,
+	exactAnswers: ExactAnswer[],
+	graphs: GraphData[]
+): { solveContextJson: string; exactAnswersJson: string; graphSummaryJson: string } {
+	const contextPayload: Record<string, unknown> = {
+		source: input.source,
+		task: truncateText(input.originalTask, FINALIZER_TASK_MAX_CHARS),
+		...(input.imageDescription ? { imageDescription: input.imageDescription } : {})
+	};
+	if (input.source === 'approved_schema') {
+		contextPayload.approvedSchemeDescription = input.approvedSchemeDescription ?? '';
+		contextPayload.revisionNotes = input.revisionNotes ?? [];
+		if (input.solverModel) {
+			contextPayload.solverModel = input.solverModel;
+		}
+		if (input.approvedSchema) {
+			const schemaValidation = validateSchemaAny(input.approvedSchema);
+			contextPayload.approvedSchemaSummary =
+				schemaValidation.ok && schemaValidation.value
+					? {
+							version: schemaValidation.version ?? '2.0',
+							...summarizeSchemaShape(schemaValidation.value)
+						}
+					: { issue: 'invalid approved schema in context' };
 		}
 	}
 
-	if (Object.keys(payload).length === 0) {
-		payload.stdout_excerpt = truncateText(rawStdout, cfg.stdoutChars);
+	const exactAnswersJson = JSON.stringify({ exactAnswers });
+	let graphSummaryJson = JSON.stringify({
+		graphs: summarizeGraphsForFinalizer(graphs, FINALIZER_GRAPH_SAMPLE_POINTS)
+	});
+	let solveContextJson = JSON.stringify(contextPayload);
+
+	const totalChars = solveContextJson.length + exactAnswersJson.length + graphSummaryJson.length;
+	if (totalChars > FINALIZER_MAX_INPUT_CHARS) {
+		graphSummaryJson = JSON.stringify({
+			graphs: summarizeGraphsForFinalizer(graphs, 3)
+		});
 	}
 
-	return payload;
+	const reducedTotal = solveContextJson.length + exactAnswersJson.length + graphSummaryJson.length;
+	if (reducedTotal > FINALIZER_MAX_INPUT_CHARS) {
+		solveContextJson = truncateText(
+			solveContextJson,
+			Math.max(1200, FINALIZER_MAX_INPUT_CHARS - exactAnswersJson.length - graphSummaryJson.length)
+		);
+	}
+
+	return { solveContextJson, exactAnswersJson, graphSummaryJson };
 }
 
 export async function runPipelineWithApprovedSchema(
@@ -647,32 +644,23 @@ export async function runPipelineWithApprovedSchema(
 	if (!params.approvedSchema) {
 		throw new Error('Approved schema is required for schema-check solving');
 	}
-	console.log('[SchemaCheck] pipeline.start', {
-		messageLength: params.userMessage.length,
-		revisionNotes: params.revisionNotes?.length ?? 0
+
+	const canonicalInput: CanonicalSolveInput = {
+		source: 'approved_schema',
+		originalTask: params.userMessage,
+		approvedSchema: params.approvedSchema,
+		approvedSchemeDescription:
+			typeof params.approvedSchemeDescription === 'string'
+				? params.approvedSchemeDescription.trim()
+				: '',
+		solverModel: params.solverModel,
+		revisionNotes: params.revisionNotes ?? []
+	};
+
+	return runPipeline(params.userMessage, history, onStatus, imageData, forcedModel, {
+		canonicalSolveInput: canonicalInput,
+		bypassRouting: true
 	});
-
-	const schemaJson = JSON.stringify(params.approvedSchema, null, 2);
-	const approvedSchemeDescription = typeof params.approvedSchemeDescription === 'string'
-		? params.approvedSchemeDescription.trim()
-		: '';
-	const descriptionBlock = approvedSchemeDescription
-		? `${APPROVED_SCHEME_DESCRIPTION_MARKER}${approvedSchemeDescription}`
-		: '';
-	const solverModelJson = params.solverModel ? JSON.stringify(params.solverModel, null, 2) : null;
-	const notesBlock =
-		params.revisionNotes && params.revisionNotes.length > 0
-			? `\n\n[ACCEPTED_SCHEMA_REVISIONS]\n${params.revisionNotes.map((note, i) => `${i + 1}. ${note}`).join('\n')}`
-			: '';
-	const solverBlock = solverModelJson ? `${SOLVER_MODEL_MARKER}${solverModelJson}` : '';
-	const messageWithSchemaContext = `${params.userMessage}${descriptionBlock}${notesBlock}${solverBlock}${APPROVED_SCHEMA_MARKER}${schemaJson}\n\n${approvedSchemeDescription ? 'Use approved scheme description as primary narrative context for solving.' : ''} Use approved schema as canonical structural context.${solverModelJson ? ' Use solver model as canonical semantics for member local axes, signs, and axis origins.' : ''}`;
-
-	return runPipeline(messageWithSchemaContext, [], onStatus, undefined, forcedModel, {
-		approvedSchema: params.approvedSchema
-	})
-		.finally(() => {
-			console.log('[SchemaCheck] pipeline.finished');
-		});
 }
 
 export async function runPipeline(
@@ -682,164 +670,114 @@ export async function runPipeline(
 	imageData?: { base64: string; mimeType: string },
 	forcedModel?: string | null,
 	options?: {
-		approvedSchema?: SchemaAny | null;
+		canonicalSolveInput?: CanonicalSolveInput | null;
+		bypassRouting?: boolean;
 	}
 ): Promise<void> {
 	console.log('[Pipeline] START message:', userMessage.slice(0, 80), '| forcedModel:', forcedModel);
 	let currentContext = userMessage;
+	let imageDescription = '';
 	const usedModelsList: string[] = [];
-	const approvedSchema = options?.approvedSchema ?? null;
-	const effectiveHistory = approvedSchema ? [] : history;
 	const emitStatus = (event: PipelineStatus) => Promise.resolve(onStatus(event));
 
 	try {
-		// ── Шаг 0: Анализ изображения (Vision) ──────────────────────────────
-		if (imageData && !approvedSchema) {
+		if (imageData && !options?.canonicalSolveInput) {
 			console.log('[Pipeline] Analyzing image...');
-			await emitStatus({ type: 'status', message: 'Анализ изображения...' });
-			const { text: visionDescription, model: visionModel, tokens: visionTokens } = await analyzeImage(
-				effectiveHistory,
+			await emitStatus({ type: 'status', message: STATUS_ANALYZE_IMAGE });
+			const { text: visionText, model: visionModel, tokens: visionTokens } = await analyzeImage(
+				history,
 				imageData.base64,
 				imageData.mimeType,
 				forcedModel
 			);
+			imageDescription = visionText;
 			usedModelsList.push(`${visionModel} (Vision): ${visionTokens.toLocaleString('ru-RU')} токенов`);
-			console.log('[Pipeline] Vision description received from', visionModel);
-			
-			// Склеиваем описание картинки с текстом пользователя
-			currentContext = `[ОПИСАНИЕ ИЗОБРАЖЕНИЯ]:\n${visionDescription}\n\n[ЗАПРОС ПОЛЬЗОВАТЕЛЯ]:\n${userMessage}`;
+			currentContext = `[IMAGE_DESCRIPTION]\n${visionText}\n\n[USER_TASK]\n${userMessage}`;
 		}
 
-		// ── Шаг 1: Маршрутизация (Flash) ─────────────────────────────────────
-		console.log('[Pipeline] Step 1: routing...');
-		await emitStatus({ type: 'status', message: 'Анализ задачи...' });
-		const { result: needsComputation, model: routerModel, tokens: routerTokens } = await routeQuestion(
-			effectiveHistory,
-			currentContext,
-			forcedModel
-		);
-		usedModelsList.push(`${routerModel} (Router): ${routerTokens.toLocaleString('ru-RU')} токенов`);
-		console.log('[Pipeline] Step 1 done: needsComputation =', needsComputation);
+		let needsComputation = true;
+		if (!options?.bypassRouting) {
+			console.log('[Pipeline] Step 1: routing...');
+			await emitStatus({ type: 'status', message: STATUS_ANALYZE_TASK });
+			const routing = await routeQuestion(history, currentContext, forcedModel);
+			needsComputation = routing.result;
+			usedModelsList.push(`${routing.model} (Router): ${routing.tokens.toLocaleString('ru-RU')} токенов`);
+			console.log('[Pipeline] Step 1 done: needsComputation =', needsComputation);
+		}
 
 		if (!needsComputation) {
 			console.log('[Pipeline] General question — calling answerGeneralQuestion');
-			await emitStatus({ type: 'status', message: 'Формирование ответа...' });
-			const { text: answer, model: flashModel, tokens: textTokens } = await answerGeneralQuestion(
-				effectiveHistory,
+			await emitStatus({ type: 'status', message: STATUS_FORM_ANSWER });
+			const { text: answer, model: textModel, tokens: textTokens } = await answerGeneralQuestion(
+				history,
 				currentContext,
 				forcedModel
 			);
-			usedModelsList.push(`${flashModel} (Text): ${textTokens.toLocaleString('ru-RU')} токенов`);
+			usedModelsList.push(`${textModel} (Text): ${textTokens.toLocaleString('ru-RU')} токенов`);
 			await emitStatus({ type: 'result', content: answer, usedModels: usedModelsList });
 			return;
 		}
 
-		// ── Шаг 2: Генерация кода (Pro) ──────────────────────────────────────
-		console.log('[Pipeline] Step 2: generating Python code...');
-		await emitStatus({ type: 'status', message: 'Генерация кода решения...' });
-		let { code: pythonCode, model: codeModel, tokens: codeTokens } = await generatePythonCode(
-			effectiveHistory,
-			currentContext,
-			undefined,
-			forcedModel
-		);
-		usedModelsList.push(`${codeModel} (CodeGen): ${codeTokens.toLocaleString('ru-RU')} токенов`);
-		console.log('[Pipeline] Step 2 done, code length:', pythonCode.length);
-
-		// ── Шаг 3: Выполнение в Sandbox + Retry ──────────────────────────────
-		let lastError: string | null = null;
-		let sandboxOutput: SandboxOutput | null = null;
+		const canonicalInput: CanonicalSolveInput =
+			options?.canonicalSolveInput ?? {
+				source: 'raw_prompt',
+				originalTask: userMessage,
+				...(imageDescription ? { imageDescription } : {})
+			};
+		const solverContextMessage = buildSolverContextMessage(canonicalInput);
+		const solverHistory: GeminiHistory[] = [];
+		let pythonCode = '';
 		let rawStdout = '';
-		let solvedSchemaData: SchemaAny | undefined;
-		let solvedSchemaVersion: SchemaVersionTag | undefined;
+		let solveArtifacts: SolveArtifactsV1 | null = null;
+		let lastError: string | null = null;
+
+		await emitStatus({ type: 'status', message: STATUS_GENERATE_CODE });
+		const codeGen = await generatePythonCode(solverHistory, solverContextMessage, undefined, forcedModel);
+		pythonCode = codeGen.code;
+		usedModelsList.push(`${codeGen.model} (CodeGen): ${codeGen.tokens.toLocaleString('ru-RU')} токенов`);
 
 		for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
 			if (attempt > 0) {
-				console.log(`[Pipeline] Retry ${attempt}/${MAX_RETRIES}, lastError:`, lastError?.slice(0, 200));
-				await emitStatus({ type: 'status', message: `Исправление ошибки (попытка ${attempt}/${MAX_RETRIES})...` });
+				await emitStatus({
+					type: 'status',
+					message: `${STATUS_FIX_ERROR} (попытка ${attempt}/${MAX_RETRIES})...`
+				});
 				const retryRes = await generatePythonCode(
-					effectiveHistory,
-					currentContext,
-					`Предыдущий код:\n\`\`\`python\n${pythonCode}\n\`\`\`\n\nОшибка:\n${lastError}`,
+					solverHistory,
+					solverContextMessage,
+					`Previous code:\n\`\`\`python\n${pythonCode}\n\`\`\`\n\nError:\n${lastError ?? 'Unknown error'}`,
 					forcedModel
 				);
 				pythonCode = retryRes.code;
 				usedModelsList.push(`${retryRes.model} (Fixer): ${retryRes.tokens.toLocaleString('ru-RU')} токенов`);
 			}
 
-			console.log(`[Pipeline] Step 3: sandbox execute, attempt ${attempt}`);
 			await emitStatus({
 				type: 'status',
-				message: attempt === 0 ? 'Выполнение вычислений...' : `Выполнение исправленного кода...`
+				message: attempt === 0 ? STATUS_RUN : STATUS_RUN_FIXED
 			});
 
 			try {
-				const result = await workerPool.execute(pythonCode);
-				rawStdout = result.stdout;
-				console.log('[Pipeline] Sandbox OK, stdout:', rawStdout.slice(0, 200));
-
-				try {
-					const jsonMatch = rawStdout.match(/\{[\s\S]*\}/);
-					if (jsonMatch) {
-						sandboxOutput = JSON.parse(jsonMatch[0]) as SandboxOutput;
-					} else {
-						sandboxOutput = { result: rawStdout };
-					}
-				} catch {
-					sandboxOutput = { result: rawStdout };
-				}
-
-				const graphNormalization = normalizeAndValidateGraphs(sandboxOutput);
-				if (graphNormalization.issues.length > 0) {
-					lastError = `Graph contract violation: ${graphNormalization.issues.join('; ')}`;
-					console.warn('[Pipeline] Graph contract violation:', graphNormalization.issues);
+				const execution = await workerPool.execute(pythonCode);
+				rawStdout = execution.stdout;
+				const artifactsNormalization = normalizeSolveArtifacts(rawStdout);
+				if (artifactsNormalization.issues.length > 0 || !artifactsNormalization.artifacts) {
+					lastError = `SolveArtifacts contract violation: ${artifactsNormalization.issues.join('; ')}`;
 					if (attempt >= MAX_RETRIES) {
 						await emitStatus({
 							type: 'error',
 							message:
-								`Не удалось получить корректные эпюры по стержням после ${MAX_RETRIES + 1} попыток:\n` +
-								graphNormalization.issues.join('\n')
+								`Не удалось получить корректный SolveArtifactsV1 после ${MAX_RETRIES + 1} попыток:\n` +
+								artifactsNormalization.issues.join('\n')
 						});
 						return;
 					}
 					continue;
 				}
-				if (graphNormalization.warnings.length > 0) {
-					console.warn('[Pipeline] Graph normalization warnings:', graphNormalization.warnings);
-				}
-				sandboxOutput = { ...sandboxOutput, graphs: graphNormalization.graphs };
-
-				const schemaNormalization = approvedSchema
-					? normalizeSchemaForApprovedContext(sandboxOutput, approvedSchema)
-					: normalizeSchemaFromOutput(sandboxOutput);
-
-				if (approvedSchema && schemaNormalization.issues.length > 0) {
-					lastError = `Schema patch contract violation: ${schemaNormalization.issues.join('; ')}`;
-					console.warn('[Pipeline] Schema patch contract violation:', schemaNormalization.issues);
-					if (attempt >= MAX_RETRIES) {
-						await emitStatus({
-							type: 'error',
-							message:
-								`Не удалось получить корректный schemaPatch после ${MAX_RETRIES + 1} попыток:\n` +
-								schemaNormalization.issues.join('\n')
-						});
-						return;
-					}
-					continue;
-				}
-
-				if (!approvedSchema && schemaNormalization.issues.length > 0) {
-					console.warn('[Pipeline] Ignoring invalid schemaData from solver output:', schemaNormalization.issues);
-				}
-
-				solvedSchemaData = schemaNormalization.schemaData;
-				solvedSchemaVersion = schemaNormalization.schemaVersion;
-
+				solveArtifacts = artifactsNormalization.artifacts;
 				lastError = null;
 				break;
-
 			} catch (err) {
-				console.error(`[Pipeline] Sandbox error (attempt ${attempt}):`, err);
 				if (err instanceof SandboxError) {
 					lastError = err.message;
 					if (attempt >= MAX_RETRIES) {
@@ -849,82 +787,70 @@ export async function runPipeline(
 						});
 						return;
 					}
-				} else {
-					throw err;
+					continue;
 				}
+				throw err;
 			}
 		}
 
-		// ── Шаг 4: Сборка ответа (Flash/Pro по tier) ─────────────────────────
-		console.log('[Pipeline] Step 4: assembling final answer...');
-		await emitStatus({ type: 'status', message: 'Формирование ответа...' });
+		if (!solveArtifacts) {
+			await emitStatus({ type: 'error', message: 'Solver did not return valid artifacts' });
+			return;
+		}
 
-		const finalizerHistory = trimHistoryForFinalizer(effectiveHistory);
-		const finalizerTask = truncateText(
-			sanitizeFinalizerTaskContext(userMessage) || sanitizeFinalizerTaskContext(currentContext) || userMessage,
-			FINALIZER_TASK_MAX_CHARS
+		console.log('[Pipeline] Step 4: finalizer...');
+		await emitStatus({ type: 'status', message: STATUS_FORM_ANSWER });
+		const finalizerPayload = buildFinalizerContextPayload(
+			canonicalInput,
+			solveArtifacts.exactAnswers,
+			solveArtifacts.graphData
 		);
-		const historyChars = getHistoryChars(finalizerHistory);
-
-		let finalizerMode: FinalizerPayloadMode = 'normal';
-		let executionSummary = JSON.stringify(buildFinalizerExecutionPayload(sandboxOutput, rawStdout, finalizerMode));
-		let totalInputChars = historyChars + finalizerTask.length + executionSummary.length;
-
-		if (totalInputChars > FINALIZER_MAX_INPUT_CHARS) {
-			finalizerMode = 'compact';
-			executionSummary = JSON.stringify(buildFinalizerExecutionPayload(sandboxOutput, rawStdout, finalizerMode));
-			totalInputChars = historyChars + finalizerTask.length + executionSummary.length;
-		}
-		if (totalInputChars > FINALIZER_MAX_INPUT_CHARS) {
-			finalizerMode = 'minimal';
-			executionSummary = JSON.stringify(buildFinalizerExecutionPayload(sandboxOutput, rawStdout, finalizerMode));
-			totalInputChars = historyChars + finalizerTask.length + executionSummary.length;
-		}
-		if (totalInputChars > FINALIZER_MAX_INPUT_CHARS) {
-			const budgetForExecution = Math.max(
-				600,
-				FINALIZER_MAX_INPUT_CHARS - historyChars - finalizerTask.length
-			);
-			executionSummary = truncateText(executionSummary, budgetForExecution);
-			totalInputChars = historyChars + finalizerTask.length + executionSummary.length;
-		}
-
 		console.log('[Pipeline] Finalizer input metrics:', {
-			mode: finalizerMode,
-			historyEntries: finalizerHistory.length,
-			historyChars,
-			taskChars: finalizerTask.length,
-			executionChars: executionSummary.length,
-			totalChars: totalInputChars,
-			estimatedTokens: estimateTokensByChars(totalInputChars),
-			graphPointsTotal: countGraphPoints(sandboxOutput)
+			taskChars: canonicalInput.originalTask.length,
+			exactAnswers: solveArtifacts.exactAnswers.length,
+			graphs: solveArtifacts.graphData.length,
+			graphPointsTotal: countGraphPoints(solveArtifacts.graphData),
+			contextChars: finalizerPayload.solveContextJson.length,
+			answersChars: finalizerPayload.exactAnswersJson.length,
+			graphSummaryChars: finalizerPayload.graphSummaryJson.length
 		});
 
-		const { text: finalAnswer, model: assembleModel, tokens: assembleTokens } = await assembleFinalAnswer(
+		const finalizerHistory: GeminiHistory[] = [];
+		const finalizerTaskText = truncateText(canonicalInput.originalTask, FINALIZER_TASK_MAX_CHARS);
+		const finalizer = await assembleFinalAnswer(
 			finalizerHistory,
-			{ userMessage: finalizerTask, executionResult: executionSummary },
+			{
+				taskContext: finalizerTaskText,
+				solveContextJson: finalizerPayload.solveContextJson,
+				exactAnswersJson: finalizerPayload.exactAnswersJson,
+				graphSummaryJson: finalizerPayload.graphSummaryJson
+			},
 			forcedModel
 		);
-		usedModelsList.push(`${assembleModel} (Finalizer): ${assembleTokens.toLocaleString('ru-RU')} токенов`);
-		console.log('[Pipeline] Step 4 done, answer length:', finalAnswer.length);
+		usedModelsList.push(`${finalizer.model} (Finalizer): ${finalizer.tokens.toLocaleString('ru-RU')} токенов`);
 
-		const graphData: GraphData[] | undefined =
-			Array.isArray(sandboxOutput?.graphs) && sandboxOutput.graphs.length > 0
-				? sandboxOutput.graphs
-				: undefined;
+		let solvedSchemaData: SchemaAny | undefined;
+		let solvedSchemaVersion: SchemaVersionTag | undefined;
+		let solvedSchemaDescription: string | undefined;
+		if (canonicalInput.source === 'approved_schema' && canonicalInput.approvedSchema) {
+			solvedSchemaData = canonicalInput.approvedSchema;
+			solvedSchemaDescription = canonicalInput.approvedSchemeDescription;
+			const schemaValidation = validateSchemaAny(canonicalInput.approvedSchema);
+			solvedSchemaVersion = schemaValidation.version ?? '2.0';
+		}
 
 		await emitStatus({
 			type: 'result',
-			content: finalAnswer,
+			content: finalizer.text,
 			generatedCode: pythonCode,
 			executionLogs: rawStdout,
-			graphData,
+			graphData: solveArtifacts.graphData,
+			exactAnswers: solveArtifacts.exactAnswers,
 			schemaData: solvedSchemaData,
+			schemaDescription: solvedSchemaDescription,
 			schemaVersion: solvedSchemaVersion,
 			usedModels: usedModelsList
 		});
-		console.log('[Pipeline] DONE');
-
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		console.error('[Pipeline] UNCAUGHT ERROR:', err);

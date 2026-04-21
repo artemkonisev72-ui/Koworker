@@ -277,6 +277,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 									generatedCode: event.generatedCode ?? null,
 									executionLogs: event.executionLogs ?? null,
 									graphData: event.graphData ? JSON.stringify(event.graphData) : undefined,
+									exactAnswers: event.exactAnswers ? JSON.stringify(event.exactAnswers) : undefined,
 									schemaData: event.schemaData ? JSON.stringify(event.schemaData) : undefined,
 									schemaDescription:
 										typeof event.schemaDescription === 'string' ? event.schemaDescription : undefined,
@@ -357,6 +358,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			content: true,
 			generatedCode: true,
 			graphData: true,
+			exactAnswers: true,
 			schemaData: true,
 			schemaDescription: true,
 			schemaVersion: true,

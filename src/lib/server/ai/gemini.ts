@@ -472,55 +472,78 @@ export async function generatePythonCode(
 	retryContext?: string,
 	forcedModel?: string | null
 ): Promise<{ code: string; model: GeminiModel; tokens: number }> {
-	const isSchemaCheckSolve = userMessage.includes('[APPROVED_SCHEMA_JSON]');
+	const hasApprovedSchema = userMessage.includes('[APPROVED_SCHEMA_JSON]');
 	const hasApprovedSchemeDescription = userMessage.includes('[APPROVED_SCHEME_DESCRIPTION]');
 	const hasSolverModelContext = userMessage.includes('[SOLVER_MODEL_JSON]');
-	const visualContract = isSchemaCheckSolve
-		? `9. When approved schema context is present, choose ONE visual mode:
-   - Graph mode: return "graphs" as described above.
-   - Schema mode: return ONLY "schemaPatch" with keys:
-     {"deleteObjectIds":[],"deleteResultIds":[],"addNodes":[],"addObjects":[],"addResults":[]}
-10. For schemaPatch mode use delete+add operations only:
-   - Never mutate existing objects/results inline.
-   - Reusing an existing object/result id is allowed only if that id is listed in deleteObjectIds/deleteResultIds in the same output.
-   - Do not output full schemaData in schema_check solve mode.`
-		: `9. Choose visual output format by task:
-   - For classic numeric plots/curves return "graphs".
-   - For object-based engineering schemes/epures return "schemaData" (v2).
-10. If "schemaData" is used, keep version "2.0" and use finite numbers only.`;
-	const solverModelContract = hasSolverModelContext
-		? `When [SOLVER_MODEL_JSON] is present, treat it as canonical mechanics semantics:
-- member local axes/signs must come from solverModel, not inferred from screen projection.
-- for cantilever beam members with axisOrigin="free_end", use x=0 at free end and increase toward fixed support.
-- for frame tasks use requested component semantics (N,Vy,Vz,T,My,Mz) from solverModel.`
-		: '';
-	const schemeDescriptionContract = hasApprovedSchemeDescription
-		? `When [APPROVED_SCHEME_DESCRIPTION] is present, treat it as the primary textual description of the approved scheme.
-- Build equations and sign interpretation from this approved description first.
-- Do not reinterpret topology from visual projection.
-- If a detail is missing in the description, use [SOLVER_MODEL_JSON] and [APPROVED_SCHEMA_JSON] as canonical guardrails.`
-		: '';
-	const solverModelSection = solverModelContract ? `${solverModelContract}\n` : '';
-	const schemeDescriptionSection = schemeDescriptionContract ? `${schemeDescriptionContract}\n` : '';
 
-	const systemPrompt = `You generate Python code for exact scientific computation.
-Rules:
-1. Use only: math, sympy, numpy, json.
-2. Always print JSON using print(json.dumps({...})).
-3. Do not draw text/ASCII graphs.
-4. For plots/diagrams output graph points in key "graphs":
-   "graphs": [{"title":"...","type":"function"|"diagram","memberId":"...", "diagramType":"N|Q|M|Vy|Vz|T|My|Mz|...", "epure":{"kind":"N|Q|M|custom","component":"N|Vy|Vz|T|My|Mz","fillHatch":true,"showSigns":true,"compressedFiberSide":"+n|-n","axisOrigin":"auto|free_end|fixed_end|member_start|member_end"}, "points":[{"x":...,"y":...}, ...]}]
-5. For frame/truss/beam-system diagrams (epures), STRICT RULE: one graph object = one member (memberId). Never mix points from different members inside one graph.
-6. For type="diagram", always provide non-empty memberId.
-7. For epures always sort points by x ascending. If sign changes between neighboring samples, include a zero point at the crossing or sample densely enough that the renderer can reconstruct the crossing.
-8. For diagrams representing epures, set epure.fillHatch=true and epure.showSigns=true by default.
-9. For frame epures, ALWAYS provide epure.component from N|Vy|Vz|T|My|Mz and set epure.axisOrigin="member_start". For spatial frames do not use legacy Q/M as the primary component contract.
-10. For moment epures in beam mode (diagramType/epure.kind = "M"), ALWAYS provide epure.compressedFiberSide as "+n" or "-n". Positive ordinates must correspond to the declared compressed-fiber side.
-11. For a simple cantilever beam with exactly one fixed support, epure x=0 must be at the free end, increase toward the fixed support, and epure.axisOrigin must be "free_end".
-12. Put primary numeric/text result in key "result".
-13. Prefer sympy for exact math and numpy arrays for sampling points.
-${visualContract}
-${schemeDescriptionSection}${solverModelSection}${languagePolicy(userMessage)}`;
+	const guardLines: string[] = [];
+	if (hasApprovedSchema) {
+		guardLines.push(
+			'If [APPROVED_SCHEMA_JSON] is present: use it as canonical structural data and do not alter topology semantics.'
+		);
+	}
+	if (hasApprovedSchemeDescription) {
+		guardLines.push(
+			'If [APPROVED_SCHEME_DESCRIPTION] is present: treat it as the primary approved textual condition.'
+		);
+	}
+	if (hasSolverModelContext) {
+		guardLines.push(
+			'If [SOLVER_MODEL_JSON] is present: treat local axes/signs and component conventions as canonical.'
+		);
+		guardLines.push(
+			'For cantilever axisOrigin="free_end", keep x=0 at free end and increase toward support.'
+		);
+	}
+	const approvedGuards = guardLines.length > 0 ? guardLines.join('\n') : '';
+
+	const systemPrompt = `You write the SHORTEST working Python code that solves the mechanics task exactly.
+Code-only role: compute exact numeric answers and graph data. No narrative.
+Allowed modules ONLY: math, sympy, numpy, json.
+
+Output contract (strict):
+1) Print exactly one JSON object via print(json.dumps(payload)).
+2) payload must be:
+{
+  "version": "solve-artifacts-1.0",
+  "exactAnswers": [
+    {
+      "id": "R_Ay",
+      "label": "Reaction A_y",
+      "valueText": "12.5",
+      "numericValue": 12.5,
+      "unit": "kN",
+      "targetKind": "support|member|section|global",
+      "targetId": "A",
+      "component": "Ay",
+      "location": { "memberId": "bar_1", "x": 2.0, "s": 0.4, "note": "optional" }
+    }
+  ],
+  "graphData": [
+    {
+      "title": "...",
+      "type": "function|diagram",
+      "memberId": "...",
+      "diagramType": "...",
+      "epure": {
+        "kind": "N|Q|M|custom",
+        "component": "N|Vy|Vz|T|My|Mz",
+        "fillHatch": true,
+        "showSigns": true,
+        "compressedFiberSide": "+n|-n",
+        "axisOrigin": "auto|free_end|fixed_end|member_start|member_end"
+      },
+      "points": [{"x": 0.0, "y": 0.0}, {"x": 1.0, "y": 2.0}]
+    }
+  ]
+}
+3) exactAnswers must contain final numeric anchors (support reactions, max moments, etc.).
+4) graphData points must be finite numbers and sorted by x ascending.
+5) For diagrams/epures, one graph = one member; never mix members in one graph.
+6) Do NOT output schemaData, schemaPatch, markdown, prose, or explanation.
+7) Use sympy for exact calculations where possible; then emit numeric values.
+${approvedGuards}
+${languagePolicy(userMessage)}`;
 
 	let userContent = `Task: ${userMessage}`;
 	if (retryContext) userContent += `\n\nFix this error context:\n${retryContext}`;
@@ -533,16 +556,38 @@ ${schemeDescriptionSection}${solverModelSection}${languagePolicy(userMessage)}`;
 
 export async function assembleFinalAnswer(
 	history: GeminiHistory[],
-	params: { userMessage: string; executionResult: string },
+	params: {
+		taskContext: string;
+		solveContextJson: string;
+		exactAnswersJson: string;
+		graphSummaryJson: string;
+	},
 	forcedModel?: string | null
 ): Promise<{ text: string; model: GeminiModel; tokens: number }> {
-	const prompt = `Provide the final solution in this structure: Given / Solution / Answer.
-Use only these computed data: ${params.executionResult}
-Use LaTeX for formulas. Do not include Python code.
-Keep the answer concise and avoid repeating long condition text verbatim.
-${languagePolicy(params.userMessage)}`;
-	const messages = buildContext(history, prompt, `Task: ${params.userMessage}`);
-	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
+	const prompt = `You are a mechanics finalizer.
+Goal: produce a very detailed, mathematically consistent, step-by-step solution narrative.
+
+Hard rules:
+1) You MUST anchor the derivation to provided exact answers and arrive at those values in the final answer.
+2) Do NOT invent alternative final numbers.
+3) Use clear sections: Given / Conventions / Solution / Answer.
+4) In Solution: show formulas and intermediate reasoning in detail; use LaTeX for formulas.
+5) Mention how graph/epure interpretation follows the provided graph summary when relevant.
+6) Do not include Python code.
+7) Keep the final Answer section explicit and numerically identical to exactAnswers.
+
+Canonical solve context JSON:
+${params.solveContextJson}
+
+Exact answers JSON (authoritative):
+${params.exactAnswersJson}
+
+Graph summary JSON:
+${params.graphSummaryJson}
+
+${languagePolicy(params.taskContext)}`;
+	const messages = buildContext(history, prompt, `Task: ${params.taskContext}`);
+	return generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, forcedModel);
 }
 
 export async function answerGeneralQuestion(

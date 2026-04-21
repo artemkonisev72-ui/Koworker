@@ -101,6 +101,7 @@ model Message {
   generatedCode String?     @db.Text
   executionLogs String?     @db.Text
   graphData     Json?
+  exactAnswers  Json?
   schemaData    Json?
   schemaDescription String? @db.Text
   schemaVersion String?     @default("1.0")

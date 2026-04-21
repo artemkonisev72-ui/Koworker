@@ -23,6 +23,7 @@
 		role: 'USER' | 'ASSISTANT' | 'SYSTEM';
 		content: string;
 		graphData?: GraphData[] | string | null;
+		exactAnswers?: unknown;
 		schemaData?: unknown;
 		schemaDescription?: string | null;
 		schemaVersion?: string | null;
@@ -61,9 +62,7 @@
 		{ id: 'pdf', label: TEXT_EXPORT_TO_PDF }
 	];
 
-	let canExport = $derived(
-		message.role === 'ASSISTANT' && !message.schemaData && !message.isStreaming
-	);
+	let canExport = $derived(message.role === 'ASSISTANT' && !message.isStreaming);
 
 	let usedModels = $derived.by(() => {
 		if (!message.usedModels) return [];
@@ -164,6 +163,21 @@
 		if (typeof message.schemaDescription !== 'string') return '';
 		const normalized = message.schemaDescription.trim();
 		return normalized.length > 0 ? normalized : '';
+	});
+
+	let exactAnswers = $derived.by(() => {
+		if (!message.exactAnswers) return [] as Array<Record<string, unknown>>;
+		const raw = message.exactAnswers;
+		let parsed: unknown = raw;
+		if (typeof raw === 'string') {
+			try {
+				parsed = JSON.parse(raw);
+			} catch {
+				return [] as Array<Record<string, unknown>>;
+			}
+		}
+		if (!Array.isArray(parsed)) return [] as Array<Record<string, unknown>>;
+		return parsed.filter((entry): entry is Record<string, unknown> => isRecord(entry));
 	});
 
 	function isMostlyRussian(text: string): boolean {
@@ -267,11 +281,10 @@
 	});
 
 	let visibleGraphGroups = $derived.by(() => {
-		if (schemes.length > 0) {
-			if (frameGraphGroups.length > 0) return frameGraphGroups;
-			return [] as GraphGroup[];
-		}
-		return graphGroups;
+		const groups: GraphGroup[] = [];
+		if (frameGraphGroups.length > 0) groups.push(...frameGraphGroups);
+		if (graphGroups.length > 0) groups.push(...graphGroups);
+		return groups;
 	});
 
 	const SAFE_CLASS_TOKEN = /^[A-Za-z0-9_-]+$/;
@@ -779,6 +792,31 @@
 			</div>
 		{/if}
 
+		{#if exactAnswers.length > 0}
+			<div class="exact-answers-card">
+				<div class="exact-answers-title">Exact answers</div>
+				<div class="exact-answers-list">
+					{#each exactAnswers as answer, index}
+						<div class="exact-answer-row">
+							<span class="exact-answer-label">
+								{typeof answer.label === 'string' && answer.label.trim()
+									? answer.label
+									: `Answer ${index + 1}`}
+							</span>
+							<span class="exact-answer-value">
+								{typeof answer.valueText === 'string' && answer.valueText.trim()
+									? answer.valueText
+									: typeof answer.numericValue === 'number'
+										? answer.numericValue
+										: '-'}
+								{typeof answer.unit === 'string' && answer.unit.trim() ? ` ${answer.unit}` : ''}
+							</span>
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
 		{#if usedModels.length > 0}
 			<div class="models-attribution">
 				<span class="attribution-label">Models:</span>
@@ -848,6 +886,48 @@
 		border: 1px solid var(--border-medium);
 		background: color-mix(in srgb, var(--bg-surface) 68%, transparent);
 		border-radius: 0.65rem;
+	}
+
+	.exact-answers-card {
+		margin-top: 0.9rem;
+		padding: 0.85rem 0.95rem;
+		border: 1px solid var(--border-medium);
+		background: color-mix(in srgb, var(--bg-surface) 72%, transparent);
+		border-radius: 0.65rem;
+	}
+
+	.exact-answers-title {
+		font-size: 0.76rem;
+		font-weight: 700;
+		color: var(--text-secondary);
+		letter-spacing: 0.03em;
+		text-transform: uppercase;
+		margin-bottom: 0.45rem;
+	}
+
+	.exact-answers-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+
+	.exact-answer-row {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.9rem;
+		font-size: 0.88rem;
+		line-height: 1.45;
+	}
+
+	.exact-answer-label {
+		color: var(--text-secondary);
+	}
+
+	.exact-answer-value {
+		font-family: var(--font-mono);
+		font-weight: 600;
+		color: var(--text-primary);
 	}
 
 	.scheme-description-title {

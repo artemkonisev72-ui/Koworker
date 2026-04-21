@@ -47,6 +47,7 @@ export const load: PageServerLoad = async ({ params }) => {
 			generatedCode: m.generatedCode,
 			executionLogs: m.executionLogs,
 			graphData: parseMaybeJson(m.graphData),
+			exactAnswers: parseMaybeJson(m.exactAnswers),
 			schemaData: parseMaybeJson(m.schemaData),
 			schemaDescription: typeof m.schemaDescription === 'string' ? m.schemaDescription : null,
 			schemaVersion: m.schemaVersion,
