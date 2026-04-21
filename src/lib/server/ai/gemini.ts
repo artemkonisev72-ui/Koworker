@@ -1,4 +1,4 @@
-/**
+﻿/**
  * gemini.ts
  * Thin wrapper around Gemini API.
  */
@@ -509,22 +509,26 @@ export async function generatePythonCode(
 The runtime provides a pre-defined "trace" object (class _SolutionTrace). Do NOT redefine or re-create it.
 WARNING: Do NOT define any trace-related classes (e.g. class _TraceHelper, class _Trace, class Trace, class _SolutionTrace). Do NOT write "trace = ..." to reassign the trace object. The "trace" variable is already available and ready to use. Any class definition or reassignment will be automatically removed by the runtime.
 You MUST use trace calls for EVERY computation step:
-- trace.section("Section title") — start a new logical section
-- trace.note("explanation text") — explain reasoning or assumptions
-- trace.define("variable_name", "expression_string", value=computed_value) — define a variable
-- trace.equation("lhs", "rhs") or trace.equation("full_equation_string") — state an equation
+- trace.section("Section title") - start a new logical section
+- trace.note("explanation text") - explain reasoning or assumptions
+- trace.define(name, expr, value=computed_value) — define a variable/function from native Python/SymPy values
+- trace.equation(lhs, rhs) or trace.equation(sympy.Eq(...)) — state an equation
 - trace.solve("what we're solving for", "variable", computed_result) — show solution of equation
-- trace.result("label", value) — declare a final or intermediate result
+- trace.eval(expr) — explicit evaluation step
+- trace.function(name, args, expr) — function definition helper when useful
+- trace.plot(title, points, diagramType=..., memberId=..., epure=...) — attach plot metadata for detailed solution
+- trace.result("label", value) - declare a final or intermediate result
 
 Workflow requirements:
-1. Start with trace.section("Исходные данные") and use trace.define/trace.note for all given values.
-2. Create a new trace.section for each major solution phase (e.g. "Реакции опор", "Эпюры", "Проверка").
+1. Start with trace.section("Given data") and use trace.define/trace.note for all given values.
+2. Create a new trace.section for each major solution phase.
 3. Every symbolic/numeric computation MUST be preceded by trace.equation or trace.define.
 4. Every final answer MUST use trace.result("Answer label", value).
 5. In the final JSON output, ALWAYS include "solutionDoc": trace.export().
 6. Never build manual AST dictionaries (no objects like {"type":"apply","op":"plus"...}).
 7. Do not serialize tree nodes by hand.
-8. trace.code() — use ONLY if user explicitly asks to see code.`
+8. trace.code() — use ONLY if user explicitly asks to see code.
+9. Pass native SymPy/Python objects into trace calls; runtime will serialize math trees automatically.`
 		: '';
 
 	const systemPrompt = `You generate Python code for exact scientific computation.
@@ -605,7 +609,7 @@ export async function generateSchemeDescriptionFromFacts(
 		fastMode?: boolean;
 	}
 ): Promise<SchemeDescriptionGenerationResult> {
-	const languageSeed = params.language === 'ru' ? 'Русский' : 'English';
+	const languageSeed = params.language === 'ru' ? 'Russian' : 'English';
 	const prompt = `You are a scheme verbalizer.
 You receive canonical scheme facts as JSON.
 Return plain text only (no JSON, no code fences).

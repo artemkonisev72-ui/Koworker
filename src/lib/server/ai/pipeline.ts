@@ -501,7 +501,7 @@ function normalizeSolutionDocFromOutput(output: SandboxOutput | null): SolutionD
 	const solutionDoc =
 		typeof candidate === 'string' ? normalizeSolutionDocument(tryParseJsonString(candidate)) : normalizeSolutionDocument(candidate);
 	if (!solutionDoc) {
-		return { issues: ['solutionDoc is present but does not match solution-doc-1.0 contract'] };
+		return { issues: ['solutionDoc is present but does not match solution-doc-1.0/2.0 contract'] };
 	}
 
 	return {
@@ -596,7 +596,7 @@ function buildFallbackSolutionDoc(params: {
 			title: graphTitle,
 			blocks: params.graphData.map((graph, index) => ({
 				id: `graph-${index + 1}`,
-				kind: 'graph',
+				kind: 'plot',
 				title: typeof graph.title === 'string' && graph.title.trim() ? graph.title : `Graph ${index + 1}`,
 				text:
 					typeof graph.memberId === 'string' && graph.memberId.trim()
@@ -612,7 +612,7 @@ function buildFallbackSolutionDoc(params: {
 	}
 
 	return {
-		version: 'solution-doc-1.0',
+		version: 'solution-doc-2.0',
 		locale,
 		summary,
 		sections

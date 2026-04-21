@@ -3,7 +3,7 @@ import type { SolutionDocumentV1 } from '$lib/solution/document.js';
 import { buildXmcdFromSolutionDocument } from './export.js';
 
 const sampleSolutionDoc: SolutionDocumentV1 = {
-	version: 'solution-doc-1.0',
+	version: 'solution-doc-2.0',
 	locale: 'ru',
 	summary: 'Summary line.',
 	sections: [
@@ -76,6 +76,63 @@ describe('buildXmcdFromSolutionDocument', () => {
 		expect(xmcd).toContain('is-protected="true"');
 		expect(xmcd).toContain('<text use-page-width="false" push-down="false" lock-width="true">');
 		expect(xmcd).toContain('<p style="Normal"');
-		expect(xmcd).toContain('Answer: 42');
+		expect(xmcd).toContain('Answer');
+		expect(xmcd).toContain('<ml:real>42</ml:real>');
+	});
+
+	it('renders math AST constructs used in piecewise structural tasks', () => {
+		const doc: SolutionDocumentV1 = {
+			version: 'solution-doc-2.0',
+			locale: 'ru',
+			sections: [
+				{
+					id: 'section_1',
+					title: 'Solution',
+					blocks: [
+						{
+							id: 'block_1',
+							kind: 'definition',
+							mathAst: {
+								type: 'function_def',
+								name: { type: 'id', name: 'Q' },
+								params: [{ type: 'id', name: 'z' }],
+								body: {
+									type: 'program',
+									branches: [
+										{
+											condition: {
+												type: 'apply',
+												op: 'and',
+												args: [
+													{
+														type: 'apply',
+														op: 'lessOrEqual',
+														args: [{ type: 'num', value: '0' }, { type: 'id', name: 'z' }]
+													},
+													{
+														type: 'apply',
+														op: 'lessThan',
+														args: [{ type: 'id', name: 'z' }, { type: 'id', name: 'l' }]
+													}
+												]
+											},
+											value: { type: 'id', name: 'q', subscript: '1' }
+										}
+									],
+									otherwise: { type: 'num', value: '0' }
+								}
+							}
+						}
+					]
+				}
+			]
+		};
+
+		const xmcd = buildXmcdFromSolutionDocument(doc);
+		expect(xmcd).toContain('<ml:program>');
+		expect(xmcd).toContain('<ml:ifThen>');
+		expect(xmcd).toContain('<ml:otherwise>');
+		expect(xmcd).toContain('<ml:and/>');
+		expect(xmcd).toContain('subscript="1"');
 	});
 });

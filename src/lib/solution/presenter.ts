@@ -1,4 +1,5 @@
 import type { SolutionBlockKind, SolutionBlockV1, SolutionDocumentV1 } from './document.js';
+import { mathAstToText } from './document.js';
 
 export interface PresentSolutionDocumentOptions {
 	source?: 'trace' | 'fallback' | 'legacy';
@@ -39,9 +40,13 @@ function defaultTitle(kind: SolutionBlockKind, locale: 'ru' | 'en'): string {
 			return choose(locale, 'Equation', 'Equation');
 		case 'solve':
 			return choose(locale, 'Solve step', 'Solve');
+		case 'evaluation':
+		case 'math':
+			return choose(locale, 'Math step', 'Math step');
 		case 'result':
 			return choose(locale, 'Answer', 'Answer');
 		case 'graph':
+		case 'plot':
 			return choose(locale, 'Graph', 'Graph');
 		case 'table':
 			return choose(locale, 'Table', 'Table');
@@ -63,6 +68,7 @@ function defaultText(kind: SolutionBlockKind, locale: 'ru' | 'en'): string {
 		case 'result':
 			return choose(locale, 'Final computed value.', 'Final computed value.');
 		case 'graph':
+		case 'plot':
 			return choose(locale, 'Computed data for visualization.', 'Computed data for visualization.');
 		case 'table':
 			return choose(locale, 'Tabular data for this step.', 'Tabular data for this step.');
@@ -83,6 +89,7 @@ function presentBlock(block: SolutionBlockV1, locale: 'ru' | 'en'): SolutionBloc
 	const text = rawText(block.text);
 	const expression = rawText(block.expression);
 	const value = rawText(block.value);
+	const mathExpression = mathAstToText(block.mathAst);
 	const data = mergeDebugData(block);
 
 	if (block.kind === 'code') {
@@ -109,12 +116,17 @@ function presentBlock(block: SolutionBlockV1, locale: 'ru' | 'en'): SolutionBloc
 	if (text) normalized.text = text;
 	if (value) normalized.value = value;
 	if (data) normalized.data = data;
+	if (block.mathAst) normalized.mathAst = block.mathAst;
+
+	if (!normalized.expression && mathExpression) {
+		normalized.expression = mathExpression;
+	}
 
 	if (!normalized.text) {
 		normalized.text = defaultText(block.kind, locale);
 	}
 
-	if (!normalized.expression && !normalized.value && (block.kind === 'equation' || block.kind === 'definition' || block.kind === 'solve')) {
+	if (!normalized.expression && !normalized.value && (block.kind === 'equation' || block.kind === 'definition' || block.kind === 'solve' || block.kind === 'evaluation' || block.kind === 'math')) {
 		const fallbackExpression = compactText(block.text);
 		if (fallbackExpression) normalized.expression = fallbackExpression;
 	}
@@ -191,7 +203,7 @@ export function presentSolutionDocument(
 		);
 
 	return {
-		version: 'solution-doc-1.0',
+		version: solutionDoc.version,
 		locale,
 		summary,
 		sections: fallbackSections,

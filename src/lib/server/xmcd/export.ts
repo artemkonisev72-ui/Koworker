@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import type { SolutionBlockV1, SolutionDocumentV1 } from '$lib/solution/document.js';
+import { mathAstToText, type MathNodeV1, type SolutionBlockV1, type SolutionDocumentV1 } from '$lib/solution/document.js';
 
-interface XmcdRegion {
+type XmcdRegion = XmcdTextRegion | XmcdMathRegion;
+
+interface XmcdBaseRegion {
 	id: number;
 	left: number;
 	top: number;
@@ -10,7 +12,16 @@ interface XmcdRegion {
 	alignX: number;
 	alignY: number;
 	lockWidth: boolean;
+}
+
+interface XmcdTextRegion extends XmcdBaseRegion {
+	type: 'text';
 	text: string;
+}
+
+interface XmcdMathRegion extends XmcdBaseRegion {
+	type: 'math';
+	mathAst: MathNodeV1;
 }
 
 interface XmcdBlockContext {
@@ -32,8 +43,12 @@ const CONTENT_TOP = PAGE_MARGIN;
 const TEXT_LINE_HEIGHT = 12;
 const REGION_VERTICAL_GAP = 6;
 const TEXT_BASELINE_OFFSET = 9.75;
-const MAX_REGION_HEIGHT = 240;
+const MAX_REGION_HEIGHT = 260;
 const ESTIMATED_CHAR_WIDTH = 5.8;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 function xmlEscape(value: string): string {
 	return value
@@ -59,9 +74,28 @@ function estimateWrappedLineCount(text: string, width: number): number {
 	}, 0);
 }
 
-function estimateRegionHeight(text: string, minHeight = TEXT_LINE_HEIGHT): number {
+function estimateTextRegionHeight(text: string, minHeight = TEXT_LINE_HEIGHT): number {
 	const wrappedLineCount = estimateWrappedLineCount(text, CONTENT_WIDTH);
 	return Math.min(MAX_REGION_HEIGHT, Math.max(minHeight, wrappedLineCount * TEXT_LINE_HEIGHT));
+}
+
+function estimateMathRegionSize(mathAst: MathNodeV1): { width: number; height: number } {
+	const textual = mathAstToText(mathAst) ?? '[math]';
+	const width = Math.max(220, Math.min(540, 120 + textual.length * 5));
+
+	let height = 21;
+	if (mathAst.type === 'matrix') {
+		height = Math.max(24, 18 + mathAst.rows * 15);
+	} else if (mathAst.type === 'program') {
+		height = Math.max(36, 20 + mathAst.branches.length * 20 + (mathAst.otherwise ? 16 : 0));
+	} else if (mathAst.type === 'integral' || mathAst.type === 'function_def' || mathAst.type === 'eval') {
+		height = 30;
+	}
+
+	return {
+		width,
+		height: Math.min(MAX_REGION_HEIGHT, height)
+	};
 }
 
 function blockToText(block: SolutionBlockV1, context: XmcdBlockContext): string {
@@ -72,20 +106,9 @@ function blockToText(block: SolutionBlockV1, context: XmcdBlockContext): string 
 		return `${title}${block.code ?? ''}`;
 	}
 
-	if (block.kind === 'definition' || block.kind === 'equation' || block.kind === 'solve') {
-		const expression = block.expression ?? block.text ?? '';
-		const valueSuffix = block.value ? ` = ${block.value}` : '';
-		return `${title}${expression}${valueSuffix}`;
-	}
-
-	if (block.kind === 'result') {
-		const label = block.text ?? title.trimEnd();
-		const value = block.value ?? '';
-		return label ? `${label}${value ? `: ${value}` : ''}` : value;
-	}
-
-	if (block.kind === 'graph') {
-		const graphTitle = block.title ?? 'Graph';
+	if (block.kind === 'plot' || block.kind === 'graph') {
+		console.warn('[XMCD] plot_block_degraded_to_text', context);
+		const graphTitle = block.title ?? 'Plot';
 		const graphDetail = block.text ?? '';
 		const dataInfo = block.data
 			? ` (${typeof block.data.type === 'string' ? block.data.type : 'data'}${typeof block.data.points === 'number' ? `, ${block.data.points} points` : ''})`
@@ -99,12 +122,43 @@ function blockToText(block: SolutionBlockV1, context: XmcdBlockContext): string 
 		return `${tableTitle}${tableText ? `: ${tableText}` : ''}`;
 	}
 
-	const text = block.text ?? block.expression ?? '';
-	if (!text.trim() && !title.trim()) {
-		console.warn('[XMCD] empty_block_content', context);
+	if (block.kind === 'result') {
+		const label = block.text ?? title.trimEnd();
+		const value = block.value ?? '';
+		return label ? `${label}${value ? `: ${value}` : ''}` : value;
 	}
 
-	return `${title}${text}`;
+	const expression = block.expression ?? mathAstToText(block.mathAst) ?? block.text ?? '';
+	const valueSuffix = block.value ? ` = ${block.value}` : '';
+	return `${title}${expression}${valueSuffix}`;
+}
+
+function toScalarMathNode(value: string): MathNodeV1 {
+	const trimmed = value.trim();
+	if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) {
+		return { type: 'num', value: trimmed };
+	}
+	return { type: 'text', value: trimmed };
+}
+
+function pickMathNodeFromBlock(block: SolutionBlockV1): MathNodeV1 | null {
+	if (block.mathAst) return block.mathAst;
+
+	if (block.kind === 'result' && typeof block.value === 'string' && block.value.trim().length > 0) {
+		return toScalarMathNode(block.value);
+	}
+	if (
+		(block.kind === 'equation' ||
+			block.kind === 'definition' ||
+			block.kind === 'solve' ||
+			block.kind === 'evaluation' ||
+			block.kind === 'math') &&
+		typeof block.expression === 'string' &&
+		block.expression.trim().length > 0
+	) {
+		return toScalarMathNode(block.expression);
+	}
+	return null;
 }
 
 function buildRegions(solutionDoc: SolutionDocumentV1): XmcdRegion[] {
@@ -112,12 +166,13 @@ function buildRegions(solutionDoc: SolutionDocumentV1): XmcdRegion[] {
 	let top = CONTENT_TOP;
 	let id = 1;
 
-	const pushRegion = (text: string, minHeight = TEXT_LINE_HEIGHT, lockWidth = true) => {
+	const pushTextRegion = (text: string, minHeight = TEXT_LINE_HEIGHT, lockWidth = true) => {
 		const normalized = text.trim();
 		if (!normalized) return;
 
-		const height = estimateRegionHeight(normalized, minHeight);
+		const height = estimateTextRegionHeight(normalized, minHeight);
 		regions.push({
+			type: 'text',
 			id,
 			left: CONTENT_LEFT,
 			top,
@@ -132,14 +187,32 @@ function buildRegions(solutionDoc: SolutionDocumentV1): XmcdRegion[] {
 		top += height + REGION_VERTICAL_GAP;
 	};
 
+	const pushMathRegion = (mathAst: MathNodeV1) => {
+		const { width, height } = estimateMathRegionSize(mathAst);
+		regions.push({
+			type: 'math',
+			id,
+			left: CONTENT_LEFT,
+			top,
+			width,
+			height,
+			alignX: CONTENT_LEFT,
+			alignY: Number((top + TEXT_BASELINE_OFFSET).toFixed(2)),
+			lockWidth: true,
+			mathAst
+		});
+		id += 1;
+		top += height + REGION_VERTICAL_GAP;
+	};
+
 	if (solutionDoc.summary) {
-		pushRegion(solutionDoc.summary, 24);
+		pushTextRegion(solutionDoc.summary, 24);
 	}
 
 	for (const [sectionIndex, section] of solutionDoc.sections.entries()) {
-		pushRegion(section.title, 18);
+		pushTextRegion(section.title, 18);
 		if (section.blocks.length === 0) {
-			pushRegion(solutionDoc.locale === 'ru' ? 'Раздел пуст.' : 'Section is empty.');
+			pushTextRegion(solutionDoc.locale === 'ru' ? 'Раздел не содержит шагов.' : 'Section is empty.');
 			continue;
 		}
 
@@ -153,14 +226,25 @@ function buildRegions(solutionDoc: SolutionDocumentV1): XmcdRegion[] {
 			};
 
 			try {
-				const text = normalizeLineBreaks(blockToText(block, context)).join('\n');
-				pushRegion(text);
+				const mathNode = pickMathNodeFromBlock(block);
+				if (block.title && block.kind !== 'note') {
+					pushTextRegion(block.title, TEXT_LINE_HEIGHT);
+				}
+				if (mathNode && block.kind !== 'note' && block.kind !== 'table' && block.kind !== 'code') {
+					pushMathRegion(mathNode);
+					if (block.text && block.kind === 'result') {
+						pushTextRegion(block.text, TEXT_LINE_HEIGHT);
+					}
+				} else {
+					const text = normalizeLineBreaks(blockToText(block, context)).join('\n');
+					pushTextRegion(text);
+				}
 			} catch (err) {
 				console.error('[XMCD] block_serialization_failed', {
 					...context,
 					error: err instanceof Error ? err.message : String(err)
 				});
-				pushRegion(
+				pushTextRegion(
 					solutionDoc.locale === 'ru'
 						? 'Шаг пропущен из-за ошибки сериализации.'
 						: 'Step omitted due to serialization error.'
@@ -172,7 +256,99 @@ function buildRegions(solutionDoc: SolutionDocumentV1): XmcdRegion[] {
 	return regions;
 }
 
-function renderTextRegion(region: XmcdRegion): string {
+function renderMathNode(node: MathNodeV1, context: XmcdBlockContext): string {
+	if (node.type === 'id') {
+		const subscriptAttr = node.subscript ? ` subscript="${xmlEscape(node.subscript)}"` : '';
+		return `<ml:id xml:space="preserve"${subscriptAttr}>${xmlEscape(node.name)}</ml:id>`;
+	}
+
+	if (node.type === 'num') {
+		return `<ml:real>${xmlEscape(node.value)}</ml:real>`;
+	}
+
+	if (node.type === 'text') {
+		return `<ml:id xml:space="preserve">${xmlEscape(node.value)}</ml:id>`;
+	}
+
+	if (node.type === 'apply') {
+		const op = node.op.trim();
+		const opTagMap: Record<string, string> = {
+			plus: 'plus',
+			minus: 'minus',
+			mult: 'mult style="auto-select"',
+			div: 'div',
+			pow: 'pow',
+			equal: 'equal',
+			lessThan: 'lessThan',
+			lessOrEqual: 'lessOrEqual',
+			greaterThan: 'greaterThan',
+			greaterOrEqual: 'greaterOrEqual',
+			sqrt: 'sqrt',
+			and: 'and',
+			or: 'or',
+			not: 'not'
+		};
+		const opTag = opTagMap[op] ?? null;
+		const args = node.args.map((arg) => renderMathNode(arg, context)).join('');
+		if (opTag) {
+			return `<ml:apply><ml:${opTag}/>${args}</ml:apply>`;
+		}
+		return `<ml:apply><ml:id xml:space="preserve">${xmlEscape(op)}</ml:id>${args}</ml:apply>`;
+	}
+
+	if (node.type === 'define') {
+		return `<ml:define>${renderMathNode(node.lhs, context)}${renderMathNode(node.rhs, context)}</ml:define>`;
+	}
+
+	if (node.type === 'function_def') {
+		const params = node.params.map((entry) => renderMathNode(entry, context)).join('');
+		return `<ml:define><ml:function>${renderMathNode(node.name, context)}<ml:boundVars>${params}</ml:boundVars></ml:function>${renderMathNode(node.body, context)}</ml:define>`;
+	}
+
+	if (node.type === 'call') {
+		const fn = renderMathNode(node.fn, context);
+		const args = node.args.map((entry) => renderMathNode(entry, context)).join('');
+		return `<ml:apply>${fn}${args}</ml:apply>`;
+	}
+
+	if (node.type === 'integral') {
+		return `<ml:apply><ml:integral auto-algorithm="true" algorithm="adaptive"/><ml:lambda><ml:boundVars>${renderMathNode(node.variable, context)}</ml:boundVars>${renderMathNode(node.body, context)}</ml:lambda><ml:bounds>${renderMathNode(node.lower, context)}${renderMathNode(node.upper, context)}</ml:bounds></ml:apply>`;
+	}
+
+	if (node.type === 'matrix') {
+		const values = node.values.map((entry) => renderMathNode(entry, context)).join('');
+		return `<ml:matrix rows="${node.rows}" cols="${node.cols}">${values}</ml:matrix>`;
+	}
+
+	if (node.type === 'program') {
+		const branches = node.branches
+			.map(
+				(branch) =>
+					`<ml:ifThen>${renderMathNode(branch.condition, context)}${renderMathNode(branch.value, context)}</ml:ifThen>`
+			)
+			.join('');
+		const otherwise = node.otherwise ? `<ml:otherwise>${renderMathNode(node.otherwise, context)}</ml:otherwise>` : '';
+		return `<ml:program>${branches}${otherwise}</ml:program>`;
+	}
+
+	if (node.type === 'eval') {
+		return `<ml:eval placeholderMultiplicationStyle="default">${renderMathNode(node.expr, context)}</ml:eval>`;
+	}
+
+	if (node.type === 'lambda') {
+		const params = node.params.map((entry) => renderMathNode(entry, context)).join('');
+		return `<ml:lambda><ml:boundVars>${params}</ml:boundVars>${renderMathNode(node.body, context)}</ml:lambda>`;
+	}
+
+	const unknownNodeType = (node as unknown as { type?: unknown }).type;
+	console.error('[XMCD] unknown_math_node_type', {
+		...context,
+		node: typeof unknownNodeType === 'string' ? unknownNodeType : typeof node
+	});
+	return `<ml:id xml:space="preserve">unsupported_math_node</ml:id>`;
+}
+
+function renderTextRegion(region: XmcdTextRegion): string {
 	const paragraphs = normalizeLineBreaks(region.text)
 		.map((line) => {
 			const safeText = xmlEscape(line.length > 0 ? line : ' ');
@@ -181,6 +357,22 @@ function renderTextRegion(region: XmcdRegion): string {
 		.join('');
 
 	return `<region region-id="${region.id}" left="${region.left}" top="${region.top}" width="${region.width}" height="${region.height}" align-x="${region.alignX}" align-y="${region.alignY}" show-border="false" show-highlight="false" is-protected="true" z-order="0" background-color="inherit" tag=""><text use-page-width="false" push-down="false" lock-width="${region.lockWidth ? 'true' : 'false'}">${paragraphs}</text></region>`;
+}
+
+function renderMathRegion(region: XmcdMathRegion, context: XmcdBlockContext): string {
+	const mathXml = renderMathNode(region.mathAst, context);
+	return `<region region-id="${region.id}" left="${region.left}" top="${region.top}" width="${region.width}" height="${region.height}" align-x="${region.alignX}" align-y="${region.alignY}" show-border="false" show-highlight="false" is-protected="true" z-order="0" background-color="inherit" tag=""><math optimize="false" disable-calc="false">${mathXml}</math></region>`;
+}
+
+function renderRegion(region: XmcdRegion): string {
+	if (region.type === 'text') return renderTextRegion(region);
+	return renderMathRegion(region, {
+		sectionId: 'compiled',
+		blockId: `region-${region.id}`,
+		sectionIndex: -1,
+		blockIndex: -1,
+		kind: 'math'
+	});
 }
 
 function renderSettingsXml(locale: SolutionDocumentV1['locale'], regionUpperBound: number): string {
@@ -299,11 +491,11 @@ export function buildXmcdFromSolutionDocument(
 	const documentId = randomUUID();
 	const versionId = randomUUID();
 	const parentVersionId = ZERO_GUID;
-	const generator = xmlEscape('Coworker XMCD Exporter 1.0');
+	const generator = xmlEscape('Coworker XMCD Exporter 1.1');
 	const author = xmlEscape(options?.author?.trim() || 'Coworker User');
 	const title = xmlEscape(options?.title?.trim() || 'Detailed solution');
 	const company = xmlEscape('Coworker');
-	const regionsXml = regions.map((region) => renderTextRegion(region)).join('');
+	const regionsXml = regions.map((region) => renderRegion(region)).join('');
 	const regionUpperBound = Math.max(50, regions.at(-1)?.id ?? 0);
 	const settingsXml = renderSettingsXml(solutionDoc.locale, regionUpperBound);
 
