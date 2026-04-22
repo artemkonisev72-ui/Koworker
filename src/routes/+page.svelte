@@ -91,6 +91,10 @@
 	let activeChat = $derived(chats.find((c) => c.id === activeChatId));
 	let messages = $derived(activeChatId ? messagesByChatId[activeChatId] ?? [] : []);
 	let activeDraft = $derived(activeChatId ? draftsByChatId[activeChatId] ?? null : null);
+	let isChatEmpty = $derived(messages.length === 0);
+	let activeDraftReviewKey = $derived(
+		activeDraft ? `${activeDraft.draftId}:${activeDraft.revisionIndex}` : null
+	);
 	let activeChatProcessing = $derived(
 		activeChatId
 			? processingByChatId[activeChatId] ?? {
@@ -134,6 +138,8 @@
 	);
 	let revisionNotes = $state('');
 	let showRevisionBox = $state(false);
+	let schemaReviewExpanded = $state(true);
+	let lastSchemaReviewKey = $state<string | null>(null);
 	let selectedModelPreference = $state('auto');
 	let themeMode = $state<ThemeMode>('light');
 	let welcomeGreeting = $state('Над чем работаем сегодня?');
@@ -259,6 +265,15 @@
 	function toggleSchemaCheckMode() {
 		if (schemaCheckToggleDisabled) return;
 		setSchemaCheckEnabledForCurrentContext(!schemaCheckEnabled);
+	}
+
+	function toggleSchemaReviewPanel() {
+		schemaReviewExpanded = !schemaReviewExpanded;
+	}
+
+	function toggleSchemaRevisionBox() {
+		schemaReviewExpanded = true;
+		showRevisionBox = !showRevisionBox;
 	}
 
 	function removeProcessingPlaceholder(chatId: string) {
@@ -438,6 +453,23 @@
 		return () => {
 			window.clearInterval(pollId);
 		};
+	});
+
+	$effect(() => {
+		const reviewKey = activeDraftReviewKey;
+		if (!reviewKey) {
+			if (lastSchemaReviewKey !== null) {
+				lastSchemaReviewKey = null;
+			}
+			if (!schemaReviewExpanded) {
+				schemaReviewExpanded = true;
+			}
+			return;
+		}
+		if (reviewKey !== lastSchemaReviewKey) {
+			lastSchemaReviewKey = reviewKey;
+			schemaReviewExpanded = true;
+		}
 	});
 
 	async function loadChats() {
@@ -1548,6 +1580,229 @@
 
 	<!-- в”Ђв”Ђ Main в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ -->
 	<main class="chat-main">
+		{#snippet composerCard()}
+			<div class="composer-card">
+				<div class="input-toolbar">
+					<button
+						type="button"
+						class="schema-check-btn"
+						class:active={schemaCheckEnabled}
+						onclick={toggleSchemaCheckMode}
+						disabled={schemaCheckToggleDisabled}
+						aria-pressed={schemaCheckEnabled}
+						aria-label={schemaCheckEnabled ? 'Проверка схемы включена' : 'Проверка схемы выключена'}
+						title="Включить или выключить проверку схемы для текущего чата"
+					>
+						<span class="schema-check-title">Проверка схемы</span>
+						<span class="schema-check-indicator" aria-hidden="true"></span>
+					</button>
+
+					<select
+						value={currentModelPreference()}
+						onchange={(e) => updateModelPreference(e.currentTarget.value)}
+						class="model-select composer-model-select"
+						disabled={hasAnyProcessing}
+					>
+						{#each MODEL_OPTIONS as option (option.value)}
+							<option value={option.value}>{option.label}</option>
+						{/each}
+					</select>
+				</div>
+
+				<div class="input-container">
+					<button
+						class="attach-btn"
+						onclick={() => fileInputEl?.click()}
+						disabled={hasAnyProcessing}
+						title="Прикрепить фото задачи"
+					>
+						<svg
+							width="20"
+							height="20"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+						>
+							<path
+								d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
+							/>
+						</svg>
+					</button>
+
+					<input
+						type="file"
+						accept="image/*"
+						hidden
+						bind:this={fileInputEl}
+						onchange={handleFileChange}
+					/>
+
+					<div class="input-wrapper">
+						{#if selectedImage}
+							<div class="image-preview">
+								<img
+									src={`data:${selectedImage.mimeType};base64,${selectedImage.base64}`}
+									alt="Preview"
+								/>
+								<button class="remove-img-btn" onclick={removeImage}>×</button>
+							</div>
+						{/if}
+						<textarea
+							id="main-input"
+							bind:this={inputEl}
+							bind:value={inputValue}
+							oninput={autoResize}
+							onkeydown={handleKeydown}
+							onpaste={handlePaste}
+							placeholder="Опишите задачу или прикрепите фото..."
+							rows="1"
+							disabled={hasAnyProcessing}
+							class="message-input"
+						></textarea>
+					</div>
+
+					{#if canCancelActiveGeneration}
+						<button class="send-btn stop-btn" onclick={cancelGeneration} title="Остановить генерацию">
+							<span class="stop-icon"></span>
+						</button>
+					{:else}
+						<button
+							class="send-btn"
+							onclick={sendMessage}
+							disabled={!inputValue.trim() ||
+								hasAnyProcessing ||
+								(!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
+							title="Отправить"
+						>
+							<svg
+								width="18"
+								height="18"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2.5"
+							>
+								<path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z" />
+							</svg>
+						</button>
+					{/if}
+				</div>
+			</div>
+		{/snippet}
+
+		{#snippet schemaReviewPanel()}
+			{#if activeDraft}
+				<div class="schema-review-card" class:collapsed={!schemaReviewExpanded}>
+					<div class="schema-review-header">
+						<div class="schema-review-heading">
+							<strong>Schema review is active</strong>
+							<div class="schema-revision-meta">Revision #{activeDraft.revisionIndex}</div>
+						</div>
+
+						<div class="schema-review-header-actions">
+							{#if schemaReviewExpanded}
+								<div class="schema-actions">
+									<button
+										class="schema-action-btn primary"
+										onclick={confirmDraftAndSolve}
+										disabled={hasAnyProcessing}
+									>
+										Confirm scheme
+									</button>
+									<button
+										class="schema-action-btn"
+										onclick={toggleSchemaRevisionBox}
+										disabled={hasAnyProcessing}
+									>
+										{showRevisionBox ? 'Hide edit' : 'Revise scheme'}
+									</button>
+								</div>
+							{/if}
+
+							<button
+								type="button"
+								class="schema-review-toggle"
+								onclick={toggleSchemaReviewPanel}
+								aria-expanded={schemaReviewExpanded}
+								aria-label={schemaReviewExpanded
+									? 'Свернуть панель проверки схемы'
+									: 'Развернуть панель проверки схемы'}
+								title={schemaReviewExpanded ? 'Свернуть' : 'Развернуть'}
+							>
+								<svg
+									class="schema-review-chevron"
+									class:expanded={schemaReviewExpanded}
+									width="16"
+									height="16"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+								>
+									<path d="M6 9l6 6 6-6" />
+								</svg>
+							</button>
+						</div>
+					</div>
+
+					{#if schemaReviewExpanded}
+						{#if activeDraft.assumptions.length > 0}
+							<div class="schema-list-block">
+								<div class="schema-list-title">Assumptions</div>
+								<ul>
+									{#each activeDraft.assumptions as assumption}
+										<li>{assumption}</li>
+									{/each}
+								</ul>
+							</div>
+						{/if}
+
+						{#if activeDraft.ambiguities.length > 0}
+							<div class="schema-list-block">
+								<div class="schema-list-title">Ambiguities</div>
+								<ul>
+									{#each activeDraft.ambiguities as ambiguity}
+										<li>{ambiguity}</li>
+									{/each}
+								</ul>
+							</div>
+						{/if}
+
+						{#if showRevisionBox}
+							<div class="schema-revision-box">
+								<textarea
+									bind:value={revisionNotes}
+									rows="3"
+									placeholder="Describe what should be corrected in the scheme..."
+									disabled={hasAnyProcessing}
+								></textarea>
+								<div class="schema-revision-actions">
+									<button
+										class="schema-action-btn primary"
+										onclick={submitSchemaRevision}
+										disabled={!revisionNotes.trim() || hasAnyProcessing}
+									>
+										Submit revision
+									</button>
+									<button
+										class="schema-action-btn"
+										onclick={() => {
+											showRevisionBox = false;
+											revisionNotes = '';
+										}}
+										disabled={hasAnyProcessing}
+									>
+										Cancel
+									</button>
+								</div>
+							</div>
+						{/if}
+					{/if}
+				</div>
+			{/if}
+		{/snippet}
+
 		<!-- Header -->
 		<header class="chat-header">
 			{#if isMobileView || !sidebarOpen}
@@ -1686,26 +1941,18 @@
 						{/if}
 					</div>
 				{/if}
-
-				<select
-					value={currentModelPreference()}
-					onchange={(e) => updateModelPreference(e.currentTarget.value)}
-					class="model-select desktop-only"
-					disabled={hasAnyProcessing}
-				>
-					{#each MODEL_OPTIONS as option (option.value)}
-						<option value={option.value}>{option.label}</option>
-					{/each}
-				</select>
 			</div>
 		</header>
 
 		<!-- Messages area -->
-		<div class="messages-area" id="messages-area">
-			{#if messages.length === 0}
+		<div class="messages-area" class:empty={isChatEmpty} id="messages-area">
+			{#if isChatEmpty}
 				<div class="welcome-screen">
-					<div class="welcome-hero">
-						<h2>{welcomeGreeting}</h2>
+					<div class="welcome-composer-shell">
+						<div class="welcome-hero">
+							<h2>{welcomeGreeting}</h2>
+						</div>
+						{@render composerCard()}
 					</div>
 				</div>
 			{:else}
@@ -1782,195 +2029,15 @@
 			{/if}
 		</div>
 
-		<!-- Input area -->
-		<div class="input-area">
-			{#if activeDraft}
-				<div class="schema-review-card">
-					<div class="schema-review-header">
-						<div>
-							<strong>Schema review is active</strong>
-							<div class="schema-revision-meta">Revision #{activeDraft.revisionIndex}</div>
-						</div>
-						<div class="schema-actions">
-							<button
-								class="schema-action-btn primary"
-								onclick={confirmDraftAndSolve}
-								disabled={hasAnyProcessing}
-							>
-								Confirm scheme
-							</button>
-							<button
-								class="schema-action-btn"
-								onclick={() => (showRevisionBox = !showRevisionBox)}
-								disabled={hasAnyProcessing}
-							>
-								{showRevisionBox ? 'Hide edit' : 'Revise scheme'}
-							</button>
-						</div>
-					</div>
-
-					{#if activeDraft.assumptions.length > 0}
-						<div class="schema-list-block">
-							<div class="schema-list-title">Assumptions</div>
-							<ul>
-								{#each activeDraft.assumptions as assumption}
-									<li>{assumption}</li>
-								{/each}
-							</ul>
-						</div>
-					{/if}
-
-					{#if activeDraft.ambiguities.length > 0}
-						<div class="schema-list-block">
-							<div class="schema-list-title">Ambiguities</div>
-							<ul>
-								{#each activeDraft.ambiguities as ambiguity}
-									<li>{ambiguity}</li>
-								{/each}
-							</ul>
-						</div>
-					{/if}
-
-					{#if showRevisionBox}
-						<div class="schema-revision-box">
-							<textarea
-								bind:value={revisionNotes}
-								rows="3"
-								placeholder="Describe what should be corrected in the scheme..."
-								disabled={hasAnyProcessing}
-							></textarea>
-							<div class="schema-revision-actions">
-								<button
-									class="schema-action-btn primary"
-									onclick={submitSchemaRevision}
-									disabled={!revisionNotes.trim() || hasAnyProcessing}
-								>
-									Submit revision
-								</button>
-								<button
-									class="schema-action-btn"
-									onclick={() => {
-										showRevisionBox = false;
-										revisionNotes = '';
-									}}
-									disabled={hasAnyProcessing}
-								>
-									Cancel
-								</button>
-							</div>
-						</div>
-					{/if}
+		{#if !isChatEmpty}
+			<!-- Input area -->
+			<div class="input-area">
+				<div class="composer-shell">
+					{@render schemaReviewPanel()}
+					{@render composerCard()}
 				</div>
-			{/if}
-
-			<div class="input-toolbar">
-				<button
-					type="button"
-					class="schema-check-btn"
-					class:active={schemaCheckEnabled}
-					onclick={toggleSchemaCheckMode}
-					disabled={schemaCheckToggleDisabled}
-					aria-pressed={schemaCheckEnabled}
-					aria-label={schemaCheckEnabled ? 'Проверка схемы включена' : 'Проверка схемы выключена'}
-					title="Включить или выключить проверку схемы для текущего чата"
-				>
-					<span class="schema-check-title">Проверка схемы</span>
-					<span class="schema-check-indicator" aria-hidden="true"></span>
-				</button>
-
-				<select
-					value={currentModelPreference()}
-					onchange={(e) => updateModelPreference(e.currentTarget.value)}
-					class="model-select mobile-model-inline"
-					disabled={hasAnyProcessing}
-				>
-					{#each MODEL_OPTIONS as option (option.value)}
-						<option value={option.value}>{option.label}</option>
-					{/each}
-				</select>
 			</div>
-
-			<div class="input-container">
-				<!-- File upload button -->
-				<button
-					class="attach-btn"
-					onclick={() => fileInputEl?.click()}
-					disabled={hasAnyProcessing}
-					title="Прикрепить фото задачи"
-				>
-					<svg
-						width="20"
-						height="20"
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-					>
-						<path
-							d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"
-						/>
-					</svg>
-				</button>
-
-				<input
-					type="file"
-					accept="image/*"
-					hidden
-					bind:this={fileInputEl}
-					onchange={handleFileChange}
-				/>
-
-				<div class="input-wrapper">
-					{#if selectedImage}
-						<div class="image-preview">
-							<img
-								src={`data:${selectedImage.mimeType};base64,${selectedImage.base64}`}
-								alt="Preview"
-							/>
-							<button class="remove-img-btn" onclick={removeImage}>×</button>
-						</div>
-					{/if}
-					<textarea
-						id="main-input"
-						bind:this={inputEl}
-						bind:value={inputValue}
-						oninput={autoResize}
-						onkeydown={handleKeydown}
-						onpaste={handlePaste}
-						placeholder="Опишите задачу или прикрепите фото..."
-						rows="1"
-						disabled={hasAnyProcessing}
-						class="message-input"
-					></textarea>
-				</div>
-
-				{#if canCancelActiveGeneration}
-					<button class="send-btn stop-btn" onclick={cancelGeneration} title="Остановить генерацию">
-						<span class="stop-icon"></span>
-					</button>
-				{:else}
-					<button
-						class="send-btn"
-						onclick={sendMessage}
-						disabled={!inputValue.trim() ||
-							hasAnyProcessing ||
-							(!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
-						title="Отправить"
-					>
-						<svg
-							width="18"
-							height="18"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							stroke-width="2.5"
-						>
-							<path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z" />
-						</svg>
-					</button>
-				{/if}
-			</div>
-		</div>
+		{/if}
 	</main>
 </div>
 
@@ -2417,8 +2484,8 @@
 		display: flex;
 		align-items: center;
 		gap: 0.72rem;
-		padding: calc(0.68rem + env(safe-area-inset-top)) calc(1.32rem + env(safe-area-inset-right))
-			0.68rem calc(1.32rem + env(safe-area-inset-left));
+		padding: calc(0.48rem + env(safe-area-inset-top)) calc(1.18rem + env(safe-area-inset-right))
+			0.46rem calc(1.18rem + env(safe-area-inset-left));
 		min-height: calc(var(--header-height) + env(safe-area-inset-top));
 		border-bottom: 1px solid var(--border-subtle);
 		background: color-mix(in srgb, var(--bg-card) 90%, var(--bg-surface));
@@ -2433,7 +2500,7 @@
 	}
 
 	.header-title h1 {
-		font-size: clamp(1.15rem, 0.7vw + 1rem, 1.34rem);
+		font-size: clamp(1.08rem, 0.62vw + 0.96rem, 1.24rem);
 		font-weight: 600;
 		line-height: 1.12;
 		color: var(--text-primary);
@@ -2507,6 +2574,8 @@
 
 	.messages-area {
 		flex: 1;
+		display: flex;
+		flex-direction: column;
 		overflow-y: auto;
 		padding: clamp(1.15rem, 2.2vw, 2rem)
 			calc(clamp(1.15rem, 2.2vw, 2rem) + env(safe-area-inset-right)) 1.4rem
@@ -2514,24 +2583,37 @@
 		scroll-behavior: smooth;
 	}
 
+	.messages-area.empty {
+		justify-content: center;
+	}
+
 	.welcome-screen {
+		flex: 1;
+		width: 100%;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		min-height: min(56vh, 420px);
-		padding: clamp(2.2rem, 5vw, 3.4rem) 0.85rem;
+		min-height: 100%;
+		padding: clamp(1.8rem, 4vw, 3rem) 0.85rem;
 		animation: fadeInUp 0.44s ease;
 	}
 
+	.welcome-composer-shell {
+		width: min(100%, 760px);
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+	}
+
 	.welcome-hero {
+		width: 100%;
 		text-align: center;
-		max-width: 900px;
 	}
 
 	.welcome-hero h2 {
-		font-size: clamp(2.1rem, 4.2vw, 3.15rem);
+		font-size: clamp(1.9rem, 3.6vw, 2.9rem);
 		font-weight: 500;
-		line-height: 1.12;
+		line-height: 1.08;
 		margin: 0;
 		color: var(--text-primary);
 		text-wrap: balance;
@@ -2687,18 +2769,42 @@
 	}
 
 	.input-area {
-		padding: 0.88rem calc(1.25rem + env(safe-area-inset-right))
-			calc(1rem + env(safe-area-inset-bottom)) calc(1.25rem + env(safe-area-inset-left));
-		border-top: 1px solid var(--border-subtle);
-		background: color-mix(in srgb, var(--bg-card) 92%, var(--bg-surface));
+		padding: 0.72rem calc(1.2rem + env(safe-area-inset-right))
+			calc(0.86rem + env(safe-area-inset-bottom)) calc(1.2rem + env(safe-area-inset-left));
+		border-top: none;
+		background: transparent;
 		flex-shrink: 0;
 		position: sticky;
 		bottom: 0;
 		z-index: 22;
 	}
 
+	.composer-shell {
+		width: min(100%, 930px);
+		margin: 0 auto;
+		display: flex;
+		flex-direction: column;
+		gap: 0.78rem;
+	}
+
+	.composer-card {
+		padding: 0.72rem 0.82rem 0.76rem;
+		border: 1px solid var(--border-medium);
+		border-radius: var(--radius-xl);
+		background: var(--bg-card);
+		box-shadow: var(--shadow-sm);
+		transition:
+			border-color var(--transition-fast),
+			box-shadow var(--transition-fast),
+			background-color var(--transition-fast);
+	}
+
+	.composer-card:focus-within {
+		border-color: color-mix(in srgb, var(--accent-primary) 58%, transparent);
+		box-shadow: 0 0 0 2px var(--accent-soft);
+	}
+
 	.schema-review-card {
-		margin-bottom: 0.78rem;
 		padding: 0.78rem;
 		border: 1px solid var(--border-medium);
 		border-radius: var(--radius-lg);
@@ -2709,6 +2815,10 @@
 		box-shadow: var(--shadow-sm);
 	}
 
+	.schema-review-card.collapsed {
+		gap: 0;
+	}
+
 	.schema-review-header {
 		display: flex;
 		align-items: flex-start;
@@ -2716,9 +2826,23 @@
 		gap: 0.72rem;
 	}
 
+	.schema-review-heading {
+		display: flex;
+		flex-direction: column;
+		gap: 0.18rem;
+		min-width: 0;
+	}
+
 	.schema-review-header strong {
 		font-family: var(--font-serif);
 		font-weight: 600;
+	}
+
+	.schema-review-header-actions {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.55rem;
+		margin-left: auto;
 	}
 
 	.schema-revision-meta {
@@ -2812,13 +2936,46 @@
 		gap: 0.5rem;
 	}
 
+	.schema-review-toggle {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 2rem;
+		height: 2rem;
+		border: 1px solid var(--border-subtle);
+		border-radius: 999px;
+		background: var(--bg-elevated);
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition:
+			border-color var(--transition-fast),
+			background-color var(--transition-fast),
+			color var(--transition-fast);
+		flex-shrink: 0;
+	}
+
+	.schema-review-toggle:hover:not(:disabled) {
+		border-color: color-mix(in srgb, var(--accent-primary) 45%, transparent);
+		color: var(--text-primary);
+		background: color-mix(in srgb, var(--accent-primary) 8%, var(--bg-elevated));
+	}
+
+	.schema-review-chevron {
+		transition: transform var(--transition-fast);
+	}
+
+	.schema-review-chevron.expanded {
+		transform: rotate(180deg);
+	}
+
 	.input-toolbar {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+		flex-wrap: wrap;
 		gap: 0.65rem;
-		margin-bottom: 0.55rem;
-		padding: 0 0.12rem;
+		margin-bottom: 0.64rem;
+		padding: 0 0.08rem;
 	}
 
 	.schema-check-btn {
@@ -2875,29 +3032,19 @@
 		--schema-dot-color: #2ea66b;
 	}
 
-	.mobile-model-inline {
-		display: none;
-		width: 100%;
-		max-width: 260px;
+	.composer-model-select {
+		min-width: 220px;
+		max-width: 280px;
 	}
 
 	.input-container {
 		display: flex;
 		align-items: flex-end;
 		gap: 0.72rem;
-		background: var(--bg-card);
-		border: 1px solid var(--border-medium);
-		border-radius: var(--radius-xl);
-		padding: 0.5rem 0.74rem;
-		transition:
-			border-color var(--transition-fast),
-			box-shadow var(--transition-fast),
-			background-color var(--transition-fast);
-	}
-
-	.input-container:focus-within {
-		border-color: color-mix(in srgb, var(--accent-primary) 58%, transparent);
-		box-shadow: 0 0 0 2px var(--accent-soft);
+		background: transparent;
+		border: none;
+		border-radius: 0;
+		padding: 0;
 	}
 
 	.attach-btn {
@@ -3203,10 +3350,6 @@
 	}
 
 	@media (max-width: 768px) {
-		.desktop-only {
-			display: none;
-		}
-
 		.app-shell {
 			padding: max(0px, env(safe-area-inset-top)) max(0px, env(safe-area-inset-right))
 				max(0px, env(safe-area-inset-bottom)) max(0px, env(safe-area-inset-left));
@@ -3224,13 +3367,13 @@
 		}
 
 		.chat-header {
-			padding: max(0px, env(safe-area-inset-top)) calc(0.82rem + env(safe-area-inset-right)) 0.52rem
-				calc(0.82rem + env(safe-area-inset-left));
-			min-height: calc(57px + env(safe-area-inset-top));
+			padding: max(0px, env(safe-area-inset-top)) calc(0.76rem + env(safe-area-inset-right)) 0.38rem
+				calc(0.76rem + env(safe-area-inset-left));
+			min-height: calc(50px + env(safe-area-inset-top));
 		}
 
 		.header-title h1 {
-			font-size: 1.04rem;
+			font-size: 1rem;
 		}
 
 		.messages-area {
@@ -3239,12 +3382,15 @@
 		}
 
 		.welcome-screen {
-			min-height: 46vh;
-			padding: 1.24rem 0.35rem;
+			padding: 1.1rem 0.35rem;
+		}
+
+		.welcome-composer-shell {
+			gap: 0.82rem;
 		}
 
 		.welcome-hero h2 {
-			font-size: 1.72rem;
+			font-size: 1.64rem;
 		}
 
 		.messages-list {
@@ -3285,8 +3431,20 @@
 
 		.schema-review-header {
 			flex-direction: column;
-			align-items: flex-start;
-			gap: 0.44rem;
+			align-items: stretch;
+			gap: 0.52rem;
+		}
+
+		.schema-review-header-actions {
+			width: 100%;
+			flex-direction: column-reverse;
+			align-items: stretch;
+			margin-left: 0;
+			gap: 0.45rem;
+		}
+
+		.schema-review-toggle {
+			align-self: flex-end;
 		}
 
 		.schema-actions,
@@ -3298,28 +3456,37 @@
 		}
 
 		.input-area {
-			padding: 0.58rem calc(0.76rem + env(safe-area-inset-right))
-				calc(0.74rem + env(safe-area-inset-bottom)) calc(0.76rem + env(safe-area-inset-left));
+			padding: 0.56rem calc(0.76rem + env(safe-area-inset-right))
+				calc(0.72rem + env(safe-area-inset-bottom)) calc(0.76rem + env(safe-area-inset-left));
+		}
+
+		.composer-shell {
+			gap: 0.62rem;
+		}
+
+		.composer-card {
+			padding: 0.56rem 0.58rem 0.6rem;
+			border-radius: var(--radius-lg);
 		}
 
 		.input-toolbar {
 			gap: 0.5rem;
+			margin-bottom: 0.5rem;
 		}
 
 		.schema-check-btn {
-			flex: 1;
+			flex: 1 1 100%;
 			justify-content: space-between;
 		}
 
-		.mobile-model-inline {
-			display: block;
-			max-width: 50%;
+		.composer-model-select {
+			flex: 1 1 100%;
+			max-width: none;
+			width: 100%;
 		}
 
 		.input-container {
 			gap: 0.52rem;
-			padding: 0.44rem 0.56rem;
-			border-radius: var(--radius-lg);
 		}
 
 		.attach-btn,
