@@ -23,7 +23,10 @@ describe('scheme understanding parser', () => {
     "source": { "hasImage": true, "language": "ru" },
     "joints": [{ "key": "A" }, { "key": "B" }],
     "members": [{ "key": "m1", "kind": "bar", "startJoint": "A", "endJoint": "B" }],
-    "supports": [{ "key": "s1", "kind": "fixed_wall", "jointKey": "A" }],
+    "supports": [
+      { "key": "s1", "kind": "fixed_wall", "jointKey": "A" },
+      { "key": "s2", "kind": "hinge_roller", "memberKey": "m1" }
+    ],
     "loads": [{ "key": "p1", "kind": "force", "target": { "jointKey": "B" }, "directionHint": "down" }],
     "requestedResults": [{ "kind": "M", "targetMemberKey": "m1" }],
     "assumptions": ["inside"],
@@ -36,6 +39,7 @@ describe('scheme understanding parser', () => {
 		const parsed = parseSchemeUnderstandingResponse(raw);
 		expect(parsed.understanding.structureKind).toBe('beam');
 		expect(parsed.understanding.members).toHaveLength(1);
+		expect(parsed.understanding.supports[1]?.s).toBe(0.5);
 		expect(parsed.assumptions).toContain('outside');
 		expect(parsed.understanding.assumptions).toContain('outside');
 	});

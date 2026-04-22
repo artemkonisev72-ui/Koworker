@@ -811,7 +811,12 @@ function enrichLinearConstraints(schema: SchemaDataV2, nodePositions: Map<string
 		if (!Number.isFinite(len) || len < EPS) continue;
 
 		const geometry = object.geometry;
-		geometry.length = len;
+		const explicitLength = toFiniteNumber(geometry.length);
+		// Preserve canonical physical length if it was already set upstream.
+		// Layout coordinates may be rescaled for rendering and must not rewrite physics.
+		if (explicitLength === null || explicitLength <= EPS) {
+			geometry.length = len;
+		}
 		geometry.angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
 
 		const constraints = normalizeConstraintBag(geometry.constraints);

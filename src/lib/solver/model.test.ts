@@ -94,4 +94,24 @@ describe('solver model builder', () => {
 			s: 0.5
 		});
 	});
+
+	it('keeps explicit physical member length when node span differs', () => {
+		const built = buildSolverModelFromSchema({
+			version: '2.0',
+			meta: { structureKind: 'beam' },
+			coordinateSystem: { modelSpace: 'planar', originPolicy: 'fixed_support' },
+			nodes: [
+				{ id: 'A', x: 0, y: 0 },
+				{ id: 'B', x: 6, y: 0 }
+			],
+			objects: [
+				{ id: 'bar_1', type: 'bar', nodeRefs: ['A', 'B'], geometry: { length: 5, angleDeg: 0 } },
+				{ id: 'fixed_1', type: 'fixed_wall', nodeRefs: ['A'], geometry: { wallSide: 'left' } }
+			],
+			results: []
+		});
+
+		expect(built.solverModel.members).toHaveLength(1);
+		expect(built.solverModel.members[0].length).toBe(5);
+	});
 });

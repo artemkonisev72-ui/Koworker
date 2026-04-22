@@ -77,6 +77,12 @@ export interface GeminiHistory {
 	imageData?: { base64: string; mimeType: string };
 }
 
+export type ApprovedFollowupIntent =
+	| 'independent_message'
+	| 'compute_followup'
+	| 'explain_followup'
+	| 'reformat_followup';
+
 interface GeminiMessage {
 	role: 'user' | 'model';
 	parts: Array<{
@@ -466,6 +472,61 @@ export async function routeQuestion(
 	return { result: text.trim().toUpperCase().startsWith('YES'), model, tokens };
 }
 
+function normalizeApprovedFollowupIntent(raw: string): ApprovedFollowupIntent {
+	const normalized = raw.trim().toLowerCase();
+	if (normalized.includes('compute_followup')) return 'compute_followup';
+	if (normalized.includes('explain_followup')) return 'explain_followup';
+	if (normalized.includes('reformat_followup')) return 'reformat_followup';
+	return 'independent_message';
+}
+
+export async function routeApprovedFollowup(
+	history: GeminiHistory[],
+	params: {
+		userMessage: string;
+		originalTask: string;
+		approvedSchemeDescription?: string;
+		recentTaskChatContext?: string;
+		previousSolvedSummaryJson?: string;
+	},
+	forcedModel?: string | null
+): Promise<{ intent: ApprovedFollowupIntent; model: GeminiModel; tokens: number }> {
+	const prompt = `Classify the current user message for a chat that already has a solved approved mechanics task.
+Return only one label:
+- independent_message
+- compute_followup
+- explain_followup
+- reformat_followup
+
+Definitions:
+- independent_message: unrelated new request/topic; should not use previous approved task as computation base.
+- compute_followup: asks to compute additional values/variants within the same approved task and schema.
+- explain_followup: asks conceptual clarification, checking steps, or Q&A about the same solved task.
+- reformat_followup: asks to rewrite/restructure/shorten/expand/translate formatting of the same solved solution.
+
+Rules:
+- If message tries to modify task conditions (different loads, lengths, supports) still classify as compute_followup.
+- Prefer independent_message only when relation to previous task is weak or absent.
+- Output exactly one label with no extra text.`;
+
+	const question = [
+		`[CURRENT_MESSAGE]`,
+		params.userMessage,
+		`[ORIGINAL_TASK]`,
+		params.originalTask,
+		`[APPROVED_SCHEME_DESCRIPTION]`,
+		params.approvedSchemeDescription ?? '',
+		`[RECENT_TASK_CHAT_CONTEXT]`,
+		params.recentTaskChatContext ?? '',
+		`[PREVIOUS_SOLVED_SUMMARY_JSON]`,
+		params.previousSolvedSummaryJson ?? ''
+	].join('\n');
+
+	const messages = buildContext(history, prompt, question);
+	const { text, model, tokens } = await generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
+	return { intent: normalizeApprovedFollowupIntent(text), model, tokens };
+}
+
 export async function generatePythonCode(
 	history: GeminiHistory[],
 	userMessage: string,
@@ -481,6 +542,9 @@ export async function generatePythonCode(
 		guardLines.push(
 			'If [APPROVED_SCHEMA_JSON] is present: use it as canonical structural data and do not alter topology semantics.'
 		);
+		guardLines.push(
+			'Node coordinates can be layout-scaled for rendering; never infer physical member lengths from coordinate span.'
+		);
 	}
 	if (hasApprovedSchemeDescription) {
 		guardLines.push(
@@ -490,6 +554,9 @@ export async function generatePythonCode(
 	if (hasSolverModelContext) {
 		guardLines.push(
 			'If [SOLVER_MODEL_JSON] is present: treat local axes/signs and component conventions as canonical.'
+		);
+		guardLines.push(
+			'When [SOLVER_MODEL_JSON].members[].length is provided, treat it as the authoritative physical length.'
 		);
 		guardLines.push(
 			'For cantilever axisOrigin="free_end", keep x=0 at free end and increase toward support.'
@@ -561,9 +628,31 @@ export async function assembleFinalAnswer(
 		solveContextJson: string;
 		exactAnswersJson: string;
 		graphSummaryJson: string;
+		responseMode?: 'full_solve' | 'compute_followup' | 'explain_followup' | 'reformat_followup';
+		followUpRequest?: string;
 	},
 	forcedModel?: string | null
 ): Promise<{ text: string; model: GeminiModel; tokens: number }> {
+	const mode = params.responseMode ?? 'full_solve';
+	const modeInstructions =
+		mode === 'compute_followup'
+			? `Mode: compute_followup.
+- Solve the requested additional quantity within the same approved task.
+- Keep approved schema/task data authoritative.
+- Show enough derivation to justify new requested outputs.`
+			: mode === 'explain_followup'
+				? `Mode: explain_followup.
+- Answer the follow-up question about the already solved task.
+- Use existing exact answers as anchors; do not invent conflicting numbers.
+- Focus on explanation and step clarification; no full recomputation unless strictly needed.`
+				: mode === 'reformat_followup'
+					? `Mode: reformat_followup.
+- Reformat/rewrite the already solved material per user request.
+- Preserve mathematical meaning and numeric anchors exactly.
+- Do not introduce alternative final numbers.`
+					: `Mode: full_solve.
+- Produce full detailed derivation that reaches the provided exact answers.`;
+
 	const prompt = `You are a mechanics finalizer.
 Goal: produce a very detailed, mathematically consistent, step-by-step solution narrative.
 
@@ -575,6 +664,12 @@ Hard rules:
 5) Mention how graph/epure interpretation follows the provided graph summary when relevant.
 6) Do not include Python code.
 7) Keep the final Answer section explicit and numerically identical to exactAnswers.
+8) Approved task/schema context is authoritative; chat follow-up context is secondary intent guidance.
+
+${modeInstructions}
+
+[FOLLOWUP_REQUEST]
+${params.followUpRequest ?? ''}
 
 Canonical solve context JSON:
 ${params.solveContextJson}
@@ -698,7 +793,7 @@ Rules:
 4) Keep language of assumptions/ambiguities consistent with user task.
 5) Every joint/member/component/kinematic pair must have a non-empty label. If the task uses names like A, B, OA, AB, preserve them in labels.
 6) For slider-crank, connect crank and rod with revolute_pair and connect slider with prismatic_pair.
-7) If a support is attached by memberKey, always provide s in [0,1]. For end supports on a beam, use s=0 or s=1 instead of omitting it.
+7) If a support is attached by memberKey, always provide s in [0,1]. For end supports on a beam, use s=0 or s=1. If exact position is unknown, explicitly set s=0.5 instead of omitting it.
 ${languagePolicy(userMessage)}`;
 
 	const question = `Task:\n${userMessage}`;
@@ -814,7 +909,7 @@ Rules:
 5) Spatial frame/mechanism must set modelSpace="spatial"; beam/planar frame/mechanism must set modelSpace="planar".
 6) Every joint/member/component/kinematic pair must include label.
 7) For slider-crank, always use revolute_pair between crank and rod.
-8) If a support is attached by memberKey, always provide s in [0,1]. For end supports on a beam, use s=0 or s=1 instead of omitting it.
+8) If a support is attached by memberKey, always provide s in [0,1]. For end supports on a beam, use s=0 or s=1. If exact position is unknown, explicitly set s=0.5 instead of omitting it.
 ${languagePolicy(userMessage)}`;
 
 	if (useFastMode) {

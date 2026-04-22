@@ -162,4 +162,49 @@ describe('layout-v2', () => {
 		const cross = abx * afy - aby * afx;
 		expect(cross).toBeGreaterThan(0);
 	});
+
+	it('preserves explicit member length after fit-to-view scaling', () => {
+		const schema: SchemaDataV2 = {
+			version: '2.0',
+			coordinateSystem: {
+				originPolicy: 'fixed_support'
+			},
+			nodes: [
+				{ id: 'A', x: 0, y: 0 },
+				{ id: 'B', x: 5, y: 0 }
+			],
+			objects: [
+				{
+					id: 'bar_1',
+					type: 'bar',
+					nodeRefs: ['A', 'B'],
+					geometry: { length: 5, angleDeg: 0 }
+				},
+				{
+					id: 'fixed_1',
+					type: 'fixed_wall',
+					nodeRefs: ['A'],
+					geometry: { wallSide: 'left' }
+				}
+			],
+			results: [],
+			annotations: [],
+			assumptions: [],
+			ambiguities: []
+		};
+
+		const stabilized = stabilizeSchemaLayoutV2(schema);
+		const nodeById = new Map(stabilized.schema.nodes.map((node) => [node.id, node]));
+		const a = nodeById.get('A');
+		const b = nodeById.get('B');
+		expect(a && b).toBeTruthy();
+		if (!a || !b) return;
+
+		const displaySpan = Math.hypot(b.x - a.x, b.y - a.y);
+		expect(displaySpan).toBeCloseTo(6, 6);
+
+		const bar = stabilized.schema.objects.find((object) => object.id === 'bar_1');
+		expect(bar).toBeTruthy();
+		expect(bar?.geometry.length).toBe(5);
+	});
 });

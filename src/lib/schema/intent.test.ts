@@ -204,6 +204,29 @@ describe('scheme intent validation', () => {
 		expect(validateSchemeIntent(normalized.value).ok).toBe(true);
 	});
 
+	it('defaults member-attached support position to midpoint when s is missing', () => {
+		const normalized = normalizeSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'beam',
+			modelSpace: 'planar',
+			confidence: 'medium',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'A' }, { key: 'B' }],
+			members: [{ key: 'm1', kind: 'bar', startJoint: 'A', endJoint: 'B' }],
+			supports: [{ key: 's1', kind: 'hinge_roller', memberKey: 'm1' }],
+			loads: [],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		expect(normalized.value.supports[0]?.s).toBe(0.5);
+		expect(validateSchemeIntent(normalized.value).ok).toBe(true);
+		expect(
+			normalized.warnings.some((warning) => warning.includes('defaulted to s=0.5'))
+		).toBe(true);
+	});
+
 	it('normalizes centerJoint alias for kinematic pairs', () => {
 		const normalized = normalizeSchemeIntent({
 			version: 'intent-1.0',

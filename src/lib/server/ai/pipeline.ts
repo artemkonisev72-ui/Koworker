@@ -9,6 +9,7 @@
  */
 import {
 	routeQuestion,
+	routeApprovedFollowup,
 	generatePythonCode,
 	assembleFinalAnswer,
 	answerGeneralQuestion,
@@ -49,6 +50,17 @@ interface SolveArtifactsV1 {
 	graphData: GraphData[];
 }
 
+interface TaskChatTurn {
+	role: 'USER' | 'ASSISTANT';
+	content: string;
+}
+
+interface PreviousSolvedSnapshot {
+	answerText?: string;
+	exactAnswers?: ExactAnswer[];
+	graphData?: GraphData[];
+}
+
 interface CanonicalSolveInput {
 	source: 'approved_schema' | 'raw_prompt';
 	originalTask: string;
@@ -57,6 +69,26 @@ interface CanonicalSolveInput {
 	approvedSchemeDescription?: string;
 	solverModel?: SolverModelV1;
 	revisionNotes?: string[];
+	followUpRequest?: string;
+	recentChatContext?: TaskChatTurn[];
+	previousSolved?: PreviousSolvedSnapshot;
+}
+
+type ApprovedFollowupRoute =
+	| 'independent_message'
+	| 'compute_followup'
+	| 'explain_followup'
+	| 'reformat_followup';
+
+export interface ApprovedFollowupContext {
+	draftId: string;
+	originalTask: string;
+	approvedSchema: SchemaAny;
+	approvedSchemeDescription?: string;
+	solverModel?: SolverModelV1;
+	revisionNotes?: string[];
+	recentChatContext?: TaskChatTurn[];
+	previousSolved?: PreviousSolvedSnapshot;
 }
 
 export type PipelineStatus =
@@ -66,6 +98,7 @@ export type PipelineStatus =
 	| {
 			type: 'result';
 			messageId?: string;
+			draftId?: string;
 			content: string;
 			generatedCode?: string;
 			executionLogs?: string;
@@ -94,6 +127,8 @@ const MAX_RETRIES = 2;
 const FINALIZER_TASK_MAX_CHARS = readIntEnv('FINALIZER_TASK_MAX_CHARS', 3000, 400, 20000);
 const FINALIZER_MAX_INPUT_CHARS = readIntEnv('FINALIZER_MAX_INPUT_CHARS', 12000, 2000, 120000);
 const FINALIZER_GRAPH_SAMPLE_POINTS = readIntEnv('FINALIZER_GRAPH_SAMPLE_POINTS', 8, 2, 24);
+const FOLLOWUP_CHAT_MAX_TURNS = readIntEnv('FOLLOWUP_CHAT_MAX_TURNS', 10, 2, 24);
+const FOLLOWUP_CHAT_MAX_CHARS = readIntEnv('FOLLOWUP_CHAT_MAX_CHARS', 2400, 400, 12000);
 
 const STATUS_ANALYZE_IMAGE = '\u0410\u043d\u0430\u043b\u0438\u0437 \u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u044f...';
 const STATUS_ANALYZE_TASK = '\u0410\u043d\u0430\u043b\u0438\u0437 \u0437\u0430\u0434\u0430\u0447\u0438...';
@@ -550,12 +585,80 @@ function summarizeSchemaShape(schema: SchemaAny): {
 	};
 }
 
+function formatRecentChatContext(turns: TaskChatTurn[] | undefined, maxTurns: number, maxChars: number): string | null {
+	if (!Array.isArray(turns) || turns.length === 0) return null;
+	const scopedTurns = turns.slice(-Math.max(1, maxTurns));
+	const lines: string[] = [];
+	let totalChars = 0;
+
+	for (const turn of scopedTurns) {
+		if (!turn || typeof turn.content !== 'string') continue;
+		const role = turn.role === 'ASSISTANT' ? 'ASSISTANT' : 'USER';
+		const compact = turn.content.replace(/\s+/g, ' ').trim();
+		if (!compact) continue;
+		const line = `${role}: ${compact}`;
+		const nextTotal = totalChars + line.length + 1;
+		if (nextTotal > maxChars) break;
+		lines.push(line);
+		totalChars = nextTotal;
+	}
+
+	if (lines.length === 0) return null;
+	return lines.join('\n');
+}
+
+function summarizePreviousSolved(previousSolved: PreviousSolvedSnapshot | undefined): Record<string, unknown> | null {
+	if (!previousSolved) return null;
+	const summary: Record<string, unknown> = {};
+	if (typeof previousSolved.answerText === 'string' && previousSolved.answerText.trim()) {
+		summary.answerText = truncateText(previousSolved.answerText.trim(), 1200);
+	}
+	if (Array.isArray(previousSolved.exactAnswers) && previousSolved.exactAnswers.length > 0) {
+		summary.exactAnswers = previousSolved.exactAnswers;
+	}
+	if (Array.isArray(previousSolved.graphData) && previousSolved.graphData.length > 0) {
+		summary.graphs = summarizeGraphsForFinalizer(previousSolved.graphData, 3);
+	}
+	return Object.keys(summary).length > 0 ? summary : null;
+}
+
+function resolveApprovedSchemaResult(input: CanonicalSolveInput): {
+	schemaData?: SchemaAny;
+	schemaVersion?: SchemaVersionTag;
+	schemaDescription?: string;
+} {
+	if (input.source !== 'approved_schema' || !input.approvedSchema) {
+		return {};
+	}
+	const schemaValidation = validateSchemaAny(input.approvedSchema);
+	return {
+		schemaData: input.approvedSchema,
+		schemaVersion: schemaValidation.version ?? '2.0',
+		schemaDescription: input.approvedSchemeDescription
+	};
+}
+
 function buildSolverContextMessage(input: CanonicalSolveInput): string {
 	const chunks: string[] = [];
 	chunks.push(`[CANONICAL_SOLVE_SOURCE]\n${input.source}`);
 	chunks.push(`[TASK]\n${input.originalTask}`);
+	if (input.followUpRequest) {
+		chunks.push(`[FOLLOWUP_REQUEST]\n${input.followUpRequest}`);
+	}
 	if (input.imageDescription) {
 		chunks.push(`[IMAGE_DESCRIPTION]\n${input.imageDescription}`);
+	}
+	const recentChat = formatRecentChatContext(
+		input.recentChatContext,
+		FOLLOWUP_CHAT_MAX_TURNS,
+		FOLLOWUP_CHAT_MAX_CHARS
+	);
+	if (recentChat) {
+		chunks.push(`[RECENT_TASK_CHAT_CONTEXT]\n${recentChat}`);
+	}
+	const previousSolvedSummary = summarizePreviousSolved(input.previousSolved);
+	if (previousSolvedSummary) {
+		chunks.push(`[PREVIOUS_SOLVED_SUMMARY]\n${JSON.stringify(previousSolvedSummary)}`);
 	}
 	if (input.source === 'approved_schema') {
 		if (input.approvedSchemeDescription) {
@@ -589,6 +692,21 @@ function buildFinalizerContextPayload(
 	if (input.source === 'approved_schema') {
 		contextPayload.approvedSchemeDescription = input.approvedSchemeDescription ?? '';
 		contextPayload.revisionNotes = input.revisionNotes ?? [];
+		if (input.followUpRequest) {
+			contextPayload.followUpRequest = input.followUpRequest;
+		}
+		const recentChat = formatRecentChatContext(
+			input.recentChatContext,
+			FOLLOWUP_CHAT_MAX_TURNS,
+			FOLLOWUP_CHAT_MAX_CHARS
+		);
+		if (recentChat) {
+			contextPayload.recentTaskChatContext = recentChat;
+		}
+		const previousSolvedSummary = summarizePreviousSolved(input.previousSolved);
+		if (previousSolvedSummary) {
+			contextPayload.previousSolvedSummary = previousSolvedSummary;
+		}
 		if (input.solverModel) {
 			contextPayload.solverModel = input.solverModel;
 		}
@@ -672,6 +790,7 @@ export async function runPipeline(
 	options?: {
 		canonicalSolveInput?: CanonicalSolveInput | null;
 		bypassRouting?: boolean;
+		approvedFollowupContext?: ApprovedFollowupContext | null;
 	}
 ): Promise<void> {
 	console.log('[Pipeline] START message:', userMessage.slice(0, 80), '| forcedModel:', forcedModel);
@@ -681,7 +800,69 @@ export async function runPipeline(
 	const emitStatus = (event: PipelineStatus) => Promise.resolve(onStatus(event));
 
 	try {
-		if (imageData && !options?.canonicalSolveInput) {
+		let analyzeStatusSent = false;
+		let followupRoute: ApprovedFollowupRoute | null = null;
+		let followupDraftId: string | undefined;
+		let forceFinalizerOnly = false;
+		let skipImageAnalysis = false;
+		let finalizerMode: 'full_solve' | 'compute_followup' | 'explain_followup' | 'reformat_followup' =
+			'full_solve';
+		let followupCanonicalInput: CanonicalSolveInput | null = null;
+
+		const approvedFollowup = options?.approvedFollowupContext ?? null;
+		if (approvedFollowup?.approvedSchema) {
+			followupCanonicalInput = {
+				source: 'approved_schema',
+				originalTask: approvedFollowup.originalTask,
+				approvedSchema: approvedFollowup.approvedSchema,
+				approvedSchemeDescription: approvedFollowup.approvedSchemeDescription ?? '',
+				solverModel: approvedFollowup.solverModel,
+				revisionNotes: approvedFollowup.revisionNotes ?? [],
+				followUpRequest: userMessage,
+				recentChatContext: approvedFollowup.recentChatContext ?? [],
+				previousSolved: approvedFollowup.previousSolved
+			};
+
+			if (!analyzeStatusSent) {
+				await emitStatus({ type: 'status', message: STATUS_ANALYZE_TASK });
+			}
+			analyzeStatusSent = true;
+			const followupRouting = await routeApprovedFollowup(
+				[],
+				{
+					userMessage,
+					originalTask: approvedFollowup.originalTask,
+					approvedSchemeDescription: approvedFollowup.approvedSchemeDescription ?? '',
+					recentTaskChatContext:
+						formatRecentChatContext(
+							approvedFollowup.recentChatContext,
+							FOLLOWUP_CHAT_MAX_TURNS,
+							FOLLOWUP_CHAT_MAX_CHARS
+						) ?? '',
+					previousSolvedSummaryJson: JSON.stringify(
+						summarizePreviousSolved(approvedFollowup.previousSolved) ?? {}
+					)
+				},
+				forcedModel
+			);
+			followupRoute = followupRouting.intent;
+			usedModelsList.push(
+				`${followupRouting.model} (FollowupRouter): ${followupRouting.tokens.toLocaleString('ru-RU')} С‚РѕРєРµРЅРѕРІ`
+			);
+			if (followupRoute !== 'independent_message') {
+				followupDraftId = approvedFollowup.draftId;
+			}
+			if (followupRoute === 'compute_followup') {
+				finalizerMode = 'compute_followup';
+				skipImageAnalysis = true;
+			} else if (followupRoute === 'explain_followup' || followupRoute === 'reformat_followup') {
+				forceFinalizerOnly = true;
+				skipImageAnalysis = true;
+				finalizerMode = followupRoute;
+			}
+		}
+
+		if (imageData && !options?.canonicalSolveInput && !skipImageAnalysis) {
 			console.log('[Pipeline] Analyzing image...');
 			await emitStatus({ type: 'status', message: STATUS_ANALYZE_IMAGE });
 			const { text: visionText, model: visionModel, tokens: visionTokens } = await analyzeImage(
@@ -695,17 +876,19 @@ export async function runPipeline(
 			currentContext = `[IMAGE_DESCRIPTION]\n${visionText}\n\n[USER_TASK]\n${userMessage}`;
 		}
 
-		let needsComputation = true;
-		if (!options?.bypassRouting) {
+		let needsComputation = followupRoute === 'compute_followup' ? true : !forceFinalizerOnly;
+		if (!forceFinalizerOnly && followupRoute !== 'compute_followup' && !options?.bypassRouting) {
 			console.log('[Pipeline] Step 1: routing...');
-			await emitStatus({ type: 'status', message: STATUS_ANALYZE_TASK });
+			if (!analyzeStatusSent) {
+				await emitStatus({ type: 'status', message: STATUS_ANALYZE_TASK });
+			}
 			const routing = await routeQuestion(history, currentContext, forcedModel);
 			needsComputation = routing.result;
 			usedModelsList.push(`${routing.model} (Router): ${routing.tokens.toLocaleString('ru-RU')} токенов`);
 			console.log('[Pipeline] Step 1 done: needsComputation =', needsComputation);
 		}
 
-		if (!needsComputation) {
+		if (!needsComputation && !forceFinalizerOnly) {
 			console.log('[Pipeline] General question — calling answerGeneralQuestion');
 			await emitStatus({ type: 'status', message: STATUS_FORM_ANSWER });
 			const { text: answer, model: textModel, tokens: textTokens } = await answerGeneralQuestion(
@@ -719,11 +902,75 @@ export async function runPipeline(
 		}
 
 		const canonicalInput: CanonicalSolveInput =
-			options?.canonicalSolveInput ?? {
-				source: 'raw_prompt',
-				originalTask: userMessage,
-				...(imageDescription ? { imageDescription } : {})
-			};
+			options?.canonicalSolveInput ??
+			(followupRoute && followupRoute !== 'independent_message' && followupCanonicalInput
+				? followupCanonicalInput
+				: {
+						source: 'raw_prompt',
+						originalTask: userMessage,
+						...(imageDescription ? { imageDescription } : {})
+					});
+		if (forceFinalizerOnly) {
+			await emitStatus({ type: 'status', message: STATUS_FORM_ANSWER });
+			const previousExactAnswers = Array.isArray(canonicalInput.previousSolved?.exactAnswers)
+				? canonicalInput.previousSolved.exactAnswers
+				: [];
+			const previousGraphs = Array.isArray(canonicalInput.previousSolved?.graphData)
+				? canonicalInput.previousSolved.graphData
+				: [];
+			if (previousExactAnswers.length === 0) {
+				const { text: fallbackText, model: fallbackModel, tokens: fallbackTokens } =
+					await answerGeneralQuestion(history, currentContext, forcedModel);
+				usedModelsList.push(
+					`${fallbackModel} (Text): ${fallbackTokens.toLocaleString('ru-RU')} С‚РѕРєРµРЅРѕРІ`
+				);
+				const approvedSchemaResult = resolveApprovedSchemaResult(canonicalInput);
+				await emitStatus({
+					type: 'result',
+					draftId: followupDraftId,
+					content: fallbackText,
+					schemaData: approvedSchemaResult.schemaData,
+					schemaDescription: approvedSchemaResult.schemaDescription,
+					schemaVersion: approvedSchemaResult.schemaVersion,
+					usedModels: usedModelsList
+				});
+				return;
+			}
+
+			const finalizerPayload = buildFinalizerContextPayload(
+				canonicalInput,
+				previousExactAnswers,
+				previousGraphs
+			);
+			const finalizer = await assembleFinalAnswer(
+				[],
+				{
+					taskContext: truncateText(canonicalInput.followUpRequest ?? userMessage, FINALIZER_TASK_MAX_CHARS),
+					solveContextJson: finalizerPayload.solveContextJson,
+					exactAnswersJson: finalizerPayload.exactAnswersJson,
+					graphSummaryJson: finalizerPayload.graphSummaryJson,
+					responseMode: finalizerMode,
+					followUpRequest: canonicalInput.followUpRequest
+				},
+				forcedModel
+			);
+			usedModelsList.push(
+				`${finalizer.model} (Finalizer): ${finalizer.tokens.toLocaleString('ru-RU')} С‚РѕРєРµРЅРѕРІ`
+			);
+			const approvedSchemaResult = resolveApprovedSchemaResult(canonicalInput);
+			await emitStatus({
+				type: 'result',
+				draftId: followupDraftId,
+				content: finalizer.text,
+				graphData: previousGraphs,
+				exactAnswers: previousExactAnswers,
+				schemaData: approvedSchemaResult.schemaData,
+				schemaDescription: approvedSchemaResult.schemaDescription,
+				schemaVersion: approvedSchemaResult.schemaVersion,
+				usedModels: usedModelsList
+			});
+			return;
+		}
 		const solverContextMessage = buildSolverContextMessage(canonicalInput);
 		const solverHistory: GeminiHistory[] = [];
 		let pythonCode = '';
@@ -816,39 +1063,37 @@ export async function runPipeline(
 		});
 
 		const finalizerHistory: GeminiHistory[] = [];
-		const finalizerTaskText = truncateText(canonicalInput.originalTask, FINALIZER_TASK_MAX_CHARS);
+		const finalizerTaskText = truncateText(
+			canonicalInput.followUpRequest ?? canonicalInput.originalTask,
+			FINALIZER_TASK_MAX_CHARS
+		);
 		const finalizer = await assembleFinalAnswer(
 			finalizerHistory,
 			{
 				taskContext: finalizerTaskText,
 				solveContextJson: finalizerPayload.solveContextJson,
 				exactAnswersJson: finalizerPayload.exactAnswersJson,
-				graphSummaryJson: finalizerPayload.graphSummaryJson
+				graphSummaryJson: finalizerPayload.graphSummaryJson,
+				responseMode: finalizerMode,
+				followUpRequest: canonicalInput.followUpRequest
 			},
 			forcedModel
 		);
 		usedModelsList.push(`${finalizer.model} (Finalizer): ${finalizer.tokens.toLocaleString('ru-RU')} токенов`);
 
-		let solvedSchemaData: SchemaAny | undefined;
-		let solvedSchemaVersion: SchemaVersionTag | undefined;
-		let solvedSchemaDescription: string | undefined;
-		if (canonicalInput.source === 'approved_schema' && canonicalInput.approvedSchema) {
-			solvedSchemaData = canonicalInput.approvedSchema;
-			solvedSchemaDescription = canonicalInput.approvedSchemeDescription;
-			const schemaValidation = validateSchemaAny(canonicalInput.approvedSchema);
-			solvedSchemaVersion = schemaValidation.version ?? '2.0';
-		}
+		const approvedSchemaResult = resolveApprovedSchemaResult(canonicalInput);
 
 		await emitStatus({
 			type: 'result',
+			draftId: followupDraftId,
 			content: finalizer.text,
 			generatedCode: pythonCode,
 			executionLogs: rawStdout,
 			graphData: solveArtifacts.graphData,
 			exactAnswers: solveArtifacts.exactAnswers,
-			schemaData: solvedSchemaData,
-			schemaDescription: solvedSchemaDescription,
-			schemaVersion: solvedSchemaVersion,
+			schemaData: approvedSchemaResult.schemaData,
+			schemaDescription: approvedSchemaResult.schemaDescription,
+			schemaVersion: approvedSchemaResult.schemaVersion,
 			usedModels: usedModelsList
 		});
 	} catch (err) {

@@ -13,7 +13,11 @@
  * PING каждые 5 сек держит соединение открытым через Gateway Timeout.
  */
 import type { RequestHandler } from './$types';
-import { runPipeline, type PipelineStatus } from '$lib/server/ai/pipeline.js';
+import {
+	runPipeline,
+	type ApprovedFollowupContext,
+	type PipelineStatus
+} from '$lib/server/ai/pipeline.js';
 import {
 	isModelPreference,
 	normalizeModelPreference,
@@ -41,6 +45,18 @@ type RateEntry = {
 const globalRate = globalThis as unknown as { _chatRateMap?: Map<string, RateEntry> };
 const chatRateMap = globalRate._chatRateMap ?? new Map<string, RateEntry>();
 if (!globalRate._chatRateMap) globalRate._chatRateMap = chatRateMap;
+
+function parseMaybeJson<T>(value: unknown): T | undefined {
+	if (value === null || value === undefined) return undefined;
+	if (typeof value === 'string') {
+		try {
+			return JSON.parse(value) as T;
+		} catch {
+			return undefined;
+		}
+	}
+	return value as T;
+}
 
 export const POST: RequestHandler = async ({ locals, request }) => {
 	console.log('[SSE] POST /api/chat received');
@@ -118,6 +134,97 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	});
 
 	// Извлекаем историю сообщений для контекста (последние 20 сообщений)
+	let approvedFollowupContext: ApprovedFollowupContext | null = null;
+	const latestSolvedDraft = await (prisma as any).taskDraft.findFirst({
+		where: {
+			chatId,
+			userId: locals.user.id,
+			status: 'SOLVED'
+		},
+		orderBy: { updatedAt: 'desc' },
+		select: {
+			id: true,
+			originalPrompt: true,
+			approvedSchema: true,
+			approvedSchemeDescription: true,
+			solverModel: true,
+			revisions: {
+				orderBy: { revisionIndex: 'asc' },
+				select: { userNotes: true }
+			}
+		}
+	});
+
+	if (latestSolvedDraft?.id && latestSolvedDraft?.approvedSchema && latestSolvedDraft?.originalPrompt) {
+		const latestSolvedMessage = await (prisma as any).message.findFirst({
+			where: {
+				chatId,
+				draftId: latestSolvedDraft.id,
+				role: 'ASSISTANT'
+			},
+			orderBy: { createdAt: 'desc' },
+			select: {
+				content: true,
+				exactAnswers: true,
+				graphData: true,
+				createdAt: true
+			}
+		});
+
+		if (latestSolvedMessage?.createdAt) {
+			const postSolveMessages = await (prisma as any).message.findMany({
+				where: {
+					chatId,
+					createdAt: { gt: latestSolvedMessage.createdAt }
+				},
+				orderBy: { createdAt: 'asc' },
+				take: 20,
+				select: {
+					role: true,
+					content: true
+				}
+			});
+
+			const recentChatContext = postSolveMessages
+				.filter((entry: { role: string; content?: string | null }) => entry.role !== 'SYSTEM')
+				.map((entry: { role: string; content?: string | null }) => ({
+					role: entry.role === 'ASSISTANT' ? 'ASSISTANT' : 'USER',
+					content: (entry.content ?? '').trim()
+				}))
+				.filter((entry: { content: string }) => entry.content.length > 0);
+
+			const revisionNotes = Array.isArray(latestSolvedDraft.revisions)
+				? latestSolvedDraft.revisions
+						.map((revision: { userNotes?: string | null }) => revision.userNotes?.trim())
+						.filter((note: string | undefined): note is string => Boolean(note))
+				: [];
+
+			const approvedSchema = parseMaybeJson(latestSolvedDraft.approvedSchema);
+			if (approvedSchema) {
+				approvedFollowupContext = {
+					draftId: latestSolvedDraft.id,
+					originalTask: String(latestSolvedDraft.originalPrompt),
+					approvedSchema,
+					approvedSchemeDescription:
+						typeof latestSolvedDraft.approvedSchemeDescription === 'string'
+							? latestSolvedDraft.approvedSchemeDescription
+							: '',
+					solverModel: parseMaybeJson(latestSolvedDraft.solverModel),
+					revisionNotes,
+					recentChatContext,
+					previousSolved: {
+						answerText:
+							typeof latestSolvedMessage.content === 'string'
+								? latestSolvedMessage.content
+								: undefined,
+						exactAnswers: parseMaybeJson(latestSolvedMessage.exactAnswers),
+						graphData: parseMaybeJson(latestSolvedMessage.graphData)
+					}
+				} as ApprovedFollowupContext;
+			}
+		}
+	}
+
 	const rawHistory = await prisma.message.findMany({
 		where: { chatId },
 		orderBy: { createdAt: 'asc' },
@@ -269,9 +376,19 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 					}
 					processingHandle.updateStatus('Сохраняю ответ...');
 					try {
+						if (event.draftId) {
+							await (prisma as any).message
+								.update({
+									where: { id: persistedUserMessageId },
+									data: { draftId: event.draftId }
+								})
+								.catch(() => undefined);
+						}
+
 						const assistantMessage = await (prisma as any).message.create({
 								data: {
 									chatId,
+									draftId: event.draftId ?? undefined,
 									role: 'ASSISTANT',
 									content: event.content,
 									generatedCode: event.generatedCode ?? null,
@@ -303,7 +420,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 					}
 				},
 				imageData,
-				forcedModel
+				forcedModel,
+				{ approvedFollowupContext }
 			)
 				.catch((pipelineErr) => {
 					console.error('[SSE] Pipeline error:', pipelineErr);

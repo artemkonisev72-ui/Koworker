@@ -1016,15 +1016,24 @@ export function normalizeSchemeIntent(input: unknown): SchemeIntentNormalizeResu
 			structureKind,
 			normalized.memberKey ? membersByKey.get(normalized.memberKey) : undefined
 		);
-		if (normalized.memberKey && normalized.s === undefined && inferredS !== undefined) {
-			warnings.push(
-				`supports["${key}"] member placement was inferred as s=${inferredS.toFixed(0)} from endpoint hints`
-			);
+		let resolvedS = normalized.s;
+		if (normalized.memberKey && resolvedS === undefined) {
+			if (inferredS !== undefined) {
+				resolvedS = inferredS;
+				warnings.push(
+					`supports["${key}"] member placement was inferred as s=${inferredS.toFixed(0)} from endpoint hints`
+				);
+			} else {
+				resolvedS = 0.5;
+				warnings.push(
+					`supports["${key}"] member placement defaulted to s=0.5 because endpoint hints were missing`
+				);
+			}
 		}
 		supports.push({
 			...normalized,
 			key,
-			...(normalized.s === undefined && inferredS !== undefined ? { s: inferredS } : {})
+			...(resolvedS !== undefined ? { s: resolvedS } : {})
 		});
 	}
 
