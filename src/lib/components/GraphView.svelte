@@ -3,7 +3,21 @@
 	import { buildEpureLayout } from '$lib/epure/layout.js';
 	import { getEpureDisplayFactor, normalizeGraphEpure, type GraphData } from '$lib/graphs/types.js';
 
-	let { graph, title = 'Graph' }: { graph: GraphData; title?: string } = $props();
+	type RenderMode = 'chat' | 'print';
+
+	let {
+		graph,
+		title = 'Graph',
+		renderMode = 'chat',
+		onRenderReady,
+		onRenderError
+	}: {
+		graph: GraphData;
+		title?: string;
+		renderMode?: RenderMode;
+		onRenderReady?: () => void;
+		onRenderError?: (reason: string) => void;
+	} = $props();
 
 	let wrapperEl: HTMLDivElement | undefined = $state();
 	let boardEl: HTMLDivElement | undefined = $state();
@@ -20,6 +34,27 @@
 	const EPURE_CURVE_STROKE_WIDTH = 2.5;
 	const EPURE_BEAM_STROKE_WIDTH = EPURE_CURVE_STROKE_WIDTH + 0.8;
 	const EPURE_HIGHLIGHT_STROKE_WIDTH = 3;
+	const PRINT_BOARD_HEIGHT_PX = 250;
+	let hasReportedRenderState = false;
+
+	let isPrintMode = $derived(renderMode === 'print');
+
+	function reportReady() {
+		if (hasReportedRenderState) return;
+		hasReportedRenderState = true;
+		onRenderReady?.();
+	}
+
+	function reportError(reason: string, error?: unknown) {
+		if (hasReportedRenderState) return;
+		hasReportedRenderState = true;
+		if (error) {
+			console.warn('[GraphView] Render failed:', reason, error);
+		} else {
+			console.warn('[GraphView] Render failed:', reason);
+		}
+		onRenderError?.(reason);
+	}
 
 	function applyBoardTheme() {
 		if (!board) return;
@@ -60,6 +95,13 @@
 		const fallbackWidth = Math.floor(boardEl.clientWidth || 320);
 		const fallbackHeight = Math.floor(boardEl.clientHeight || 220);
 
+		if (isPrintMode) {
+			return {
+				width: Math.max(220, fallbackWidth),
+				height: Math.max(200, Math.min(320, fallbackHeight || PRINT_BOARD_HEIGHT_PX))
+			};
+		}
+
 		if (isFullscreen) {
 			const viewportWidth = Math.floor(window.visualViewport?.width ?? window.innerWidth);
 			const viewportHeight = Math.floor(window.visualViewport?.height ?? window.innerHeight);
@@ -99,6 +141,7 @@
 	}
 
 	async function toggleFullscreen() {
+		if (isPrintMode) return;
 		if (document.fullscreenElement === wrapperEl) {
 			try {
 				await document.exitFullscreen();
@@ -133,6 +176,7 @@
 	}
 
 	function closeFullscreen() {
+		if (isPrintMode) return;
 		if (!isFullscreen) return;
 		if (document.fullscreenElement === wrapperEl) {
 			void document.exitFullscreen();
@@ -143,166 +187,181 @@
 	}
 
 	async function initializeBoard() {
-		if (board || !boardEl || !graph?.points || graph.points.length < 2) return;
-
-		const JSXGraph = await import('jsxgraph');
-		const JXG = JSXGraph.default ?? JSXGraph;
-		const normalizedGraph = normalizeGraphEpure(graph).graph;
-		const epureFactor = getEpureDisplayFactor(normalizedGraph.epure);
-		const epureLayout =
-			normalizedGraph.type === 'diagram'
-				? buildEpureLayout(
-						normalizedGraph.points.map((point) => ({
-							x: point.x,
-							value: point.y,
-							displayValue: point.y * epureFactor
-						}))
-					)
-				: null;
-		const curvePoints = epureLayout?.curvePoints ?? normalizedGraph.points;
-		if (curvePoints.length < 2) return;
-
-		const xs = curvePoints.map((p) => p.x);
-		const ys = curvePoints.map((p) => p.y);
-		const yBounds = normalizedGraph.type === 'diagram' ? [...ys, 0] : ys;
-		const xMin = Math.min(...xs);
-		const xMax = Math.max(...xs);
-		const yMin = Math.min(...yBounds);
-		const yMax = Math.max(...yBounds);
-		const xPad = (xMax - xMin) * 0.1 || 1;
-		const yPad = (yMax - yMin) * 0.1 || 1;
-
-		board = JXG.JSXGraph.initBoard(boardId, {
-			boundingbox: [xMin - xPad, yMax + yPad, xMax + xPad, yMin - yPad],
-			axis: true,
-			grid: true,
-			showCopyright: false,
-			showNavigation: false,
-			showInfobox: false,
-			showScreenshot: false
-		});
-
-		applyBoardTheme();
-		if (normalizedGraph.type === 'diagram' && epureLayout) {
-			const fillOpacity = normalizedGraph.epure?.fillHatch === false ? 0.12 : 0.05;
-			for (const region of epureLayout.regions) {
-				board.create(
-					'polygon',
-					region.polygon.map((point) => [point.x, point.y]),
-					{
-						fillColor: 'var(--accent-primary)',
-						fillOpacity,
-						withLines: false,
-						borders: { visible: false },
-						vertices: { visible: false, withLabel: false },
-						highlight: false,
-						layer: 0
-					}
-				);
-
-				if (normalizedGraph.epure?.fillHatch !== false) {
-					for (const hatch of region.hatchSegments) {
-						board.create(
-							'segment',
-							[
-								[hatch.start.x, hatch.start.y],
-								[hatch.end.x, hatch.end.y]
-							],
-							{
-								fixed: true,
-								highlight: false,
-								strokeColor: 'var(--accent-primary)',
-								opacity: 0.45,
-								strokeWidth: 1,
-								layer: 1
-							}
-						);
-					}
-				}
-
-				if (normalizedGraph.epure?.showSigns !== false && region.showSign) {
-					board.create('text', [region.centroid.x, region.centroid.y, region.sign > 0 ? '+' : '-'], {
-						fontSize: 28,
-						fontWeight: 'bold',
-						anchorX: 'middle',
-						anchorY: 'middle',
-						strokeColor: 'var(--text-primary)',
-						highlight: false,
-						cssClass: 'diagram-sign'
-					});
-				}
-			}
-
-			board.create(
-				'segment',
-				[
-					[epureLayout.xMin, 0],
-					[epureLayout.xMax, 0]
-				],
-				{
-					fixed: true,
-					highlight: false,
-					strokeColor: 'var(--text-primary)',
-					strokeWidth: EPURE_BEAM_STROKE_WIDTH,
-					opacity: 0.95,
-					layer: 3
-				}
-			);
+		if (board) {
+			reportReady();
+			return;
+		}
+		if (!boardEl || !graph?.points || graph.points.length < 2) {
+			reportError('Graph data is incomplete');
+			return;
 		}
 
-		const curve = board.create(
-			'curve',
-			[curvePoints.map((point) => point.x), curvePoints.map((point) => point.y)],
-			{
-				strokeColor: 'var(--text-primary)',
-				strokeWidth: EPURE_CURVE_STROKE_WIDTH,
-				highlight: true,
-				highlightStrokeColor: 'var(--accent-primary)',
-				highlightStrokeWidth: EPURE_HIGHLIGHT_STROKE_WIDTH,
-				layer: 4
+		try {
+			const JSXGraph = await import('jsxgraph');
+			const JXG = JSXGraph.default ?? JSXGraph;
+			const normalizedGraph = normalizeGraphEpure(graph).graph;
+			const epureFactor = getEpureDisplayFactor(normalizedGraph.epure);
+			const epureLayout =
+				normalizedGraph.type === 'diagram'
+					? buildEpureLayout(
+							normalizedGraph.points.map((point) => ({
+								x: point.x,
+								value: point.y,
+								displayValue: point.y * epureFactor
+							}))
+						)
+					: null;
+			const curvePoints = epureLayout?.curvePoints ?? normalizedGraph.points;
+			if (curvePoints.length < 2) {
+				reportError('Graph contains too few points after normalization');
+				return;
 			}
-		);
 
-		const glider = board.create('point', [curvePoints[0].x, curvePoints[0].y], {
-			name: '',
-			slideObject: curve,
-			visible: true,
-			size: 3,
-			fillColor: 'var(--bg-base)',
-			strokeColor: 'var(--accent-primary)',
-			strokeWidth: 2,
-			withLabel: true,
-			label: {
-				position: 'urt',
-				offset: [10, 10],
-				fontSize: 12,
-				fontFamily: 'var(--font-mono)',
-				color: 'var(--text-primary)',
-				strokeColor: 'none',
-				highlight: false,
-				cssClass: 'graph-tooltip-label'
+			const xs = curvePoints.map((p) => p.x);
+			const ys = curvePoints.map((p) => p.y);
+			const yBounds = normalizedGraph.type === 'diagram' ? [...ys, 0] : ys;
+			const xMin = Math.min(...xs);
+			const xMax = Math.max(...xs);
+			const yMin = Math.min(...yBounds);
+			const yMax = Math.max(...yBounds);
+			const xPad = (xMax - xMin) * 0.1 || 1;
+			const yPad = (yMax - yMin) * 0.1 || 1;
+
+			board = JXG.JSXGraph.initBoard(boardId, {
+				boundingbox: [xMin - xPad, yMax + yPad, xMax + xPad, yMin - yPad],
+				axis: true,
+				grid: true,
+				showCopyright: false,
+				showNavigation: false,
+				showInfobox: false,
+				showScreenshot: false
+			});
+
+			applyBoardTheme();
+			if (normalizedGraph.type === 'diagram' && epureLayout) {
+				const fillOpacity = normalizedGraph.epure?.fillHatch === false ? 0.12 : 0.05;
+				for (const region of epureLayout.regions) {
+					board.create(
+						'polygon',
+						region.polygon.map((point) => [point.x, point.y]),
+						{
+							fillColor: 'var(--accent-primary)',
+							fillOpacity,
+							withLines: false,
+							borders: { visible: false },
+							vertices: { visible: false, withLabel: false },
+							highlight: false,
+							layer: 0
+						}
+					);
+
+					if (normalizedGraph.epure?.fillHatch !== false) {
+						for (const hatch of region.hatchSegments) {
+							board.create(
+								'segment',
+								[
+									[hatch.start.x, hatch.start.y],
+									[hatch.end.x, hatch.end.y]
+								],
+								{
+									fixed: true,
+									highlight: false,
+									strokeColor: 'var(--accent-primary)',
+									opacity: 0.45,
+									strokeWidth: 1,
+									layer: 1
+								}
+							);
+						}
+					}
+
+					if (normalizedGraph.epure?.showSigns !== false && region.showSign) {
+						board.create('text', [region.centroid.x, region.centroid.y, region.sign > 0 ? '+' : '-'], {
+							fontSize: 28,
+							fontWeight: 'bold',
+							anchorX: 'middle',
+							anchorY: 'middle',
+							strokeColor: 'var(--text-primary)',
+							highlight: false,
+							cssClass: 'diagram-sign'
+						});
+					}
+				}
+
+				board.create(
+					'segment',
+					[
+						[epureLayout.xMin, 0],
+						[epureLayout.xMax, 0]
+					],
+					{
+						fixed: true,
+						highlight: false,
+						strokeColor: 'var(--text-primary)',
+						strokeWidth: EPURE_BEAM_STROKE_WIDTH,
+						opacity: 0.95,
+						layer: 3
+					}
+				);
 			}
-		});
 
-		glider.on('drag', () => {
-			glider.setAttribute({
-				name: `x: ${glider.X().toFixed(2)}, y: ${glider.Y().toFixed(2)}`
+			const curve = board.create(
+				'curve',
+				[curvePoints.map((point) => point.x), curvePoints.map((point) => point.y)],
+				{
+					strokeColor: 'var(--text-primary)',
+					strokeWidth: EPURE_CURVE_STROKE_WIDTH,
+					highlight: true,
+					highlightStrokeColor: 'var(--accent-primary)',
+					highlightStrokeWidth: EPURE_HIGHLIGHT_STROKE_WIDTH,
+					layer: 4
+				}
+			);
+
+			const glider = board.create('point', [curvePoints[0].x, curvePoints[0].y], {
+				name: '',
+				slideObject: curve,
+				visible: true,
+				size: 3,
+				fillColor: 'var(--bg-base)',
+				strokeColor: 'var(--accent-primary)',
+				strokeWidth: 2,
+				withLabel: true,
+				label: {
+					position: 'urt',
+					offset: [10, 10],
+					fontSize: 12,
+					fontFamily: 'var(--font-mono)',
+					color: 'var(--text-primary)',
+					strokeColor: 'none',
+					highlight: false,
+					cssClass: 'graph-tooltip-label'
+				}
 			});
-		});
 
-		board.on('move', (e: any) => {
-			const ev = e.nativeEvent || e;
-			const pos = board.getMousePosition(ev);
-			const coords = new JXG.Coords(JXG.COORDS_BY_SCREEN, pos, board);
-			glider.moveTo([coords.usrCoords[1], coords.usrCoords[2]], 0);
-			glider.setAttribute({
-				name: `x: ${glider.X().toFixed(2)}, y: ${glider.Y().toFixed(2)}`
+			glider.on('drag', () => {
+				glider.setAttribute({
+					name: `x: ${glider.X().toFixed(2)}, y: ${glider.Y().toFixed(2)}`
+				});
 			});
-		});
 
-		glider.setAttribute({ name: `x: ${glider.X().toFixed(2)}, y: ${glider.Y().toFixed(2)}` });
-		isReady = true;
-		requestAnimationFrame(() => requestBoardResize());
+			board.on('move', (e: any) => {
+				const ev = e.nativeEvent || e;
+				const pos = board.getMousePosition(ev);
+				const coords = new JXG.Coords(JXG.COORDS_BY_SCREEN, pos, board);
+				glider.moveTo([coords.usrCoords[1], coords.usrCoords[2]], 0);
+				glider.setAttribute({
+					name: `x: ${glider.X().toFixed(2)}, y: ${glider.Y().toFixed(2)}`
+				});
+			});
+
+			glider.setAttribute({ name: `x: ${glider.X().toFixed(2)}, y: ${glider.Y().toFixed(2)}` });
+			isReady = true;
+			reportReady();
+			requestAnimationFrame(() => requestBoardResize());
+		} catch (error) {
+			reportError('Graph board initialization failed', error);
+		}
 	}
 
 	onMount(() => {
@@ -314,7 +373,7 @@
 			void initializeBoard();
 		};
 
-		if (typeof IntersectionObserver === 'function' && wrapperEl) {
+		if (!isPrintMode && typeof IntersectionObserver === 'function' && wrapperEl) {
 			visibilityObserver = new IntersectionObserver(
 				(entries) => {
 					if (entries.some((entry) => entry.isIntersecting || entry.intersectionRatio > 0)) {
@@ -344,6 +403,7 @@
 			requestAnimationFrame(requestBoardResize);
 		};
 		const onFullscreenChanged = () => {
+			if (isPrintMode) return;
 			const nativeFullscreenActive = document.fullscreenElement === wrapperEl;
 			if (nativeFullscreenActive !== isFullscreen) {
 				isFullscreen = nativeFullscreenActive;
@@ -353,16 +413,20 @@
 
 		window.addEventListener('resize', onViewportChanged);
 		window.addEventListener('orientationchange', onViewportChanged);
-		window.addEventListener('keydown', onKeydown);
 		window.addEventListener('coworker-theme-change', onThemeChanged as EventListener);
-		document.addEventListener('fullscreenchange', onFullscreenChanged);
+		if (!isPrintMode) {
+			window.addEventListener('keydown', onKeydown);
+			document.addEventListener('fullscreenchange', onFullscreenChanged);
+		}
 
 		return () => {
 			window.removeEventListener('resize', onViewportChanged);
 			window.removeEventListener('orientationchange', onViewportChanged);
-			window.removeEventListener('keydown', onKeydown);
 			window.removeEventListener('coworker-theme-change', onThemeChanged as EventListener);
-			document.removeEventListener('fullscreenchange', onFullscreenChanged);
+			if (!isPrintMode) {
+				window.removeEventListener('keydown', onKeydown);
+				document.removeEventListener('fullscreenchange', onFullscreenChanged);
+			}
 			visibilityObserver?.disconnect();
 			resizeObserver?.disconnect();
 			visibilityObserver = null;
@@ -382,18 +446,20 @@
 </script>
 
 {#if graph?.points && graph.points.length >= 2}
-	<div class="graph-wrapper" bind:this={wrapperEl} class:fullscreen={isFullscreen}>
+	<div class="graph-wrapper" bind:this={wrapperEl} class:fullscreen={isFullscreen} class:print-mode={isPrintMode}>
 		<div class="graph-title">
 			<span>{title}</span>
-			{#if isFullscreen}
+			{#if isFullscreen && !isPrintMode}
 				<span class="graph-fullscreen-hint">Shift + ЛКМ для перемещения</span>
 			{/if}
-			<button class="graph-fullscreen-btn" onclick={toggleFullscreen}>
-				{isFullscreen ? 'Close' : 'Full screen'}
-			</button>
+			{#if !isPrintMode}
+				<button class="graph-fullscreen-btn" onclick={toggleFullscreen}>
+					{isFullscreen ? 'Close' : 'Full screen'}
+				</button>
+			{/if}
 		</div>
 		<div class="graph-board" id={boardId} bind:this={boardEl}></div>
-		{#if !isReady}
+		{#if !isReady && !isPrintMode}
 			<div class="graph-loading">Preparing graph...</div>
 		{/if}
 	</div>
@@ -447,6 +513,15 @@
 	.graph-board {
 		width: 100%;
 		height: clamp(220px, 44vh, 340px);
+	}
+
+	.graph-wrapper.print-mode {
+		break-inside: avoid-page;
+		page-break-inside: avoid;
+	}
+
+	.graph-wrapper.print-mode .graph-board {
+		height: clamp(220px, 34vh, 280px);
 	}
 
 	.graph-loading {
@@ -528,6 +603,12 @@
 
 		.graph-board {
 			height: clamp(190px, 34dvh, 260px);
+		}
+	}
+
+	@media print {
+		.graph-wrapper {
+			box-shadow: none;
 		}
 	}
 </style>

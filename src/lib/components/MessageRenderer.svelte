@@ -3,7 +3,7 @@
 	 * MessageRenderer.svelte
 	 * Safe Markdown + KaTeX renderer with graph/scheme visual blocks.
 	 */
-	import { onMount, tick } from 'svelte';
+	import { onMount } from 'svelte';
 	import GraphView from './GraphView.svelte';
 	import SchemeView from './SchemeView.svelte';
 	import { isSchemaDataV2, type SchemaDataV2 } from '$lib/schema/schema-v2.js';
@@ -39,17 +39,39 @@
 		| 'planar_mechanism'
 		| 'spatial_mechanism';
 	const FRAME_COMPONENT_ORDER = ['N', 'Vy', 'Vz', 'T', 'My', 'Mz'] as const;
+	type RenderMode = 'chat' | 'print';
 
 	type ExportActionId = 'pdf';
+	interface RenderState {
+		ready: boolean;
+		pendingBlocks: number;
+		failedBlocks: number;
+	}
 
-	let { message, schemeDebug = false }: { message: Message; schemeDebug?: boolean } = $props();
+	let {
+		message,
+		schemeDebug = false,
+		renderMode = 'chat',
+		onRenderStateChange
+	}: {
+		message: Message;
+		schemeDebug?: boolean;
+		renderMode?: RenderMode;
+		onRenderStateChange?: (state: RenderState) => void;
+	} = $props();
 
 	let renderedHtml = $state('');
-	let exportRootEl: HTMLDivElement | undefined = $state();
 	let exportControlsEl: HTMLDivElement | undefined = $state();
 	let menuOpen = $state(false);
 	let isExporting = $state(false);
 	let exportError = $state('');
+	let markdownReady = $state(false);
+	let graphReadyMap = $state<Record<string, true>>({});
+	let schemeReadyMap = $state<Record<string, true>>({});
+	let failedBlocks = $state(0);
+	let renderCycle = 0;
+
+	let isPrintMode = $derived(renderMode === 'print');
 
 	const TEXT_EXPORT = '\u042d\u043a\u0441\u043f\u043e\u0440\u0442';
 	const TEXT_EXPORTING = '\u042d\u043a\u0441\u043f\u043e\u0440\u0442\u0438\u0440\u0443\u0435\u0442\u0441\u044f...';
@@ -62,7 +84,7 @@
 		{ id: 'pdf', label: TEXT_EXPORT_TO_PDF }
 	];
 
-	let canExport = $derived(message.role === 'ASSISTANT' && !message.isStreaming);
+	let canExport = $derived(!isPrintMode && message.role === 'ASSISTANT' && !message.isStreaming);
 
 	let usedModels = $derived.by(() => {
 		if (!message.usedModels) return [];
@@ -287,6 +309,62 @@
 		return groups;
 	});
 
+	interface GraphRenderItem {
+		key: string;
+		groupTitle: string | null;
+		graph: GraphData;
+		title: string;
+	}
+
+	let graphRenderItems = $derived.by(() => {
+		const items: GraphRenderItem[] = [];
+		let globalIndex = 0;
+		for (const group of visibleGraphGroups) {
+			const groupTitle = group.memberId ? formatGraphMemberLabel(group.memberId) : null;
+			for (let index = 0; index < group.items.length; index += 1) {
+				const graph = group.items[index];
+				items.push({
+					key: `graph-${globalIndex}`,
+					groupTitle: index === 0 ? groupTitle : null,
+					graph,
+					title: formatGraphDisplayTitle(graph)
+				});
+				globalIndex += 1;
+			}
+		}
+		return items;
+	});
+
+	interface SchemeRenderItem {
+		key: string;
+		schema: SchemaDataV2;
+		title: string;
+	}
+
+	let schemeRenderItems = $derived.by(() => {
+		const renderable = schemes.filter(
+			(schema) => Array.isArray(schema.objects) && schema.objects.length > 0
+		);
+		return renderable.map((schema, index) => ({
+			key: `scheme-${index}`,
+			schema,
+			title: `Scheme revision #${index + 1}`
+		}));
+	});
+
+	let renderedGraphCount = $derived(Object.keys(graphReadyMap).length);
+	let renderedSchemeCount = $derived(Object.keys(schemeReadyMap).length);
+	let pendingBlocks = $derived(
+		(markdownReady ? 0 : 1) +
+			Math.max(0, graphRenderItems.length - renderedGraphCount) +
+			Math.max(0, schemeRenderItems.length - renderedSchemeCount)
+	);
+	let renderReady = $derived(
+		markdownReady &&
+			renderedGraphCount >= graphRenderItems.length &&
+			renderedSchemeCount >= schemeRenderItems.length
+	);
+
 	const SAFE_CLASS_TOKEN = /^[A-Za-z0-9_-]+$/;
 
 	const DOMPURIFY_CONFIG = {
@@ -343,6 +421,27 @@
 		FORCE_BODY: true
 	};
 
+	function markGraphRendered(key: string, failed = false) {
+		if (graphReadyMap[key]) return;
+		graphReadyMap = { ...graphReadyMap, [key]: true };
+		if (failed) failedBlocks += 1;
+	}
+
+	function markSchemeRendered(key: string, failed = false) {
+		if (schemeReadyMap[key]) return;
+		schemeReadyMap = { ...schemeReadyMap, [key]: true };
+		if (failed) failedBlocks += 1;
+	}
+
+	function escapeHtml(text: string): string {
+		return text
+			.replaceAll('&', '&amp;')
+			.replaceAll('<', '&lt;')
+			.replaceAll('>', '&gt;')
+			.replaceAll('"', '&quot;')
+			.replaceAll("'", '&#39;');
+	}
+
 	onMount(() => renderContent());
 	onMount(() => {
 		const onPointerDown = (event: PointerEvent) => {
@@ -372,6 +471,10 @@
 		message.id;
 		menuOpen = false;
 		exportError = '';
+		markdownReady = false;
+		graphReadyMap = {};
+		schemeReadyMap = {};
+		failedBlocks = 0;
 	});
 
 	$effect(() => {
@@ -381,322 +484,32 @@
 		}
 	});
 
+	$effect(() => {
+		onRenderStateChange?.({
+			ready: renderReady,
+			pendingBlocks,
+			failedBlocks
+		});
+	});
+
 	function toggleExportMenu() {
 		if (isExporting) return;
 		exportError = '';
 		menuOpen = !menuOpen;
 	}
 
-	function makePdfTimestamp(date: Date): string {
-		const pad = (n: number) => String(n).padStart(2, '0');
-		return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(
-			date.getHours()
-		)}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
-	}
-
-	interface CanvasEvaluation {
-		blank: boolean;
-		score: number;
-		nonBackgroundRatio: number;
-		strongNonBackgroundRatio: number;
-		diffRatio: number;
-		opaqueRatio: number;
-		luminanceRange: number;
-	}
-
-	function parseCssRgb(color: string): { r: number; g: number; b: number } | null {
-		const value = color.trim().toLowerCase();
-		if (!value) return null;
-
-		const hexMatch = value.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
-		if (hexMatch) {
-			const hex = hexMatch[1];
-			if (hex.length === 3) {
-				return {
-					r: parseInt(hex[0] + hex[0], 16),
-					g: parseInt(hex[1] + hex[1], 16),
-					b: parseInt(hex[2] + hex[2], 16)
-				};
-			}
-			return {
-				r: parseInt(hex.slice(0, 2), 16),
-				g: parseInt(hex.slice(2, 4), 16),
-				b: parseInt(hex.slice(4, 6), 16)
-			};
-		}
-
-		const rgbMatch = value.match(/^rgba?\((.+)\)$/i);
-		if (!rgbMatch) return null;
-		const parts = rgbMatch[1].split(',').map((part) => part.trim());
-		if (parts.length < 3) return null;
-
-		const toChannel = (part: string): number => {
-			const n = Number.parseFloat(part.endsWith('%') ? String((Number.parseFloat(part) / 100) * 255) : part);
-			if (!Number.isFinite(n)) return 0;
-			return Math.max(0, Math.min(255, Math.round(n)));
-		};
-
-		return {
-			r: toChannel(parts[0]),
-			g: toChannel(parts[1]),
-			b: toChannel(parts[2])
-		};
-	}
-
-	function evaluateCanvas(canvas: HTMLCanvasElement, backgroundColor: string): CanvasEvaluation {
-		const empty: CanvasEvaluation = {
-			blank: true,
-			score: 0,
-			nonBackgroundRatio: 0,
-			strongNonBackgroundRatio: 0,
-			diffRatio: 0,
-			opaqueRatio: 0,
-			luminanceRange: 0
-		};
-
-		const ctx = canvas.getContext('2d', { willReadFrequently: true });
-		if (!ctx || canvas.width <= 0 || canvas.height <= 0) return empty;
-
-		const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-		if (data.length < 4) return empty;
-
-		const background = parseCssRgb(backgroundColor) ?? { r: data[0], g: data[1], b: data[2] };
-		const totalPixels = canvas.width * canvas.height;
-		const sampleCount = Math.min(12000, totalPixels);
-		const step = Math.max(1, Math.floor(totalPixels / sampleCount));
-
-		const r0 = data[0];
-		const g0 = data[1];
-		const b0 = data[2];
-		const a0 = data[3];
-
-		let sampled = 0;
-		let diffPixels = 0;
-		let opaquePixels = 0;
-		let nonBackgroundPixels = 0;
-		let strongNonBackgroundPixels = 0;
-		let minLuminance = Number.POSITIVE_INFINITY;
-		let maxLuminance = Number.NEGATIVE_INFINITY;
-
-		for (let pixel = 0; pixel < totalPixels; pixel += step) {
-			const i = pixel * 4;
-			const r = data[i];
-			const g = data[i + 1];
-			const b = data[i + 2];
-			const alpha = data[i + 3];
-			sampled += 1;
-
-			if (alpha > 8) {
-				opaquePixels += 1;
-				const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-				if (luminance < minLuminance) minLuminance = luminance;
-				if (luminance > maxLuminance) maxLuminance = luminance;
-			}
-
-			const bgDistance =
-				Math.abs(r - background.r) + Math.abs(g - background.g) + Math.abs(b - background.b);
-
-			if (alpha > 20 && bgDistance > 16) nonBackgroundPixels += 1;
-			if (alpha > 50 && bgDistance > 36) strongNonBackgroundPixels += 1;
-
-			if (
-				Math.abs(r - r0) > 4 ||
-				Math.abs(g - g0) > 4 ||
-				Math.abs(b - b0) > 4 ||
-				Math.abs(alpha - a0) > 4
-			) {
-				diffPixels += 1;
-			}
-		}
-
-		if (sampled <= 0) return empty;
-
-		const nonBackgroundRatio = nonBackgroundPixels / sampled;
-		const strongNonBackgroundRatio = strongNonBackgroundPixels / sampled;
-		const diffRatio = diffPixels / sampled;
-		const opaqueRatio = opaquePixels / sampled;
-		const luminanceRange =
-			Number.isFinite(minLuminance) && Number.isFinite(maxLuminance) ? maxLuminance - minLuminance : 0;
-
-		// Higher score means there is more "ink" and contrast versus page background.
-		const score =
-			strongNonBackgroundRatio * 6 +
-			nonBackgroundRatio * 3 +
-			diffRatio * 0.5 +
-			Math.min(1, luminanceRange / 48) * 0.3;
-
-		const blank =
-			opaqueRatio < 0.01 ||
-			(nonBackgroundRatio < 0.0008 &&
-				strongNonBackgroundRatio < 0.0002 &&
-				diffRatio < 0.006 &&
-				luminanceRange < 6) ||
-			(diffRatio < 0.0025 && luminanceRange < 1.6);
-
-		return {
-			blank,
-			score,
-			nonBackgroundRatio,
-			strongNonBackgroundRatio,
-			diffRatio,
-			opaqueRatio,
-			luminanceRange
-		};
-	}
-
 	async function exportAsPdf() {
-		if (!exportRootEl || isExporting) return;
-		const targetEl = exportRootEl;
+		if (isExporting) return;
 		isExporting = true;
 		menuOpen = false;
 		exportError = '';
 
-		await tick();
-
 		try {
-			const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
-				import('html2canvas'),
-				import('jspdf')
-			]);
-
-			if ('fonts' in document) {
-				await (document as Document & { fonts: FontFaceSet }).fonts.ready;
+			const exportUrl = `/export/messages/${encodeURIComponent(message.id)}`;
+			const popup = window.open(exportUrl, '_blank', 'noopener,noreferrer');
+			if (!popup) {
+				window.location.assign(exportUrl);
 			}
-			await new Promise<void>((resolve) => {
-				requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-			});
-
-			const computed = getComputedStyle(document.documentElement);
-			const backgroundColor = computed.getPropertyValue('--bg-base').trim() || '#ffffff';
-			const scale = Math.max(2, Math.min(3, window.devicePixelRatio || 1));
-
-			const renderToCanvas = async (foreignObjectRendering: boolean) =>
-				html2canvas(targetEl, {
-					scale,
-					useCORS: true,
-					backgroundColor,
-					logging: false,
-					foreignObjectRendering,
-					ignoreElements: (element) => {
-						if (element === exportControlsEl) return true;
-						return Boolean(element.classList?.contains('message-actions'));
-					}
-				});
-
-			// Prefer foreignObjectRendering=true for correct KaTeX baseline/fraction layout.
-			// Keep a robust fallback to false only when true looks blank or clearly worse.
-			const renderModes = [true, false];
-			const candidates: Array<{
-				foreignObjectRendering: boolean;
-				canvas: HTMLCanvasElement;
-				evaluation: CanvasEvaluation;
-			}> = [];
-
-			for (const foreignObjectRendering of renderModes) {
-				const candidate = await renderToCanvas(foreignObjectRendering);
-				if (candidate.width <= 0 || candidate.height <= 0) continue;
-				const evaluation = evaluateCanvas(candidate, backgroundColor);
-				if (evaluation.blank) {
-					console.warn(
-						`[Export] Canvas looks blank with foreignObjectRendering=${foreignObjectRendering}`,
-						evaluation
-					);
-					continue;
-				}
-				candidates.push({
-					foreignObjectRendering,
-					canvas: candidate,
-					evaluation
-				});
-			}
-
-			let canvas: HTMLCanvasElement | null = null;
-			const preferred = candidates.find((item) => item.foreignObjectRendering);
-			const fallback = candidates.find((item) => !item.foreignObjectRendering);
-
-			if (preferred && fallback) {
-				const fallbackClearlyBetter = fallback.evaluation.score > preferred.evaluation.score * 2.2;
-				canvas = fallbackClearlyBetter ? fallback.canvas : preferred.canvas;
-				if (fallbackClearlyBetter) {
-					console.warn(
-						'[Export] Falling back to foreignObjectRendering=false because true-mode score is too low',
-						{
-							preferred: preferred.evaluation,
-							fallback: fallback.evaluation
-						}
-					);
-				}
-			} else if (preferred) {
-				canvas = preferred.canvas;
-			} else if (fallback) {
-				canvas = fallback.canvas;
-			}
-
-			if (!canvas) {
-				throw new Error('Rendered canvas is blank');
-			}
-
-			const pdf = new jsPDF({
-				orientation: 'portrait',
-				unit: 'mm',
-				format: 'a4',
-				compress: true
-			});
-
-			const marginMm = 10;
-			const pageWidthMm = pdf.internal.pageSize.getWidth();
-			const pageHeightMm = pdf.internal.pageSize.getHeight();
-			const contentWidthMm = pageWidthMm - marginMm * 2;
-			const contentHeightMm = pageHeightMm - marginMm * 2;
-			const mmPerPx = contentWidthMm / canvas.width;
-			const pageHeightPx = Math.max(1, Math.floor(contentHeightMm / mmPerPx));
-
-			let renderedPx = 0;
-			let pageIndex = 0;
-
-			while (renderedPx < canvas.height) {
-				const sliceHeightPx = Math.min(pageHeightPx, canvas.height - renderedPx);
-				const sliceCanvas = document.createElement('canvas');
-				sliceCanvas.width = canvas.width;
-				sliceCanvas.height = sliceHeightPx;
-				const ctx = sliceCanvas.getContext('2d');
-				if (!ctx) {
-					throw new Error('Failed to get 2D context for PDF slice');
-				}
-
-				ctx.drawImage(
-					canvas,
-					0,
-					renderedPx,
-					canvas.width,
-					sliceHeightPx,
-					0,
-					0,
-					canvas.width,
-					sliceHeightPx
-				);
-
-				const sliceDataUrl = sliceCanvas.toDataURL('image/png');
-				const sliceHeightMm = sliceHeightPx * mmPerPx;
-				if (pageIndex > 0) {
-					pdf.addPage();
-				}
-				pdf.addImage(
-					sliceDataUrl,
-					'PNG',
-					marginMm,
-					marginMm,
-					contentWidthMm,
-					sliceHeightMm,
-					undefined,
-					'FAST'
-				);
-
-				renderedPx += sliceHeightPx;
-				pageIndex += 1;
-			}
-
-			pdf.save(`coworker-solution-${makePdfTimestamp(new Date())}.pdf`);
 		} catch (err) {
 			console.error('[Export] PDF export failed:', err);
 			exportError = TEXT_EXPORT_ERROR;
@@ -712,62 +525,86 @@
 	}
 
 	async function renderContent() {
+		const currentCycle = ++renderCycle;
+		markdownReady = false;
 		if (!message.content) {
 			renderedHtml = '';
+			if (currentCycle === renderCycle) {
+				markdownReady = true;
+			}
 			return;
 		}
 
-		const [{ marked }, DOMPurifyModule, katex] = await Promise.all([
-			import('marked'),
-			import('dompurify'),
-			import('katex')
-		]);
+		try {
+			const [{ marked }, DOMPurifyModule, katex] = await Promise.all([
+				import('marked'),
+				import('dompurify'),
+				import('katex')
+			]);
 
-		const DOMPurify = DOMPurifyModule.default;
-		DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
-			if (data.attrName === 'class') {
-				const classes = (data.attrValue || '').split(/\s+/).filter(Boolean);
-				const safeClasses = classes.filter((c) => SAFE_CLASS_TOKEN.test(c));
-				data.attrValue = safeClasses.join(' ');
+			const DOMPurify = DOMPurifyModule.default;
+			DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
+				if (data.attrName === 'class') {
+					const classes = (data.attrValue || '').split(/\s+/).filter(Boolean);
+					const safeClasses = classes.filter((c) => SAFE_CLASS_TOKEN.test(c));
+					data.attrValue = safeClasses.join(' ');
+				}
+			});
+
+			marked.setOptions({ breaks: true, gfm: true });
+			let processed = message.content;
+
+			processed = processed.replace(/\$\$([\s\S]+?)\$\$/g, (_, math) => {
+				try {
+					return katex.renderToString(math.trim(), { displayMode: true, throwOnError: false });
+				} catch {
+					return `<span class="katex-error">$$${_}$$</span>`;
+				}
+			});
+
+			processed = processed.replace(/\$([^$\n]+?)\$/g, (_, math) => {
+				if (/^\d/.test(math.trim()) && !math.includes('=') && !math.includes('\\')) return `$${math}$`;
+				try {
+					return katex.renderToString(math.trim(), { displayMode: false, throwOnError: false });
+				} catch {
+					return `<span class="katex-error">$${_}$</span>`;
+				}
+			});
+
+			const rawHtml = await marked.parse(processed);
+			if (currentCycle !== renderCycle) return;
+			renderedHtml = DOMPurify.sanitize(rawHtml, DOMPURIFY_CONFIG as any) as unknown as string;
+		} catch (error) {
+			console.error('[MessageRenderer] Failed to render markdown content:', error);
+			if (currentCycle !== renderCycle) return;
+			renderedHtml = `<p>${escapeHtml(message.content)}</p>`;
+			failedBlocks += 1;
+		} finally {
+			if (currentCycle === renderCycle) {
+				markdownReady = true;
 			}
-		});
-
-		marked.setOptions({ breaks: true, gfm: true });
-		let processed = message.content;
-
-		processed = processed.replace(/\$\$([\s\S]+?)\$\$/g, (_, math) => {
-			try {
-				return katex.renderToString(math.trim(), { displayMode: true, throwOnError: false });
-			} catch {
-				return `<span class="katex-error">$$${_}$$</span>`;
-			}
-		});
-
-		processed = processed.replace(/\$([^$\n]+?)\$/g, (_, math) => {
-			if (/^\d/.test(math.trim()) && !math.includes('=') && !math.includes('\\')) return `$${math}$`;
-			try {
-				return katex.renderToString(math.trim(), { displayMode: false, throwOnError: false });
-			} catch {
-				return `<span class="katex-error">$${_}$</span>`;
-			}
-		});
-
-		const rawHtml = await marked.parse(processed);
-		renderedHtml = DOMPurify.sanitize(rawHtml, DOMPURIFY_CONFIG as any) as unknown as string;
+		}
 	}
 </script>
 
-<div class="message-renderer prose" class:is-exporting={isExporting}>
-	<div class="message-export-root" bind:this={exportRootEl}>
+<div class="message-renderer prose" class:is-exporting={isExporting} class:print-mode={isPrintMode}>
+	<div class="message-export-root">
 		{#if renderedHtml}
 			<!-- eslint-disable-next-line svelte/no-at-html-tags -->
 			{@html renderedHtml}
 		{/if}
 
-		{#if schemes.length > 0}
+		{#if schemeRenderItems.length > 0}
 			<div class="schemes-container">
-				{#each schemes as schema, index}
-					<SchemeView schemaData={schema} title={`Scheme revision #${index + 1}`} debug={schemeDebug} />
+				{#each schemeRenderItems as item (item.key)}
+					<SchemeView
+						schemaData={item.schema}
+						title={item.title}
+						debug={schemeDebug}
+						{renderMode}
+						onRenderReady={() => markSchemeRendered(item.key)}
+						onRenderError={() => markSchemeRendered(item.key, true)}
+					/>
 				{/each}
 			</div>
 		{/if}
@@ -779,15 +616,19 @@
 			</div>
 		{/if}
 
-		{#if visibleGraphGroups.length > 0}
+		{#if graphRenderItems.length > 0}
 			<div class="graphs-container">
-				{#each visibleGraphGroups as group}
-					{#if group.memberId}
-						<div class="graph-group-title">{formatGraphMemberLabel(group.memberId)}</div>
+				{#each graphRenderItems as item (item.key)}
+					{#if item.groupTitle}
+						<div class="graph-group-title">{item.groupTitle}</div>
 					{/if}
-					{#each group.items as graph}
-						<GraphView {graph} title={formatGraphDisplayTitle(graph)} />
-					{/each}
+					<GraphView
+						graph={item.graph}
+						title={item.title}
+						{renderMode}
+						onRenderReady={() => markGraphRendered(item.key)}
+						onRenderError={() => markGraphRendered(item.key, true)}
+					/>
 				{/each}
 			</div>
 		{/if}
@@ -964,6 +805,25 @@
 		letter-spacing: 0.03em;
 		text-transform: uppercase;
 		color: var(--text-secondary);
+	}
+
+	.message-renderer.print-mode .scheme-description-card,
+	.message-renderer.print-mode .exact-answers-card,
+	.message-renderer.print-mode .models-attribution,
+	.message-renderer.print-mode .graph-group-title {
+		break-inside: avoid-page;
+		page-break-inside: avoid;
+	}
+
+	.message-renderer.print-mode .graph-group-title {
+		break-after: avoid-page;
+		page-break-after: avoid;
+	}
+
+	.message-renderer.print-mode :global(.katex-display),
+	.message-renderer.print-mode :global(table) {
+		break-inside: avoid-page;
+		page-break-inside: avoid;
 	}
 
 	.attribution-label {

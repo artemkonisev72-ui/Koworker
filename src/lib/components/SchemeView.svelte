@@ -5,26 +5,58 @@
 		transformEpurePoint,
 		transformEpureSegment
 	} from '$lib/epure/layout.js';
-	import type { SchemaData, SchemaPoint } from '$lib/schema/schema-data.js';
-	import type { NodeV2, ObjectV2, ResultV2, SchemaDataV2 } from '$lib/schema/schema-v2.js';
-	import { normalizeSchemaDataV2 } from '$lib/schema/normalize-v2.js';
-	import { adaptSchemaV1ToV2 } from '$lib/schema/adapters-v2.js';
+import type { SchemaData, SchemaPoint } from '$lib/schema/schema-data.js';
+import type { NodeV2, ObjectV2, ResultV2, SchemaDataV2 } from '$lib/schema/schema-v2.js';
+import { normalizeSchemaDataV2 } from '$lib/schema/normalize-v2.js';
+import { adaptSchemaV1ToV2 } from '$lib/schema/adapters-v2.js';
 
-	let {
-		schemaData,
-		title = 'Verified scheme',
-		debug = false
-	}: { schemaData: unknown; title?: string; debug?: boolean } = $props();
+type RenderMode = 'chat' | 'print';
+
+let {
+	schemaData,
+	title = 'Verified scheme',
+	debug = false,
+	renderMode = 'chat',
+	onRenderReady,
+	onRenderError
+}: {
+	schemaData: unknown;
+	title?: string;
+	debug?: boolean;
+	renderMode?: RenderMode;
+	onRenderReady?: () => void;
+	onRenderError?: (reason: string) => void;
+} = $props();
 
 	let board: any = null;
 	let wrapperEl: HTMLDivElement | undefined = $state();
 	let boardEl: HTMLDivElement | undefined = $state();
 	let isReady = $state(false);
-	let isFullscreen = $state(false);
-	let initRequested = false;
-	const boardId = `scheme-${Math.random().toString(36).slice(2, 10)}`;
-	let visibilityObserver: IntersectionObserver | null = null;
-	let resizeObserver: ResizeObserver | null = null;
+let isFullscreen = $state(false);
+let initRequested = false;
+const boardId = `scheme-${Math.random().toString(36).slice(2, 10)}`;
+let visibilityObserver: IntersectionObserver | null = null;
+let resizeObserver: ResizeObserver | null = null;
+const PRINT_BOARD_HEIGHT_PX = 260;
+let hasReportedRenderState = false;
+let isPrintMode = $derived(renderMode === 'print');
+
+function reportReady() {
+	if (hasReportedRenderState) return;
+	hasReportedRenderState = true;
+	onRenderReady?.();
+}
+
+function reportError(reason: string, error?: unknown) {
+	if (hasReportedRenderState) return;
+	hasReportedRenderState = true;
+	if (error) {
+		console.warn('[SchemeView] Render failed:', reason, error);
+	} else {
+		console.warn('[SchemeView] Render failed:', reason);
+	}
+	onRenderError?.(reason);
+}
 
 	function applyBoardTheme() {
 		if (!board) return;
@@ -58,15 +90,22 @@
 		return titleEl.offsetHeight;
 	}
 
-	function computeBoardSize(): { width: number; height: number } | null {
-		if (!boardEl) return null;
-		const titleHeight = getTitleHeight();
-		const fallbackWidth = Math.floor(boardEl.clientWidth || 320);
-		const fallbackHeight = Math.floor(boardEl.clientHeight || 250);
+function computeBoardSize(): { width: number; height: number } | null {
+	if (!boardEl) return null;
+	const titleHeight = getTitleHeight();
+	const fallbackWidth = Math.floor(boardEl.clientWidth || 320);
+	const fallbackHeight = Math.floor(boardEl.clientHeight || 250);
 
-		if (isFullscreen) {
-			const viewportWidth = Math.floor(window.visualViewport?.width ?? window.innerWidth);
-			const viewportHeight = Math.floor(window.visualViewport?.height ?? window.innerHeight);
+	if (isPrintMode) {
+		return {
+			width: Math.max(240, fallbackWidth),
+			height: Math.max(220, Math.min(360, fallbackHeight || PRINT_BOARD_HEIGHT_PX))
+		};
+	}
+
+	if (isFullscreen) {
+		const viewportWidth = Math.floor(window.visualViewport?.width ?? window.innerWidth);
+		const viewportHeight = Math.floor(window.visualViewport?.height ?? window.innerHeight);
 			return {
 				width: Math.max(320, viewportWidth),
 				height: Math.max(220, viewportHeight - titleHeight)
@@ -1288,8 +1327,9 @@
 		board.update?.();
 	}
 
-	async function toggleFullscreen() {
-		if (document.fullscreenElement === wrapperEl) {
+async function toggleFullscreen() {
+	if (isPrintMode) return;
+	if (document.fullscreenElement === wrapperEl) {
 			try {
 				await document.exitFullscreen();
 			} catch {
@@ -1322,8 +1362,9 @@
 		requestBoardResize();
 	}
 
-	function closeFullscreen() {
-		if (!isFullscreen) return;
+function closeFullscreen() {
+	if (isPrintMode) return;
+	if (!isFullscreen) return;
 		if (document.fullscreenElement === wrapperEl) {
 			void document.exitFullscreen();
 			return;
@@ -1332,11 +1373,19 @@
 		requestAnimationFrame(requestBoardResize);
 	}
 
-	async function initializeBoard() {
-		const schema = normalizedSchema;
-		if (!schema || schema.objects.length === 0 || board) return;
-		const structureKind = resolveStructureKind(schema);
+async function initializeBoard() {
+	const schema = normalizedSchema;
+	if (board) {
+		reportReady();
+		return;
+	}
+	if (!schema || schema.objects.length === 0) {
+		reportError('Schema has no renderable objects');
+		return;
+	}
+	const structureKind = resolveStructureKind(schema);
 
+	try {
 		const JSXGraphModule = await import('jsxgraph');
 		const JXG = JSXGraphModule.default ?? JSXGraphModule;
 
@@ -1398,8 +1447,12 @@
 			drawDebugLayer(schema, nodeMap);
 		}
 		isReady = true;
+		reportReady();
 		requestAnimationFrame(() => requestBoardResize());
+	} catch (error) {
+		reportError('Scheme board initialization failed', error);
 	}
+}
 
 	onMount(() => {
 		const schema = normalizedSchema;
@@ -1411,10 +1464,10 @@
 			void initializeBoard();
 		};
 
-		if (typeof IntersectionObserver === 'function' && wrapperEl) {
-			visibilityObserver = new IntersectionObserver(
-				(entries) => {
-					if (entries.some((entry) => entry.isIntersecting || entry.intersectionRatio > 0)) {
+	if (!isPrintMode && typeof IntersectionObserver === 'function' && wrapperEl) {
+		visibilityObserver = new IntersectionObserver(
+			(entries) => {
+				if (entries.some((entry) => entry.isIntersecting || entry.intersectionRatio > 0)) {
 						activate();
 						visibilityObserver?.disconnect();
 						visibilityObserver = null;
@@ -1436,35 +1489,40 @@
 		const onKeydown = (event: KeyboardEvent) => {
 			if (event.key === 'Escape') closeFullscreen();
 		};
-		const onThemeChanged = () => {
-			applyBoardTheme();
-			requestAnimationFrame(requestBoardResize);
-		};
-		const onFullscreenChanged = () => {
-			const nativeFullscreenActive = document.fullscreenElement === wrapperEl;
-			if (nativeFullscreenActive !== isFullscreen) {
-				isFullscreen = nativeFullscreenActive;
-			}
-			requestAnimationFrame(requestBoardResize);
-		};
+	const onThemeChanged = () => {
+		applyBoardTheme();
+		requestAnimationFrame(requestBoardResize);
+	};
+	const onFullscreenChanged = () => {
+		if (isPrintMode) return;
+		const nativeFullscreenActive = document.fullscreenElement === wrapperEl;
+		if (nativeFullscreenActive !== isFullscreen) {
+			isFullscreen = nativeFullscreenActive;
+		}
+		requestAnimationFrame(requestBoardResize);
+	};
 
-		window.addEventListener('resize', onViewportChanged);
-		window.addEventListener('orientationchange', onViewportChanged);
+	window.addEventListener('resize', onViewportChanged);
+	window.addEventListener('orientationchange', onViewportChanged);
+	window.addEventListener('coworker-theme-change', onThemeChanged as EventListener);
+	if (!isPrintMode) {
 		window.addEventListener('keydown', onKeydown);
-		window.addEventListener('coworker-theme-change', onThemeChanged as EventListener);
 		document.addEventListener('fullscreenchange', onFullscreenChanged);
+	}
 
-		return () => {
-			window.removeEventListener('resize', onViewportChanged);
-			window.removeEventListener('orientationchange', onViewportChanged);
+	return () => {
+		window.removeEventListener('resize', onViewportChanged);
+		window.removeEventListener('orientationchange', onViewportChanged);
+		window.removeEventListener('coworker-theme-change', onThemeChanged as EventListener);
+		if (!isPrintMode) {
 			window.removeEventListener('keydown', onKeydown);
-			window.removeEventListener('coworker-theme-change', onThemeChanged as EventListener);
 			document.removeEventListener('fullscreenchange', onFullscreenChanged);
-			visibilityObserver?.disconnect();
-			resizeObserver?.disconnect();
-			visibilityObserver = null;
-			resizeObserver = null;
-		};
+		}
+		visibilityObserver?.disconnect();
+		resizeObserver?.disconnect();
+		visibilityObserver = null;
+		resizeObserver = null;
+	};
 	});
 
 	onDestroy(() => {
@@ -1478,21 +1536,23 @@
 </script>
 
 {#if normalizedSchema?.objects?.length}
-	<div class="scheme-wrapper" bind:this={wrapperEl} class:fullscreen={isFullscreen}>
+	<div class="scheme-wrapper" bind:this={wrapperEl} class:fullscreen={isFullscreen} class:print-mode={isPrintMode}>
 		<div class="scheme-title">
 			<span>{title}</span>
-			{#if isFullscreen}
+			{#if isFullscreen && !isPrintMode}
 				<span class="scheme-fullscreen-hint">Shift + ЛКМ для перемещения</span>
 			{/if}
-			<button class="scheme-fullscreen-btn" onclick={toggleFullscreen}>
-				{isFullscreen ? 'Close' : 'Full screen'}
-			</button>
+			{#if !isPrintMode}
+				<button class="scheme-fullscreen-btn" onclick={toggleFullscreen}>
+					{isFullscreen ? 'Close' : 'Full screen'}
+				</button>
+			{/if}
 		</div>
 		<div class="scheme-board" id={boardId} bind:this={boardEl}></div>
-		{#if !isReady}
+		{#if !isReady && !isPrintMode}
 			<div class="scheme-loading">Preparing scheme...</div>
 		{/if}
-		{#if debug && layoutDiagnostics}
+		{#if debug && layoutDiagnostics && !isPrintMode}
 			<div class="scheme-debug">
 				<div class="scheme-debug-line">
 					Auto corrected: {layoutDiagnostics.autoCorrected ? 'yes' : 'no'} | Corrections: {layoutDiagnostics
@@ -1564,6 +1624,15 @@
 	.scheme-board {
 		width: 100%;
 		height: clamp(250px, 48vh, 380px);
+	}
+
+	.scheme-wrapper.print-mode {
+		break-inside: avoid-page;
+		page-break-inside: avoid;
+	}
+
+	.scheme-wrapper.print-mode .scheme-board {
+		height: clamp(240px, 38vh, 320px);
 	}
 
 	.scheme-loading {
@@ -1643,6 +1712,12 @@
 
 		.scheme-debug {
 			font-size: 0.69rem;
+		}
+	}
+
+	@media print {
+		.scheme-wrapper {
+			box-shadow: none;
 		}
 	}
 </style>
