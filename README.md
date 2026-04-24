@@ -69,6 +69,21 @@ SMTP_FROM="Coworker <no-reply@example.com>"
 
 If SMTP variables are not configured, the app logs verification links to server logs (dev/test fallback).
 
+## LLM providers (Google + OpenRouter)
+
+Environment variables for model selection:
+
+```sh
+GEMINI_API_KEY="your-gemini-api-key"
+OPENROUTER_API_KEY="your-openrouter-api-key"
+OPENROUTER_BASE_URL="https://openrouter.ai/api/v1" # optional
+OPENROUTER_HTTP_REFERER="http://localhost:5173"     # optional
+OPENROUTER_TITLE="Coworker AI"                      # optional, sent as X-OpenRouter-Title
+OPENROUTER_REQUEST_TIMEOUT_MS="60000"               # optional
+```
+
+OpenRouter is used only when an `openrouter:*` model is selected in the model dropdown.
+
 ## Building
 
 To create a production version of your app:

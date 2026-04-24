@@ -5,7 +5,12 @@
  */
 import type { RequestHandler } from './$types';
 import { prisma } from '$lib/server/db.js';
-import { isModelPreference, normalizeModelPreference } from '$lib/server/ai/model-preference.js';
+import {
+	DEFAULT_MODEL_PREFERENCE,
+	isModelPreference,
+	normalizeModelPreference,
+	type ModelPreference
+} from '$lib/server/ai/model-preference.js';
 import { getChatProcessingForUser } from '$lib/server/chat-processing.js';
 import { json, error } from '@sveltejs/kit';
 
@@ -13,7 +18,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (!locals.user) return error(401, 'Unauthorized');
 
 	let title = '\u041d\u043e\u0432\u044b\u0439 \u0447\u0430\u0442';
-	let modelPreference = 'auto';
+	let modelPreference: ModelPreference = DEFAULT_MODEL_PREFERENCE;
 	let body: { title?: string; modelPreference?: string } = {};
 	try {
 		body = (await request.json()) as typeof body;

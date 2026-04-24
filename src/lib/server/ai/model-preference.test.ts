@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore Vitest resolves .js to .ts at runtime; svelte-check may report false positive
 import {
+	DEFAULT_MODEL_PREFERENCE,
 	isModelPreference,
 	normalizeModelPreference,
 	toForcedModel
@@ -9,27 +10,30 @@ import {
 
 describe('model preference normalization', () => {
 	it('accepts supported values', () => {
-		expect(isModelPreference('auto')).toBe(true);
-		expect(isModelPreference('gemini-2.5-flash')).toBe(true);
 		expect(isModelPreference('gemini-3.1-flash-lite-preview')).toBe(true);
 		expect(isModelPreference('gemini-3.1-pro-preview')).toBe(true);
+		expect(isModelPreference('openrouter:google/gemini-3.1-flash-lite-preview')).toBe(true);
+		expect(isModelPreference('openrouter:google/gemini-3.1-pro-preview')).toBe(true);
 	});
 
-	it('normalizes unsupported values to auto', () => {
-		expect(normalizeModelPreference('')).toBe('auto');
-		expect(normalizeModelPreference('gemini-unknown')).toBe('auto');
-		expect(normalizeModelPreference('gemini-2.5-flash ')).toBe('gemini-2.5-flash');
+	it('normalizes unsupported and legacy values to default model', () => {
+		expect(normalizeModelPreference('')).toBe(DEFAULT_MODEL_PREFERENCE);
+		expect(normalizeModelPreference('auto')).toBe(DEFAULT_MODEL_PREFERENCE);
+		expect(normalizeModelPreference('gemini-unknown')).toBe(DEFAULT_MODEL_PREFERENCE);
+		expect(normalizeModelPreference('gemini-3.1-pro-preview ')).toBe('gemini-3.1-pro-preview');
 		expect(normalizeModelPreference('gemini-3.1-flash-lite-preview')).toBe(
 			'gemini-3.1-flash-lite-preview'
 		);
 	});
 
 	it('converts preference to forced model safely', () => {
-		expect(toForcedModel('auto')).toBeNull();
-		expect(toForcedModel('gemini-2.5-flash')).toBe('gemini-2.5-flash');
+		expect(toForcedModel('auto')).toBe(DEFAULT_MODEL_PREFERENCE);
 		expect(toForcedModel('gemini-3.1-flash-lite-preview')).toBe(
 			'gemini-3.1-flash-lite-preview'
 		);
-		expect(toForcedModel('unsupported')).toBeNull();
+		expect(toForcedModel('openrouter:google/gemini-3.1-pro-preview')).toBe(
+			'openrouter:google/gemini-3.1-pro-preview'
+		);
+		expect(toForcedModel('unsupported')).toBe(DEFAULT_MODEL_PREFERENCE);
 	});
 });

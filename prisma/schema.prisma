@@ -62,7 +62,7 @@ model Chat {
   id              String     @id @default(cuid())
   userId          String
   title           String     @default("New chat")
-  modelPreference String     @default("auto")
+  modelPreference String     @default("gemini-3.1-flash-lite-preview")
   isPinned        Boolean    @default(false)
   isPublic        Boolean    @default(false)
   createdAt       DateTime   @default(now())

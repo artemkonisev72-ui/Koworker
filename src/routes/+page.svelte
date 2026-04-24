@@ -57,10 +57,18 @@
 		placeholderId: string | null;
 	}
 	type ThemeMode = 'light' | 'dark';
+	const DEFAULT_MODEL_PREFERENCE = 'gemini-3.1-flash-lite-preview';
 	const MODEL_OPTIONS = [
-		{ value: 'auto', label: 'Авто' },
 		{ value: 'gemini-3.1-flash-lite-preview', label: 'Gemini 3.1 Flash-lite' },
-		{ value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro' }
+		{ value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro' },
+		{
+			value: 'openrouter:google/gemini-3.1-flash-lite-preview',
+			label: 'Gemini 3.1 Flash-lite (openrouter)'
+		},
+		{
+			value: 'openrouter:google/gemini-3.1-pro-preview',
+			label: 'Gemini 3.1 Pro (openrouter)'
+		}
 	] as const;
 
 	let { data }: { data: import('./$types').PageData } = $props();
@@ -140,7 +148,7 @@
 	let showRevisionBox = $state(false);
 	let schemaReviewExpanded = $state(true);
 	let lastSchemaReviewKey = $state<string | null>(null);
-	let selectedModelPreference = $state('auto');
+	let selectedModelPreference = $state(DEFAULT_MODEL_PREFERENCE);
 	let themeMode = $state<ThemeMode>('light');
 	let welcomeGreeting = $state('Над чем работаем сегодня?');
 	let messageLoadSequence = 0;
@@ -623,8 +631,12 @@
 	}
 
 	function normalizeModelPreference(preference: string | null | undefined): string {
-		if (typeof preference !== 'string') return 'auto';
-		return MODEL_OPTIONS.some((option) => option.value === preference) ? preference : 'auto';
+		if (typeof preference !== 'string') return DEFAULT_MODEL_PREFERENCE;
+		const normalized = preference.trim();
+		if (normalized === 'auto') return DEFAULT_MODEL_PREFERENCE;
+		return MODEL_OPTIONS.some((option) => option.value === normalized)
+			? normalized
+			: DEFAULT_MODEL_PREFERENCE;
 	}
 
 	function currentModelPreference(): string {
@@ -678,7 +690,9 @@
 	async function selectChat(chatId: string) {
 		if (activeChatId === chatId) return;
 		const selectedChat = chats.find((c) => c.id === chatId);
-		selectedModelPreference = normalizeModelPreference(selectedChat?.modelPreference || 'auto');
+		selectedModelPreference = normalizeModelPreference(
+			selectedChat?.modelPreference || DEFAULT_MODEL_PREFERENCE
+		);
 		activeChatId = chatId;
 		showRevisionBox = false;
 		revisionNotes = '';

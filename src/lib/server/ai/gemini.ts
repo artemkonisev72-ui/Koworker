@@ -24,6 +24,26 @@ export type GeminiModel =
 	| 'gemini-2.5-flash'
 	| 'gemini-2.5-flash-lite';
 
+export type OpenRouterModelPreference =
+	| 'openrouter:google/gemini-3.1-flash-lite-preview'
+	| 'openrouter:google/gemini-3.1-pro-preview';
+
+type ModelForGeneration = GeminiModel | OpenRouterModelPreference;
+
+const OPENROUTER_MODEL_BY_PREFERENCE: Record<OpenRouterModelPreference, string> = {
+	'openrouter:google/gemini-3.1-flash-lite-preview': 'google/gemini-3.1-flash-lite-preview',
+	'openrouter:google/gemini-3.1-pro-preview': 'google/gemini-3.1-pro-preview'
+};
+
+const OPENROUTER_MODEL_PREFERENCE_SET = new Set<OpenRouterModelPreference>([
+	'openrouter:google/gemini-3.1-flash-lite-preview',
+	'openrouter:google/gemini-3.1-pro-preview'
+]);
+
+function isOpenRouterModelPreference(value: string): value is OpenRouterModelPreference {
+	return OPENROUTER_MODEL_PREFERENCE_SET.has(value as OpenRouterModelPreference);
+}
+
 const GEMINI_MODEL_SET = new Set<GeminiModel>([
 	'gemini-3.1-flash-preview',
 	'gemini-3.1-pro-preview',
@@ -98,7 +118,7 @@ export interface SchemaGenerationResult {
 	schemaData: SchemaData | SchemaDataV2;
 	assumptions: string[];
 	ambiguities: string[];
-	model: GeminiModel;
+	model: string;
 	tokens: number;
 	usedModels: string[];
 }
@@ -107,7 +127,7 @@ export interface IntentGenerationResult {
 	intent: SchemeIntentV1;
 	assumptions: string[];
 	ambiguities: string[];
-	model: GeminiModel;
+	model: string;
 	tokens: number;
 	usedModels: string[];
 }
@@ -116,14 +136,14 @@ export interface SchemeUnderstandingGenerationResult {
 	understanding: SchemeUnderstandingV1;
 	assumptions: string[];
 	ambiguities: string[];
-	model: GeminiModel;
+	model: string;
 	tokens: number;
 	usedModels: string[];
 }
 
 export interface SchemeDescriptionGenerationResult {
 	description: string;
-	model: GeminiModel;
+	model: string;
 	tokens: number;
 }
 
@@ -149,11 +169,26 @@ function buildContext(history: GeminiHistory[], systemPrompt: string, currentQue
 const DEFAULT_GEMINI_TIMEOUT_MS = 60_000;
 const MIN_GEMINI_TIMEOUT_MS = 5_000;
 const MAX_GEMINI_TIMEOUT_MS = 60_000;
+const DEFAULT_OPENROUTER_TIMEOUT_MS = 60_000;
+const MIN_OPENROUTER_TIMEOUT_MS = 5_000;
+const MAX_OPENROUTER_TIMEOUT_MS = 120_000;
 
 function getGeminiTimeoutMs(): number {
 	const raw = Number(process.env.GEMINI_REQUEST_TIMEOUT_MS);
 	if (!Number.isFinite(raw)) return DEFAULT_GEMINI_TIMEOUT_MS;
 	return Math.min(MAX_GEMINI_TIMEOUT_MS, Math.max(MIN_GEMINI_TIMEOUT_MS, Math.floor(raw)));
+}
+
+function getOpenRouterTimeoutMs(): number {
+	const raw = Number(process.env.OPENROUTER_REQUEST_TIMEOUT_MS);
+	if (!Number.isFinite(raw)) return DEFAULT_OPENROUTER_TIMEOUT_MS;
+	return Math.min(MAX_OPENROUTER_TIMEOUT_MS, Math.max(MIN_OPENROUTER_TIMEOUT_MS, Math.floor(raw)));
+}
+
+function getOpenRouterBaseUrl(): string {
+	const raw = process.env.OPENROUTER_BASE_URL?.trim();
+	const base = raw && raw.length > 0 ? raw : 'https://openrouter.ai/api/v1';
+	return base.replace(/\/+$/, '');
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
@@ -172,7 +207,167 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: 
 	});
 }
 
-async function generate(model: GeminiModel, messages: GeminiMessage[]): Promise<{ text: string; tokens: number }> {
+interface OpenRouterContentTextPart {
+	type: 'text';
+	text: string;
+}
+
+interface OpenRouterContentImagePart {
+	type: 'image_url';
+	image_url: {
+		url: string;
+	};
+}
+
+type OpenRouterMessageContent = string | Array<OpenRouterContentTextPart | OpenRouterContentImagePart>;
+
+interface OpenRouterRequestMessage {
+	role: 'user' | 'assistant';
+	content: OpenRouterMessageContent;
+}
+
+interface OpenRouterResponse {
+	model?: unknown;
+	choices?: Array<{
+		message?: {
+			content?: unknown;
+		};
+	}>;
+	usage?: {
+		total_tokens?: unknown;
+	};
+}
+
+function toOpenRouterMessages(messages: GeminiMessage[]): OpenRouterRequestMessage[] {
+	return messages.map((message) => {
+		const parts: Array<OpenRouterContentTextPart | OpenRouterContentImagePart> = [];
+		for (const part of message.parts) {
+			if (typeof part.text === 'string' && part.text.length > 0) {
+				parts.push({ type: 'text', text: part.text });
+			}
+			if (part.inlineData?.mimeType && part.inlineData?.data) {
+				parts.push({
+					type: 'image_url',
+					image_url: {
+						url: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`
+					}
+				});
+			}
+		}
+
+		const content: OpenRouterMessageContent =
+			parts.length === 1 && parts[0].type === 'text'
+				? parts[0].text
+				: parts.length > 0
+					? parts
+					: '';
+
+		return {
+			role: message.role === 'user' ? 'user' : 'assistant',
+			content
+		};
+	});
+}
+
+function extractOpenRouterText(content: unknown): string {
+	if (typeof content === 'string') return content;
+	if (!Array.isArray(content)) return '';
+	const chunks: string[] = [];
+	for (const item of content) {
+		if (typeof item === 'string') {
+			chunks.push(item);
+			continue;
+		}
+		if (typeof item === 'object' && item !== null && 'text' in item && typeof item.text === 'string') {
+			chunks.push(item.text);
+		}
+	}
+	return chunks.join('\n').trim();
+}
+
+async function readOpenRouterErrorBody(response: Response): Promise<string> {
+	try {
+		const payload = (await response.json()) as { error?: { message?: string } };
+		const message = payload?.error?.message;
+		if (typeof message === 'string' && message.trim().length > 0) return message.trim();
+	} catch {
+		// Fallback to plain text below.
+	}
+
+	try {
+		const text = (await response.text()).trim();
+		if (text.length > 0) return text;
+	} catch {
+		// Ignore and use status text.
+	}
+
+	return response.statusText || 'Unknown OpenRouter error';
+}
+
+async function generateWithOpenRouter(
+	modelPreference: OpenRouterModelPreference,
+	messages: GeminiMessage[]
+): Promise<{ text: string; model: string; tokens: number }> {
+	const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+	if (!apiKey) {
+		throw new Error('OPENROUTER_API_KEY is not configured');
+	}
+
+	const openRouterModel = OPENROUTER_MODEL_BY_PREFERENCE[modelPreference];
+	const requestBody = {
+		model: openRouterModel,
+		messages: toOpenRouterMessages(messages)
+	};
+
+	const headers: Record<string, string> = {
+		Authorization: `Bearer ${apiKey}`,
+		'Content-Type': 'application/json'
+	};
+	const referer = process.env.OPENROUTER_HTTP_REFERER?.trim();
+	if (referer) headers['HTTP-Referer'] = referer;
+	const title = process.env.OPENROUTER_TITLE?.trim();
+	if (title) headers['X-OpenRouter-Title'] = title;
+
+	const timeoutMs = getOpenRouterTimeoutMs();
+	const response = await withTimeout(
+		fetch(`${getOpenRouterBaseUrl()}/chat/completions`, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify(requestBody)
+		}),
+		timeoutMs,
+		`OpenRouter request timeout (${timeoutMs}ms) for model ${openRouterModel}`
+	);
+
+	if (!response.ok) {
+		const details = await readOpenRouterErrorBody(response);
+		throw new Error(`OpenRouter API request failed (${response.status}): ${details}`);
+	}
+
+	const payload = (await response.json()) as OpenRouterResponse;
+	const text = extractOpenRouterText(payload.choices?.[0]?.message?.content);
+	if (!text) {
+		throw new Error(`OpenRouter API returned empty text (model: ${openRouterModel})`);
+	}
+
+	const responseModel =
+		typeof payload.model === 'string' && payload.model.trim().length > 0 ? payload.model : openRouterModel;
+	const totalTokens = Number(payload.usage?.total_tokens);
+	return {
+		text,
+		model: responseModel,
+		tokens: Number.isFinite(totalTokens) ? totalTokens : 0
+	};
+}
+
+async function generate(
+	model: ModelForGeneration,
+	messages: GeminiMessage[]
+): Promise<{ text: string; model: string; tokens: number }> {
+	if (isOpenRouterModelPreference(model)) {
+		return generateWithOpenRouter(model, messages);
+	}
+
 	const timeoutMs = getGeminiTimeoutMs();
 	const response = await withTimeout(
 		ai.models.generateContent({ model, contents: messages }),
@@ -182,7 +377,11 @@ async function generate(model: GeminiModel, messages: GeminiMessage[]): Promise<
 	if (!response.text) {
 		throw new Error(`Gemini API returned empty text (model: ${model})`);
 	}
-	return { text: response.text, tokens: response.usageMetadata?.totalTokenCount || 0 };
+	return {
+		text: response.text,
+		model,
+		tokens: response.usageMetadata?.totalTokenCount || 0
+	};
 }
 
 async function generateWithFallback(
@@ -190,13 +389,14 @@ async function generateWithFallback(
 	chain: GeminiModel[],
 	messages: GeminiMessage[],
 	forcedModel?: string | null
-): Promise<{ text: string; model: GeminiModel; tokens: number }> {
+): Promise<{ text: string; model: string; tokens: number }> {
 	const normalizedForcedModel =
-		typeof forcedModel === 'string' && GEMINI_MODEL_SET.has(forcedModel as GeminiModel)
-			? (forcedModel as GeminiModel)
+		typeof forcedModel === 'string' &&
+		(GEMINI_MODEL_SET.has(forcedModel as GeminiModel) || isOpenRouterModelPreference(forcedModel))
+			? (forcedModel as ModelForGeneration)
 			: null;
 
-	const effectiveChain =
+	const effectiveChain: ModelForGeneration[] =
 		normalizedForcedModel
 			? [normalizedForcedModel]
 			: chain.indexOf(startModel) >= 0
@@ -212,15 +412,15 @@ async function generateWithFallback(
 	for (let i = 0; i < effectiveChain.length; i++) {
 		const model = effectiveChain[i];
 		try {
-			const { text, tokens } = await generate(model, messages);
-			console.log(`[Gemini] Using: ${model}${normalizedForcedModel ? ' (FORCED)' : ''}`);
-			return { text, model, tokens };
+			const generation = await generate(model, messages);
+			console.log(`[LLM] Using: ${generation.model}${normalizedForcedModel ? ' (FORCED)' : ''}`);
+			return generation;
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			const isRetryable = ['400', '404', '429', '503', 'not found', 'NOT_FOUND', 'Model not supported'].some((token) =>
 				msg.includes(token)
 			);
-			if (isRetryable && i < effectiveChain.length - 1) {
+			if (!isOpenRouterModelPreference(model) && isRetryable && i < effectiveChain.length - 1) {
 				console.warn(`[Gemini] Model ${model} unavailable, falling back...`);
 				continue;
 			}
@@ -418,7 +618,7 @@ async function generateSchemaStage(
 	question: string,
 	forcedModel?: string | null,
 	options?: { useFlashChain?: boolean }
-): Promise<{ parsed: { schemaData: SchemaData | SchemaDataV2; assumptions: string[]; ambiguities: string[] }; model: GeminiModel; tokens: number }> {
+): Promise<{ parsed: { schemaData: SchemaData | SchemaDataV2; assumptions: string[]; ambiguities: string[] }; model: string; tokens: number }> {
 	const messages = buildContext(history, systemPrompt, question);
 	const chain = options?.useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
 	const generation = await generateWithFallback(chain[0], chain, messages, forcedModel);
@@ -433,7 +633,7 @@ async function generateIntentStage(
 	options?: { useFlashChain?: boolean; baseIntent?: SchemeIntentV1 }
 ): Promise<{
 	parsed: { intent: SchemeIntentV1; assumptions: string[]; ambiguities: string[] };
-	model: GeminiModel;
+	model: string;
 	tokens: number;
 }> {
 	const messages = buildContext(history, systemPrompt, question);
@@ -448,7 +648,7 @@ async function generateIntentStage(
 	};
 }
 
-function formatTokenAttribution(model: GeminiModel, stage: string, tokens: number): string {
+function formatTokenAttribution(model: string, stage: string, tokens: number): string {
 	return `${model} (${stage}): ${tokens.toLocaleString('ru-RU')} tokens`;
 }
 
@@ -464,7 +664,7 @@ export async function routeQuestion(
 	history: GeminiHistory[],
 	userMessage: string,
 	forcedModel?: string | null
-): Promise<{ result: boolean; model: GeminiModel; tokens: number }> {
+): Promise<{ result: boolean; model: string; tokens: number }> {
 	const prompt =
 		'Determine if the request requires mathematical/engineering computation. Reply with YES or NO only.';
 	const messages = buildContext(history, prompt, `Question: ${userMessage}`);
@@ -490,7 +690,7 @@ export async function routeApprovedFollowup(
 		previousSolvedSummaryJson?: string;
 	},
 	forcedModel?: string | null
-): Promise<{ intent: ApprovedFollowupIntent; model: GeminiModel; tokens: number }> {
+): Promise<{ intent: ApprovedFollowupIntent; model: string; tokens: number }> {
 	const prompt = `Classify the current user message for a chat that already has a solved approved mechanics task.
 Return only one label:
 - independent_message
@@ -532,7 +732,7 @@ export async function generatePythonCode(
 	userMessage: string,
 	retryContext?: string,
 	forcedModel?: string | null
-): Promise<{ code: string; model: GeminiModel; tokens: number }> {
+): Promise<{ code: string; model: string; tokens: number }> {
 	const hasApprovedSchema = userMessage.includes('[APPROVED_SCHEMA_JSON]');
 	const hasApprovedSchemeDescription = userMessage.includes('[APPROVED_SCHEME_DESCRIPTION]');
 	const hasSolverModelContext = userMessage.includes('[SOLVER_MODEL_JSON]');
@@ -632,7 +832,7 @@ export async function assembleFinalAnswer(
 		followUpRequest?: string;
 	},
 	forcedModel?: string | null
-): Promise<{ text: string; model: GeminiModel; tokens: number }> {
+): Promise<{ text: string; model: string; tokens: number }> {
 	const mode = params.responseMode ?? 'full_solve';
 	const modeInstructions =
 		mode === 'compute_followup'
@@ -689,7 +889,7 @@ export async function answerGeneralQuestion(
 	history: GeminiHistory[],
 	userMessage: string,
 	forcedModel?: string | null
-): Promise<{ text: string; model: GeminiModel; tokens: number }> {
+): Promise<{ text: string; model: string; tokens: number }> {
 	const prompt = `Answer clearly and academically. Use LaTeX where formulas are needed.
 ${languagePolicy(userMessage)}`;
 	const messages = buildContext(history, prompt, `Question: ${userMessage}`);
@@ -702,7 +902,7 @@ export async function analyzeImage(
 	mimeType: string,
 	forcedModel?: string | null,
 	options?: { fastMode?: boolean }
-): Promise<{ text: string; model: GeminiModel; tokens: number }> {
+): Promise<{ text: string; model: string; tokens: number }> {
 	const prompt =
 		'Analyze the attached image. Extract the engineering/math task condition and describe the scheme relevant for solving. Return plain text only.';
 	const messages = buildContext(history, prompt, '');
@@ -1389,3 +1589,4 @@ ${languagePolicy(languageSeed)}`;
 		]
 	};
 }
+
