@@ -2250,8 +2250,8 @@
 		gap: 0;
 		height: 100dvh;
 		min-height: 100svh;
-		padding: calc(0.72rem + env(safe-area-inset-top)) calc(0.72rem + env(safe-area-inset-right))
-			calc(0.72rem + env(safe-area-inset-bottom)) calc(0.72rem + env(safe-area-inset-left));
+		padding: max(0px, env(safe-area-inset-top)) max(0px, env(safe-area-inset-right))
+			max(0px, env(safe-area-inset-bottom)) max(0px, env(safe-area-inset-left));
 		overflow: hidden;
 		background: var(--bg-base);
 		position: relative;
@@ -2289,7 +2289,7 @@
 		width: var(--sidebar-width);
 		min-width: var(--sidebar-width);
 		background: var(--bg-surface);
-		border: 1px solid var(--border-subtle);
+		border: none;
 		border-right: 1px solid var(--border-subtle);
 		border-radius: var(--radius-2xl) 0 0 var(--radius-2xl);
 		display: flex;
@@ -2349,7 +2349,8 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 1.25rem 1.2rem 1rem;
+		padding: 0.46rem 1.18rem;
+		min-height: var(--header-height);
 		border-bottom: 1px solid var(--border-subtle);
 	}
 
@@ -2739,15 +2740,13 @@
 		flex-direction: column;
 		overflow: hidden;
 		background: var(--bg-surface);
-		border: 1px solid var(--border-subtle);
-		border-left: 0;
-		border-radius: 0 var(--radius-2xl) var(--radius-2xl) 0;
+		border: none;
+		border-radius: 0 0 var(--radius-2xl) 0;
 		box-shadow: none;
 	}
 
 	.sidebar:not(.mobile-drawer).collapsed + .chat-main {
-		border-radius: var(--radius-2xl);
-		border-left: 1px solid var(--border-subtle);
+		border-radius: 0 0 var(--radius-2xl) var(--radius-2xl);
 	}
 
 	.chat-header {
@@ -3598,13 +3597,13 @@
 
 	@media (max-width: 900px) {
 		.app-shell {
-			padding: calc(0.58rem + env(safe-area-inset-top)) calc(0.58rem + env(safe-area-inset-right))
-				calc(0.58rem + env(safe-area-inset-bottom)) calc(0.58rem + env(safe-area-inset-left));
+			padding: max(0px, env(safe-area-inset-top)) max(0px, env(safe-area-inset-right))
+				max(0px, env(safe-area-inset-bottom)) max(0px, env(safe-area-inset-left));
 			gap: 0;
 		}
 
 		.chat-main {
-			border-radius: var(--radius-xl);
+			border-radius: 0 0 var(--radius-xl) 0;
 		}
 
 		.chat-header {
