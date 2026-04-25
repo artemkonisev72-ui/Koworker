@@ -6,6 +6,7 @@
 	import { onMount, tick } from 'svelte';
 	import MessageRenderer from '$lib/components/MessageRenderer.svelte';
 	import type { GraphData } from '$lib/graphs/types.js';
+	import { clientSandbox, ClientSandboxError } from '$lib/client/sandbox/index.js';
 	import {
 		canDeleteMessage,
 		dedupeMessagesById,
@@ -978,6 +979,30 @@
 		}
 	}
 
+	async function submitSandboxResult(payload: {
+		requestId: string;
+		ok: boolean;
+		stdout?: string;
+		error?: string;
+		errorKind?: string;
+	}): Promise<void> {
+		await fetch('/api/sandbox/results', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(payload)
+		});
+	}
+
+	function classifySandboxClientError(error: unknown): { message: string; errorKind: string } {
+		if (error instanceof ClientSandboxError) {
+			return { message: error.message, errorKind: error.kind };
+		}
+		if (error instanceof Error) {
+			return { message: error.message, errorKind: 'unknown' };
+		}
+		return { message: String(error), errorKind: 'unknown' };
+	}
+
 	function sleep(ms: number): Promise<void> {
 		return new Promise((resolve) => {
 			setTimeout(resolve, ms);
@@ -1138,33 +1163,104 @@
 		const draftId = activeDraft.draftId;
 		const chatId = activeChatId;
 		try {
-			const res = await fetch(`/api/schema/${draftId}/confirm`, {
+			const res = await fetch(`/api/schema/${draftId}/confirm/stream`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ modelPreference: currentModelPreference() })
 			});
-			if (!res.ok) {
+			if (!res.ok || !res.body) {
 				throw new Error(await parseErrorMessage(res));
 			}
-			const payload = await res.json();
-			setSchemaCheckForChat(chatId, false);
-			if (payload.status === 'SOLVED') {
-				setDraftState(chatId, null);
-				showRevisionBox = false;
-				revisionNotes = '';
-				clearProcessingState(chatId);
-				await loadMessages(chatId);
-				await loadChats();
-				return;
-			}
+
 			setDraftState(chatId, null);
 			showRevisionBox = false;
 			revisionNotes = '';
-			setProcessingActive(chatId, {
-				kind: 'schema_confirm',
-				statusMessage: 'Solve started. Waiting for result...'
-			});
-			await waitForSchemaSolveResult(draftId, chatId);
+			const reader = res.body.getReader();
+			const decoder = new TextDecoder();
+			let buffer = '';
+			let receivedResult = false;
+
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+
+				buffer += decoder.decode(value, { stream: true });
+				const lines = buffer.split('\n');
+				buffer = lines.pop() ?? '';
+
+				for (const line of lines) {
+					if (!line.startsWith('data: ')) continue;
+					const payload = line.slice(6).trim();
+					if (payload === '[DONE]') break;
+
+					try {
+						const event = JSON.parse(payload) as {
+							type: string;
+							message?: string;
+							requestId?: string;
+							code?: string;
+							timeoutMs?: number;
+						};
+
+						if (event.type === 'status') {
+							setProcessingActive(chatId, {
+								kind: 'schema_confirm',
+								statusMessage: event.message ?? '',
+								placeholderId: getProcessingState(chatId).placeholderId
+							});
+						} else if (event.type === 'sandbox_request') {
+							const requestId = typeof event.requestId === 'string' ? event.requestId : '';
+							const code = typeof event.code === 'string' ? event.code : '';
+							if (!requestId || !code) continue;
+
+							void (async () => {
+								let resultPayload:
+									| { requestId: string; ok: true; stdout: string }
+									| { requestId: string; ok: false; error: string; errorKind: string };
+								try {
+									const execution = await clientSandbox.execute(code, {
+										timeoutMs: event.timeoutMs
+									});
+									resultPayload = {
+										requestId,
+										ok: true,
+										stdout: execution.stdout
+									};
+								} catch (sandboxError) {
+									const normalized = classifySandboxClientError(sandboxError);
+									resultPayload = {
+										requestId,
+										ok: false,
+										error: normalized.message,
+										errorKind: normalized.errorKind
+									};
+								}
+
+								try {
+									await submitSandboxResult(resultPayload);
+								} catch (postError) {
+									console.error('Failed to send schema sandbox result:', postError);
+								}
+							})();
+						} else if (event.type === 'result') {
+							receivedResult = true;
+							setSchemaCheckForChat(chatId, false);
+							await loadMessages(chatId);
+							await loadChats();
+							clearProcessingState(chatId);
+							return;
+						} else if (event.type === 'error') {
+							throw new Error(event.message ?? 'Schema solve failed');
+						}
+					} catch (streamError) {
+						throw streamError;
+					}
+				}
+			}
+
+			if (!receivedResult) {
+				throw new Error('Schema solve stream ended without result');
+			}
 		} catch (err) {
 			console.error('Schema confirm failed:', err);
 			alert(err instanceof Error ? err.message : String(err));
@@ -1287,6 +1383,10 @@
 							schemaDescription?: string;
 							schemaVersion?: string;
 							usedModels?: string[];
+							requestId?: string;
+							code?: string;
+							timeoutMs?: number;
+							attempt?: number;
 						};
 
 						if (event.type === 'ack') {
@@ -1302,6 +1402,40 @@
 								statusMessage: event.message ?? '',
 								placeholderId: assistantMessageId
 							});
+						} else if (event.type === 'sandbox_request') {
+							const requestId = typeof event.requestId === 'string' ? event.requestId : '';
+							const code = typeof event.code === 'string' ? event.code : '';
+							if (!requestId || !code) continue;
+
+							void (async () => {
+								let resultPayload:
+									| { requestId: string; ok: true; stdout: string }
+									| { requestId: string; ok: false; error: string; errorKind: string };
+								try {
+									const execution = await clientSandbox.execute(code, {
+										timeoutMs: event.timeoutMs
+									});
+									resultPayload = {
+										requestId,
+										ok: true,
+										stdout: execution.stdout
+									};
+								} catch (sandboxError) {
+									const normalized = classifySandboxClientError(sandboxError);
+									resultPayload = {
+										requestId,
+										ok: false,
+										error: normalized.message,
+										errorKind: normalized.errorKind
+									};
+								}
+
+								try {
+									await submitSandboxResult(resultPayload);
+								} catch (postError) {
+									console.error('Failed to send sandbox result:', postError);
+								}
+							})();
 						} else if (event.type === 'result') {
 							assistantMessageId = applyMessageIdReconciliation(
 								originChatId,

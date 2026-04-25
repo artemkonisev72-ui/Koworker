@@ -111,6 +111,15 @@ export type PipelineStatus =
 	  }
 	| { type: 'error'; message: string };
 
+export interface SandboxExecutionMeta {
+	attempt: number;
+}
+
+export type SandboxExecutor = (
+	code: string,
+	meta: SandboxExecutionMeta
+) => Promise<{ stdout: string }>;
+
 interface GraphNormalizationResult {
 	graphs: GraphData[];
 	issues: string[];
@@ -757,7 +766,10 @@ export async function runPipelineWithApprovedSchema(
 	history: GeminiHistory[],
 	onStatus: (event: PipelineStatus) => void | Promise<void>,
 	imageData?: { base64: string; mimeType: string },
-	forcedModel?: string | null
+	forcedModel?: string | null,
+	options?: {
+		sandboxExecutor?: SandboxExecutor;
+	}
 ): Promise<void> {
 	if (!params.approvedSchema) {
 		throw new Error('Approved schema is required for schema-check solving');
@@ -777,7 +789,8 @@ export async function runPipelineWithApprovedSchema(
 
 	return runPipeline(params.userMessage, history, onStatus, imageData, forcedModel, {
 		canonicalSolveInput: canonicalInput,
-		bypassRouting: true
+		bypassRouting: true,
+		sandboxExecutor: options?.sandboxExecutor
 	});
 }
 
@@ -791,6 +804,7 @@ export async function runPipeline(
 		canonicalSolveInput?: CanonicalSolveInput | null;
 		bypassRouting?: boolean;
 		approvedFollowupContext?: ApprovedFollowupContext | null;
+		sandboxExecutor?: SandboxExecutor;
 	}
 ): Promise<void> {
 	console.log('[Pipeline] START message:', userMessage.slice(0, 80), '| forcedModel:', forcedModel);
@@ -798,6 +812,8 @@ export async function runPipeline(
 	let imageDescription = '';
 	const usedModelsList: string[] = [];
 	const emitStatus = (event: PipelineStatus) => Promise.resolve(onStatus(event));
+	const executeSandbox: SandboxExecutor =
+		options?.sandboxExecutor ?? ((code) => workerPool.execute(code));
 
 	try {
 		let analyzeStatusSent = false;
@@ -1005,7 +1021,7 @@ export async function runPipeline(
 			});
 
 			try {
-				const execution = await workerPool.execute(pythonCode);
+				const execution = await executeSandbox(pythonCode, { attempt: attempt + 1 });
 				rawStdout = execution.stdout;
 				const artifactsNormalization = normalizeSolveArtifacts(rawStdout);
 				if (artifactsNormalization.issues.length > 0 || !artifactsNormalization.artifacts) {

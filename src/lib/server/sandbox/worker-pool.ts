@@ -10,6 +10,7 @@ import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'node:fs';
+import { SandboxValidationError, validateSandboxCode } from '$lib/sandbox/shared.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,13 +31,6 @@ const TASK_TIMEOUT_MS = 30_000;
 const MAX_TASKS_PER_WORKER = 8; // amortize heavy pyodide startup on weak servers
 const POOL_SIZE = 1; // lower memory/CPU pressure for weak servers
 const MAX_QUEUE_SIZE = 30;
-const MAX_CODE_LENGTH = 30_000;
-
-const ALLOWED_IMPORT_ROOTS = new Set(['math', 'sympy', 'numpy', 'json']);
-const FORBIDDEN_TOKENS_RE =
-	/\b(open|eval|exec|compile|__import__|importlib|os\.|sys\.|subprocess|__loader__|__spec__)\b/;
-const BUILTINS_ESCAPE_RE =
-	/getattr\s*\(\s*__builtins__|__builtins__\s*\[|globals\s*\(\s*\)\s*\[\s*['"]__builtins__['"]|locals\s*\(\s*\)\s*\[\s*['"]__builtins__['"]/;
 
 export interface ExecutionResult {
 	stdout: string;
@@ -143,53 +137,13 @@ class WorkerPool {
 		if (next) next();
 	}
 
-	private assertAllowedImport(modulePath: string): void {
-		const root = modulePath.split('.')[0].trim();
-		if (!root || !ALLOWED_IMPORT_ROOTS.has(root)) {
-			throw new SandboxError(
-				`Forbidden import "${modulePath}". Allowed: ${Array.from(ALLOWED_IMPORT_ROOTS).join(', ')}`
-			);
-		}
-	}
-
-	private validateImports(code: string): void {
-		const importRe = /(?:^|\n)\s*import\s+([^\n#;]+)/g;
-		for (const match of code.matchAll(importRe)) {
-			const payload = match[1];
-			const modules = payload
-				.split(',')
-				.map((p) => p.trim())
-				.filter(Boolean)
-				.map((p) => p.split(/\s+as\s+/i)[0]?.trim())
-				.filter((p): p is string => Boolean(p));
-
-			for (const moduleName of modules) {
-				this.assertAllowedImport(moduleName);
-			}
-		}
-
-		const fromRe = /(?:^|\n)\s*from\s+([A-Za-z_][A-Za-z0-9_.]*)\s+import\s+/g;
-		for (const match of code.matchAll(fromRe)) {
-			this.assertAllowedImport(match[1]);
-		}
-	}
-
-	private validateCode(code: string): void {
-		if (code.length > MAX_CODE_LENGTH) {
-			throw new SandboxError(`Code is too large (>${MAX_CODE_LENGTH} chars)`);
-		}
-
-		this.validateImports(code);
-
-		if (FORBIDDEN_TOKENS_RE.test(code) || BUILTINS_ESCAPE_RE.test(code)) {
-			throw new SandboxError('Code contains blocked operations');
-		}
-	}
-
 	execute(code: string): Promise<ExecutionResult> {
 		try {
-			this.validateCode(code);
+			validateSandboxCode(code);
 		} catch (err) {
+			if (err instanceof SandboxValidationError) {
+				return Promise.reject(new SandboxError(err.message));
+			}
 			return Promise.reject(err);
 		}
 

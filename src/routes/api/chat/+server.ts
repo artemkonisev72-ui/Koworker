@@ -16,7 +16,8 @@ import type { RequestHandler } from './$types';
 import {
 	runPipeline,
 	type ApprovedFollowupContext,
-	type PipelineStatus
+	type PipelineStatus,
+	type SandboxExecutionMeta
 } from '$lib/server/ai/pipeline.js';
 import {
 	isModelPreference,
@@ -28,6 +29,13 @@ import {
 	ChatProcessingConflictError,
 	type ChatProcessingHandle
 } from '$lib/server/chat-processing.js';
+import {
+	ClientSandboxResultError,
+	cancelClientSandboxRequest,
+	createClientSandboxRequest
+} from '$lib/server/sandbox/client-bridge.js';
+import { executeFallbackSandbox } from '$lib/server/sandbox/fallback-executor.js';
+import { SandboxError } from '$lib/server/sandbox/worker-pool.js';
 import { prisma } from '$lib/server/db.js';
 import { json, error } from '@sveltejs/kit';
 
@@ -36,6 +44,16 @@ const MAX_IMAGE_BASE64_LENGTH = 2_800_000; // ~2 MB binary payload in base64
 const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const RATE_WINDOW_MS = 60_000;
 const MAX_REQUESTS_PER_WINDOW = 20;
+const CLIENT_SANDBOX_TIMEOUT_MS = 20_000;
+const CLIENT_SANDBOX_EXECUTION_TIMEOUT_MS = 18_000;
+
+const CLIENT_FALLBACK_ERROR_KINDS = new Set([
+	'unsupported',
+	'wasm_oom',
+	'timeout',
+	'worker_crash',
+	'warmup_failed'
+]);
 
 type RateEntry = {
 	windowStart: number;
@@ -57,6 +75,16 @@ function parseMaybeJson<T>(value: unknown): T | undefined {
 	}
 	return value as T;
 }
+
+type SandboxRequestEvent = {
+	type: 'sandbox_request';
+	requestId: string;
+	attempt: number;
+	code: string;
+	timeoutMs: number;
+};
+
+type OutboundEvent = PipelineStatus | SandboxRequestEvent;
 
 export const POST: RequestHandler = async ({ locals, request }) => {
 	console.log('[SSE] POST /api/chat received');
@@ -285,12 +313,15 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		throw err;
 	}
 
+	const userId = locals.user.id;
+
 	// ── SSE ReadableStream ────────────────────────────────────────────────────
 	const stream = new ReadableStream({
 		start(controller) {
 			const encoder = new TextEncoder();
 			let streamClosed = false;
 			let pingInterval: ReturnType<typeof setInterval> | null = null;
+			const pendingSandboxRequests = new Set<string>();
 
 			function safeEnqueue(chunk: Uint8Array): boolean {
 				if (streamClosed || request.signal.aborted) {
@@ -315,9 +346,49 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				}
 			}
 
-			function send(event: PipelineStatus) {
+			function send(event: OutboundEvent) {
 				const data = `data: ${JSON.stringify(event)}\n\n`;
 				return safeEnqueue(encoder.encode(data));
+			}
+
+			async function requestSandboxExecution(
+				code: string,
+				meta: SandboxExecutionMeta
+			): Promise<{ stdout: string }> {
+				const pending = createClientSandboxRequest({
+					userId,
+					timeoutMs: CLIENT_SANDBOX_TIMEOUT_MS
+				});
+				pendingSandboxRequests.add(pending.requestId);
+
+				const delivered = send({
+					type: 'sandbox_request',
+					requestId: pending.requestId,
+					attempt: meta.attempt,
+					code,
+					timeoutMs: CLIENT_SANDBOX_EXECUTION_TIMEOUT_MS
+				});
+				if (!delivered) {
+					pending.cancel('SSE stream closed before sandbox execution request');
+					throw new SandboxError('Client disconnected before sandbox execution request');
+				}
+
+				try {
+					return await pending.promise;
+				} catch (executionError) {
+					if (executionError instanceof ClientSandboxResultError) {
+						if (CLIENT_FALLBACK_ERROR_KINDS.has(executionError.kind)) {
+							return executeFallbackSandbox(code);
+						}
+						throw new SandboxError(executionError.message);
+					}
+					if (executionError instanceof SandboxError) throw executionError;
+					throw new SandboxError(
+						executionError instanceof Error ? executionError.message : String(executionError)
+					);
+				} finally {
+					pendingSandboxRequests.delete(pending.requestId);
+				}
 			}
 
 			function sendDone() {
@@ -345,6 +416,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 						clearInterval(pingInterval);
 						pingInterval = null;
 					}
+					for (const requestId of pendingSandboxRequests) {
+						cancelClientSandboxRequest(requestId, 'HTTP request aborted');
+					}
+					pendingSandboxRequests.clear();
 				},
 				{ once: true }
 			);
@@ -421,7 +496,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				},
 				imageData,
 				forcedModel,
-				{ approvedFollowupContext }
+				{
+					approvedFollowupContext,
+					sandboxExecutor: requestSandboxExecution
+				}
 			)
 				.catch((pipelineErr) => {
 					console.error('[SSE] Pipeline error:', pipelineErr);
@@ -434,6 +512,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 						pingInterval = null;
 					}
 					processingHandle.release();
+					for (const requestId of pendingSandboxRequests) {
+						cancelClientSandboxRequest(requestId, 'Pipeline finished');
+					}
+					pendingSandboxRequests.clear();
 					sendDone();
 				});
 		}

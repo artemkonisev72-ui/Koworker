@@ -10,6 +10,9 @@ const devStrictPort = process.env.DEV_STRICT_PORT !== 'false';
 
 export default defineConfig({
 	plugins: [tailwindcss(), sveltekit()],
+	worker: {
+		format: 'es'
+	},
 	server: {
 		host: '0.0.0.0',
 		port: devServerPort,

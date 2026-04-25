@@ -2,6 +2,7 @@
 	import './layout.css';
 	import { onMount } from 'svelte';
 	import type { Snippet } from 'svelte';
+	import { clientSandbox } from '$lib/client/sandbox/index.js';
 
 	interface BeforeInstallPromptEvent extends Event {
 		prompt: () => Promise<void>;
@@ -14,6 +15,7 @@
 	let showInstallOffer = $state(false);
 	let installHintText = $state('');
 	let installInProgress = $state(false);
+	let pyodideWarmupStarted = false;
 
 	function isAndroidDevice(): boolean {
 		const navigatorWithUAData = navigator as Navigator & { userAgentData?: { platform?: string } };
@@ -48,6 +50,39 @@
 			await navigator.serviceWorker.register('/service-worker.js');
 		} catch (error) {
 			console.error('Service worker registration failed:', error);
+		}
+	}
+
+	function schedulePyodideWarmup() {
+		if (pyodideWarmupStarted || !data.user) return;
+		pyodideWarmupStarted = true;
+
+		const runWarmup = async () => {
+			if ('serviceWorker' in navigator) {
+				try {
+					const registration = await navigator.serviceWorker.ready;
+					registration.active?.postMessage({ type: 'cache-pyodide' });
+				} catch (error) {
+					console.warn('Failed to trigger pyodide cache warmup:', error);
+				}
+			}
+
+			try {
+				await clientSandbox.warm();
+			} catch (error) {
+				console.warn('Client sandbox warmup failed:', error);
+			}
+		};
+
+		if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+			(window as Window & { requestIdleCallback?: (cb: () => void, opts?: { timeout?: number }) => void })
+				.requestIdleCallback?.(() => {
+					void runWarmup();
+				}, { timeout: 4000 });
+		} else {
+			setTimeout(() => {
+				void runWarmup();
+			}, 500);
 		}
 	}
 
@@ -97,7 +132,10 @@
 	}
 
 	onMount(() => {
-		void registerServiceWorker();
+		void registerServiceWorker().then(() => {
+			schedulePyodideWarmup();
+		});
+		schedulePyodideWarmup();
 
 		if (data.postLogin) {
 			consumePostLoginParam();

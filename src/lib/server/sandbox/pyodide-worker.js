@@ -1,66 +1,11 @@
 import { parentPort } from "worker_threads";
 import { loadPyodide } from "pyodide";
+import { SANDBOX_BOOTSTRAP } from "../../sandbox/shared.js";
 if (!parentPort) {
   throw new Error("pyodide-worker must be run in a worker_thread");
 }
 let pyodide = null;
 let currentStdout = "";
-const SANDBOX_BOOTSTRAP = `
-import builtins as __builtins_mod
-import math as __sandbox_math
-import sympy as __sandbox_sympy
-import numpy as __sandbox_numpy
-import json as __sandbox_json
-
-_ALLOWED_IMPORTS = {"math", "sympy", "numpy", "json"}
-_REAL_IMPORT = __builtins_mod.__import__
-
-def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
-    root = name.split(".")[0]
-    if root not in _ALLOWED_IMPORTS:
-        raise ImportError(f"Import '{name}' is blocked")
-    return _REAL_IMPORT(name, globals, locals, fromlist, level)
-
-_SAFE_BUILTINS = {
-    "__import__": _safe_import,
-    "abs": abs,
-    "all": all,
-    "any": any,
-    "bool": bool,
-    "dict": dict,
-    "enumerate": enumerate,
-    "float": float,
-    "int": int,
-    "len": len,
-    "list": list,
-    "max": max,
-    "min": min,
-    "pow": pow,
-    "print": print,
-    "range": range,
-    "round": round,
-    "set": set,
-    "sorted": sorted,
-    "str": str,
-    "sum": sum,
-    "tuple": tuple,
-    "zip": zip,
-    "Exception": Exception,
-    "ValueError": ValueError,
-    "TypeError": TypeError
-}
-
-def _run_sandbox(__sandbox_code):
-    _globals = {
-        "__builtins__": _SAFE_BUILTINS,
-        "math": __sandbox_math,
-        "sympy": __sandbox_sympy,
-        "numpy": __sandbox_numpy,
-        "np": __sandbox_numpy,
-        "json": __sandbox_json
-    }
-    exec(compile(__sandbox_code, "<sandbox>", "exec"), _globals, None)
-`;
 async function init() {
   pyodide = await loadPyodide({
     stdout: (s) => {
@@ -70,7 +15,7 @@ async function init() {
       currentStdout += s + "\n";
     }
   });
-  await pyodide.loadPackage(["sympy", "numpy"]);
+  await pyodide.loadPackage(["numpy", "mpmath", "sympy"]);
   await pyodide.runPythonAsync(SANDBOX_BOOTSTRAP);
   parentPort.postMessage({ type: "ready" });
 }
