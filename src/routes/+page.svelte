@@ -163,6 +163,8 @@
 	let schemaReviewExpanded = $state(true);
 	let lastSchemaReviewKey = $state<string | null>(null);
 	let selectedModelPreference = $state(DEFAULT_MODEL_PREFERENCE);
+	let isModelMenuOpen = $state(false);
+	let modelPickerEl: HTMLDivElement | undefined = $state();
 	let themeMode = $state<ThemeMode>('light');
 	let welcomeGreeting = $state('Над чем работаем сегодня?');
 	let messageLoadSequence = 0;
@@ -440,6 +442,18 @@
 		};
 
 		const onViewportChange = () => applyViewportMode();
+		const onWindowPointerDown = (event: PointerEvent) => {
+			if (!isModelMenuOpen) return;
+			const target = event.target;
+			if (!(target instanceof Node)) return;
+			if (modelPickerEl?.contains(target)) return;
+			isModelMenuOpen = false;
+		};
+		const onWindowKeyDown = (event: KeyboardEvent) => {
+			if (event.key === 'Escape' && isModelMenuOpen) {
+				isModelMenuOpen = false;
+			}
+		};
 
 		applyViewportMode();
 
@@ -450,6 +464,8 @@
 		}
 		window.addEventListener('orientationchange', onViewportChange);
 		window.addEventListener('resize', onViewportChange);
+		window.addEventListener('pointerdown', onWindowPointerDown);
+		window.addEventListener('keydown', onWindowKeyDown);
 
 		void (async () => {
 			await loadChats();
@@ -464,6 +480,8 @@
 			}
 			window.removeEventListener('orientationchange', onViewportChange);
 			window.removeEventListener('resize', onViewportChange);
+			window.removeEventListener('pointerdown', onWindowPointerDown);
+			window.removeEventListener('keydown', onWindowKeyDown);
 		};
 	});
 
@@ -475,6 +493,12 @@
 		return () => {
 			window.clearInterval(pollId);
 		};
+	});
+
+	$effect(() => {
+		if (hasAnyProcessing && isModelMenuOpen) {
+			isModelMenuOpen = false;
+		}
 	});
 
 	$effect(() => {
@@ -533,6 +557,7 @@
 		activeChatId = null;
 		showRevisionBox = false;
 		revisionNotes = '';
+		isModelMenuOpen = false;
 		isSharing = false;
 		copySuccess = false;
 		editingChatId = null;
@@ -657,6 +682,25 @@
 		return normalizeModelPreference(selectedModelPreference);
 	}
 
+	function modelLabelByPreference(preference: string): string {
+		const normalizedPreference = normalizeModelPreference(preference);
+		return (
+			MODEL_OPTIONS.find((option) => option.value === normalizedPreference)?.label ??
+			MODEL_OPTIONS[0].label
+		);
+	}
+
+	function toggleModelMenu() {
+		if (hasAnyProcessing) return;
+		isModelMenuOpen = !isModelMenuOpen;
+	}
+
+	async function pickModelOption(preference: string) {
+		isModelMenuOpen = false;
+		if (normalizeModelPreference(preference) === currentModelPreference()) return;
+		await updateModelPreference(preference);
+	}
+
 	async function updateModelPreference(preference: string) {
 		const normalizedPreference = normalizeModelPreference(preference);
 		selectedModelPreference = normalizedPreference;
@@ -707,6 +751,7 @@
 		selectedModelPreference = normalizeModelPreference(
 			selectedChat?.modelPreference || DEFAULT_MODEL_PREFERENCE
 		);
+		isModelMenuOpen = false;
 		activeChatId = chatId;
 		showRevisionBox = false;
 		revisionNotes = '';
@@ -1263,6 +1308,8 @@
 			}
 		} catch (err) {
 			console.error('Schema confirm failed:', err);
+			await loadMessages(chatId);
+			await loadChats();
 			alert(err instanceof Error ? err.message : String(err));
 		} finally {
 			if (!chats.find((chat) => chat.id === chatId)?.isProcessing) {
@@ -1800,16 +1847,65 @@
 						<span class="schema-check-indicator" aria-hidden="true"></span>
 					</button>
 
-					<select
-						value={currentModelPreference()}
-						onchange={(e) => updateModelPreference(e.currentTarget.value)}
-						class="model-select composer-model-select"
-						disabled={hasAnyProcessing}
-					>
-						{#each MODEL_OPTIONS as option (option.value)}
-							<option value={option.value}>{option.label}</option>
-						{/each}
-					</select>
+					<div class="model-picker composer-model-select" bind:this={modelPickerEl}>
+						<button
+							type="button"
+							class="model-picker-trigger"
+							onclick={toggleModelMenu}
+							disabled={hasAnyProcessing}
+							aria-haspopup="listbox"
+							aria-expanded={isModelMenuOpen}
+							title="Выбор модели"
+						>
+							<span class="model-picker-label">
+								{modelLabelByPreference(currentModelPreference())}
+							</span>
+							<svg
+								class="model-picker-chevron"
+								class:open={isModelMenuOpen}
+								width="14"
+								height="14"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								aria-hidden="true"
+							>
+								<path d="M6 9l6 6 6-6" />
+							</svg>
+						</button>
+
+						{#if isModelMenuOpen}
+							<div class="model-picker-menu" role="listbox" aria-label="Выбор модели">
+								{#each MODEL_OPTIONS as option (option.value)}
+									<button
+										type="button"
+										class="model-picker-option"
+										class:selected={option.value === currentModelPreference()}
+										onclick={() => pickModelOption(option.value)}
+										role="option"
+										aria-selected={option.value === currentModelPreference()}
+									>
+										<span>{option.label}</span>
+										{#if option.value === currentModelPreference()}
+											<svg
+												class="model-picker-check"
+												width="14"
+												height="14"
+												viewBox="0 0 24 24"
+												fill="none"
+												stroke="currentColor"
+												stroke-width="2.2"
+												aria-hidden="true"
+											>
+												<path d="M20 6L9 17l-5-5" />
+											</svg>
+										{/if}
+									</button>
+								{/each}
+							</div>
+						{/if}
+					</div>
 				</div>
 
 				<div class="input-container">
@@ -2809,7 +2905,16 @@
 		color: var(--accent-primary);
 	}
 
-	.model-select {
+	.model-picker {
+		position: relative;
+	}
+
+	.model-picker-trigger {
+		width: 100%;
+		display: inline-flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
 		background: var(--bg-card);
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-sm);
@@ -2821,24 +2926,97 @@
 		transition:
 			border-color var(--transition-fast),
 			color var(--transition-fast),
-			background-color var(--transition-fast);
+			background-color var(--transition-fast),
+			box-shadow var(--transition-fast);
 		font-family: var(--font-sans);
 		outline: none;
 	}
 
-	.model-select:hover:not(:disabled) {
+	.model-picker-trigger:hover:not(:disabled) {
 		border-color: color-mix(in srgb, var(--accent-primary) 52%, transparent);
 		color: var(--text-primary);
 	}
 
-	.model-select:disabled {
+	.model-picker-trigger:focus-visible {
+		border-color: color-mix(in srgb, var(--accent-primary) 52%, transparent);
+		box-shadow: 0 0 0 2px var(--accent-soft);
+	}
+
+	.model-picker-trigger:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
 	}
 
-	.model-select option {
+	.model-picker-label {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		text-align: left;
+	}
+
+	.model-picker-chevron {
+		flex-shrink: 0;
+		transition: transform var(--transition-fast);
+	}
+
+	.model-picker-chevron.open {
+		transform: rotate(180deg);
+	}
+
+	.model-picker-menu {
+		position: absolute;
+		top: calc(100% + 0.38rem);
+		right: 0;
+		width: max-content;
+		min-width: 100%;
+		max-width: min(430px, 82vw);
+		padding: 0.28rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.16rem;
 		background: var(--bg-card);
+		border: 1px solid var(--border-medium);
+		border-radius: var(--radius-md);
+		box-shadow: var(--shadow-md);
+		z-index: 40;
+		animation: scaleIn 0.16s ease;
+	}
+
+	.model-picker-option {
+		width: 100%;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.65rem;
+		background: transparent;
+		border: 1px solid transparent;
+		border-radius: var(--radius-sm);
+		color: var(--text-secondary);
+		font-size: 0.75rem;
+		font-weight: 600;
+		padding: 0.4rem 0.5rem;
+		text-align: left;
+		cursor: pointer;
+		transition:
+			border-color var(--transition-fast),
+			background-color var(--transition-fast),
+			color var(--transition-fast);
+	}
+
+	.model-picker-option:hover {
+		background: var(--bg-elevated);
+		border-color: var(--border-subtle);
 		color: var(--text-primary);
+	}
+
+	.model-picker-option.selected {
+		color: var(--accent-primary);
+		background: color-mix(in srgb, var(--accent-primary) 10%, var(--bg-card));
+		border-color: color-mix(in srgb, var(--accent-primary) 40%, transparent);
+	}
+
+	.model-picker-check {
+		flex-shrink: 0;
 	}
 
 	.messages-area {
@@ -3750,6 +3928,13 @@
 			flex: 1 1 100%;
 			max-width: none;
 			width: 100%;
+		}
+
+		.composer-model-select .model-picker-menu {
+			left: 0;
+			right: 0;
+			width: auto;
+			max-width: none;
 		}
 
 		.input-container {

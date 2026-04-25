@@ -28,6 +28,33 @@ function isResultEvent(event: PipelineStatus): event is Extract<PipelineStatus, 
 	return event.type === 'result';
 }
 
+async function rollbackSolveToAwaitingReview(params: {
+	db: any;
+	draftId: string;
+	chatId: string;
+	schemaVersion: string;
+	errorMessage: string;
+}): Promise<void> {
+	await params.db.taskDraft
+		.update({
+			where: { id: params.draftId },
+			data: { status: 'AWAITING_REVIEW' }
+		})
+		.catch(() => undefined);
+
+	await params.db.message
+		.create({
+			data: {
+				chatId: params.chatId,
+				draftId: params.draftId,
+				role: 'ASSISTANT',
+				content: `Schema-confirmed solve failed: ${params.errorMessage}`,
+				schemaVersion: params.schemaVersion
+			}
+		})
+		.catch(() => undefined);
+}
+
 async function runSolveWithGate(params: {
 	userMessage: string;
 	approvedSchema: SchemaAny;
@@ -151,18 +178,13 @@ function launchSchemaSolveInBackground(params: {
 				error: messageText,
 				durationMs: Date.now() - params.startedAt
 			});
-			await db.taskDraft.update({ where: { id: params.draftId }, data: { status: 'FAILED' } }).catch(() => undefined);
-			await db.message
-				.create({
-					data: {
-						chatId: params.chatId,
-						draftId: params.draftId,
-						role: 'ASSISTANT',
-						content: `Schema-confirmed solve failed: ${messageText}`,
-						schemaVersion: params.schemaVersion
-					}
-				})
-				.catch(() => undefined);
+			await rollbackSolveToAwaitingReview({
+				db,
+				draftId: params.draftId,
+				chatId: params.chatId,
+				schemaVersion: params.schemaVersion,
+				errorMessage: messageText
+			});
 		} finally {
 			params.processingHandle.release();
 			logSchemaCheck('confirm.finished', {

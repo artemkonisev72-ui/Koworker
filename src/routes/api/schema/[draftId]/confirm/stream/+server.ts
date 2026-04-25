@@ -70,6 +70,33 @@ function createSseResponse(stream: ReadableStream): Response {
 	});
 }
 
+async function rollbackSolveToAwaitingReview(params: {
+	db: any;
+	draftId: string;
+	chatId: string;
+	schemaVersion: string;
+	errorMessage: string;
+}): Promise<void> {
+	await params.db.taskDraft
+		.update({
+			where: { id: params.draftId },
+			data: { status: 'AWAITING_REVIEW' }
+		})
+		.catch(() => undefined);
+
+	await params.db.message
+		.create({
+			data: {
+				chatId: params.chatId,
+				draftId: params.draftId,
+				role: 'ASSISTANT',
+				content: `Schema-confirmed solve failed: ${params.errorMessage}`,
+				schemaVersion: params.schemaVersion
+			}
+		})
+		.catch(() => undefined);
+}
+
 export const POST: RequestHandler = async ({ locals, params, request }) => {
 	if (!locals.user) return error(401, 'Unauthorized');
 	const db = prisma as any;
@@ -228,6 +255,8 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 				let streamClosed = false;
 				let pingInterval: ReturnType<typeof setInterval> | null = null;
 				const pendingSandboxRequests = new Set<string>();
+				let solveSucceeded = false;
+				let rollbackPerformed = false;
 
 				function safeEnqueue(chunk: Uint8Array): boolean {
 					if (streamClosed || request.signal.aborted) {
@@ -258,6 +287,18 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 					} finally {
 						streamClosed = true;
 					}
+				}
+
+				async function rollbackCurrentSolve(errorMessage: string): Promise<void> {
+					if (rollbackPerformed || solveSucceeded) return;
+					rollbackPerformed = true;
+					await rollbackSolveToAwaitingReview({
+						db,
+						draftId: draft.id,
+						chatId: draft.chatId,
+						schemaVersion: approvedSchemaVersion,
+						errorMessage
+					});
 				}
 
 				async function requestSandboxExecution(
@@ -378,12 +419,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 								}
 
 								if (event.type === 'error') {
-									await db.taskDraft
-										.update({
-											where: { id: draft.id },
-											data: { status: 'FAILED' }
-										})
-										.catch(() => undefined);
+									await rollbackCurrentSolve(event.message ?? 'Schema solve failed');
 									send(event);
 									return;
 								}
@@ -415,6 +451,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 									where: { id: draft.id },
 									data: { status: 'SOLVED' }
 								});
+								solveSucceeded = true;
 
 								send({
 									...event,
@@ -427,12 +464,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 						);
 					} catch (pipelineError) {
 						const messageText = pipelineError instanceof Error ? pipelineError.message : String(pipelineError);
-						await db.taskDraft
-							.update({
-								where: { id: draft.id },
-								data: { status: 'FAILED' }
-							})
-							.catch(() => undefined);
+						await rollbackCurrentSolve(messageText);
 						send({ type: 'error', message: messageText });
 					} finally {
 						if (pingInterval) {
