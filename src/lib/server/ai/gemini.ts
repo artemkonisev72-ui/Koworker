@@ -396,12 +396,17 @@ async function generateWithFallback(
 			? (forcedModel as ModelForGeneration)
 			: null;
 
+	const fallbackChain =
+		chain.indexOf(startModel) >= 0
+			? chain.slice(chain.indexOf(startModel))
+			: chain;
+
 	const effectiveChain: ModelForGeneration[] =
 		normalizedForcedModel
-			? [normalizedForcedModel]
-			: chain.indexOf(startModel) >= 0
-				? chain.slice(chain.indexOf(startModel))
-				: chain;
+			? isOpenRouterModelPreference(normalizedForcedModel)
+				? [normalizedForcedModel]
+				: [normalizedForcedModel, ...fallbackChain.filter((model) => model !== normalizedForcedModel)]
+			: fallbackChain;
 	console.log('[ModelPreference:Gemini] fallback chain resolved', {
 		startModel,
 		forcedModel,

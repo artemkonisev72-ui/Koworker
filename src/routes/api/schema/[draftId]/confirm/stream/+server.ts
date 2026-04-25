@@ -269,6 +269,15 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 						timeoutMs: CLIENT_SANDBOX_TIMEOUT_MS
 					});
 					pendingSandboxRequests.add(pending.requestId);
+					console.info('[SandboxExecution] request source=client', {
+						route: 'schema_confirm_stream',
+						chatId: draft.chatId,
+						draftId: draft.id,
+						userId,
+						requestId: pending.requestId,
+						attempt: meta.attempt,
+						codeLength: code.length
+					});
 
 					const delivered = send({
 						type: 'sandbox_request',
@@ -278,15 +287,43 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 						timeoutMs: CLIENT_SANDBOX_EXECUTION_TIMEOUT_MS
 					});
 					if (!delivered) {
+						console.warn('[SandboxExecution] client request not delivered', {
+							route: 'schema_confirm_stream',
+							chatId: draft.chatId,
+							draftId: draft.id,
+							userId,
+							requestId: pending.requestId,
+							attempt: meta.attempt
+						});
 						pending.cancel('SSE stream closed before sandbox execution request');
 						throw new SandboxError('Client disconnected before sandbox execution request');
 					}
 
 					try {
-						return await pending.promise;
+						const result = await pending.promise;
+						console.info('[SandboxExecution] source=client', {
+							route: 'schema_confirm_stream',
+							chatId: draft.chatId,
+							draftId: draft.id,
+							userId,
+							requestId: pending.requestId,
+							attempt: meta.attempt,
+							stdoutLength: result.stdout.length
+						});
+						return result;
 					} catch (executionError) {
 						if (executionError instanceof ClientSandboxResultError) {
 							if (CLIENT_FALLBACK_ERROR_KINDS.has(executionError.kind)) {
+								console.warn('[SandboxExecution] client failed; falling back to server', {
+									route: 'schema_confirm_stream',
+									chatId: draft.chatId,
+									draftId: draft.id,
+									userId,
+									requestId: pending.requestId,
+									attempt: meta.attempt,
+									errorKind: executionError.kind,
+									message: executionError.message
+								});
 								return executeFallbackSandbox(code);
 							}
 							throw new SandboxError(executionError.message);

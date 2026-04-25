@@ -64,12 +64,21 @@ export async function executeFallbackSandbox(code: string): Promise<{ stdout: st
 
 	if (hasRemoteService) {
 		try {
-			return await executeViaSandboxService(code);
+			const result = await executeViaSandboxService(code);
+			console.info('[SandboxExecution] source=server-service', {
+				codeLength: code.length
+			});
+			return result;
 		} catch (error) {
 			if (STRICT_SERVICE_ONLY) throw error;
 			console.warn('[SandboxFallback] Remote sandbox unavailable, using in-process fallback', error);
 		}
 	}
 
-	return workerPool.execute(code);
+	const result = await workerPool.execute(code);
+	console.info('[SandboxExecution] source=server-in-process', {
+		codeLength: code.length,
+		reason: hasRemoteService ? 'remote_unavailable' : 'service_not_configured'
+	});
+	return result;
 }

@@ -111,6 +111,27 @@ describe('openrouter integration in gemini gateway', () => {
 		);
 	});
 
+	it('uses a direct Google model preference as preferred model, not a single-model dead end', async () => {
+		generateContentMock
+			.mockRejectedValueOnce(new Error('Gemini API request failed (503): model overloaded'))
+			.mockResolvedValueOnce({
+				text: 'YES',
+				usageMetadata: { totalTokenCount: 42 }
+			});
+
+		const result = await routeQuestion(
+			[],
+			'Это нужно считать?',
+			'gemini-3.1-flash-lite-preview'
+		);
+
+		expect(result.result).toBe(true);
+		expect(result.tokens).toBe(42);
+		expect(generateContentMock).toHaveBeenCalledTimes(2);
+		expect(generateContentMock.mock.calls[0]?.[0]?.model).toBe('gemini-3.1-flash-lite-preview');
+		expect(generateContentMock.mock.calls[1]?.[0]?.model).toBe('gemini-3.1-flash-preview');
+	});
+
 	it('fails fast on OpenRouter error without falling back to Google', async () => {
 		const fetchMock = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({ error: { message: 'provider unavailable' } }), {
