@@ -90,12 +90,25 @@
 
 	let editingChatId = $state<string | null>(null);
 	let editingTitle = $state('');
+	let chatSearchQuery = $state('');
 
 	let isSharing = $state(false);
 	let copySuccess = $state(false);
 
 	let pinnedChats = $derived(chats.filter((c) => c.isPinned));
 	let otherChats = $derived(chats.filter((c) => !c.isPinned));
+	let normalizedChatSearchQuery = $derived(chatSearchQuery.trim().toLowerCase());
+	let filteredPinnedChats = $derived.by(() => {
+		const query = normalizedChatSearchQuery;
+		if (!query) return pinnedChats;
+		return pinnedChats.filter((chat) => chat.title.toLowerCase().includes(query));
+	});
+	let filteredOtherChats = $derived.by(() => {
+		const query = normalizedChatSearchQuery;
+		if (!query) return otherChats;
+		return otherChats.filter((chat) => chat.title.toLowerCase().includes(query));
+	});
+	let hasFilteredChats = $derived(filteredPinnedChats.length + filteredOtherChats.length > 0);
 	let activeChat = $derived(chats.find((c) => c.id === activeChatId));
 	let messages = $derived(activeChatId ? messagesByChatId[activeChatId] ?? [] : []);
 	let activeDraft = $derived(activeChatId ? draftsByChatId[activeChatId] ?? null : null);
@@ -1464,24 +1477,67 @@
 		</button>
 
 		<div class="sidebar-content">
-			{#if pinnedChats.length > 0}
-				<div class="chat-section-label">Закрепленные</div>
-				<div class="chat-list pinned">
-					{#each pinnedChats as chat (chat.id)}
-						{@render chatItem(chat)}
-					{/each}
-				</div>
-			{/if}
-
-			<div class="chat-section-label">{pinnedChats.length > 0 ? 'Все чаты' : 'Чаты'}</div>
-			<div class="chat-list">
-				{#if chats.length === 0}
-					<div class="chat-list-empty">Нет чатов. Создайте первый!</div>
+			<div class="sidebar-search">
+				<svg
+					class="sidebar-search-icon"
+					width="14"
+					height="14"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					aria-hidden="true"
+				>
+					<circle cx="11" cy="11" r="7"></circle>
+					<path d="M21 21l-4.35-4.35"></path>
+				</svg>
+				<input
+					type="text"
+					class="sidebar-search-input"
+					bind:value={chatSearchQuery}
+					placeholder="Поиск чатов"
+					aria-label="Поиск чатов"
+				/>
+				{#if chatSearchQuery}
+					<button
+						type="button"
+						class="sidebar-search-clear"
+						onclick={() => (chatSearchQuery = '')}
+						title="Очистить поиск"
+						aria-label="Очистить поиск"
+					>
+						×
+					</button>
 				{/if}
-				{#each otherChats as chat (chat.id)}
-					{@render chatItem(chat)}
-				{/each}
 			</div>
+
+			{#if chats.length === 0}
+				<div class="chat-list">
+					<div class="chat-list-empty">Нет чатов. Создайте первый!</div>
+				</div>
+			{:else if !hasFilteredChats}
+				<div class="chat-list">
+					<div class="chat-list-empty">Ничего не найдено</div>
+				</div>
+			{:else}
+				{#if filteredPinnedChats.length > 0}
+					<div class="chat-section-label">Закрепленные</div>
+					<div class="chat-list pinned">
+						{#each filteredPinnedChats as chat (chat.id)}
+							{@render chatItem(chat)}
+						{/each}
+					</div>
+				{/if}
+
+				{#if filteredOtherChats.length > 0}
+					<div class="chat-section-label">{filteredPinnedChats.length > 0 ? 'Все чаты' : 'Чаты'}</div>
+					<div class="chat-list">
+						{#each filteredOtherChats as chat (chat.id)}
+							{@render chatItem(chat)}
+						{/each}
+					</div>
+				{/if}
+			{/if}
 		</div>
 
 		{#snippet chatItem(chat: Chat)}
@@ -1531,9 +1587,8 @@
 							stroke="currentColor"
 							stroke-width="2"
 						>
-							<path
-								d="M21 10V8l-2.09-.41A3 3 0 0 1 17 4.68V3h-1v1.68a3 3 0 0 1-1.91 2.91L12 8v2l2.09.41A3 3 0 0 1 16 13.32V15h1v-1.68a3 3 0 0 1 1.91-2.91L21 10zM12 15h10M16.5 15v6"
-							/>
+							<path d="M8 4h8v3l2 2v1h-5v5l-1 1-1-1v-5H6V9l2-2z" />
+							<path d="M12 16v4" />
 						</svg>
 					</button>
 					<button class="action-btn" onclick={() => startEditing(chat)} title="Переименовать">
@@ -2101,7 +2156,7 @@
 		min-width: var(--sidebar-width);
 		background: var(--bg-surface);
 		border: 1px solid var(--border-subtle);
-		border-right: 0;
+		border-right: 1px solid var(--border-subtle);
 		border-radius: var(--radius-2xl) 0 0 var(--radius-2xl);
 		display: flex;
 		flex-direction: column;
@@ -2249,6 +2304,71 @@
 
 	.new-chat-btn:active {
 		transform: translateY(0);
+	}
+
+	.sidebar-search {
+		position: relative;
+		margin: 0 1rem 0.7rem;
+		display: flex;
+		align-items: center;
+		background: var(--bg-card);
+		border: 1px solid var(--border-subtle);
+		border-radius: 999px;
+		padding: 0.42rem 0.7rem;
+		gap: 0.44rem;
+		transition:
+			border-color var(--transition-fast),
+			background-color var(--transition-fast),
+			box-shadow var(--transition-fast);
+	}
+
+	.sidebar-search:focus-within {
+		border-color: color-mix(in srgb, var(--accent-primary) 44%, transparent);
+		box-shadow: 0 0 0 2px var(--accent-soft);
+	}
+
+	.sidebar-search-icon {
+		color: var(--text-muted);
+		flex-shrink: 0;
+	}
+
+	.sidebar-search-input {
+		flex: 1;
+		background: transparent;
+		border: none;
+		outline: none;
+		color: var(--text-primary);
+		font-size: 0.79rem;
+		min-width: 0;
+	}
+
+	.sidebar-search-input::placeholder {
+		color: var(--text-muted);
+	}
+
+	.sidebar-search-clear {
+		border: 1px solid transparent;
+		background: transparent;
+		color: var(--text-muted);
+		width: 1.3rem;
+		height: 1.3rem;
+		border-radius: 999px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		cursor: pointer;
+		font-size: 0.9rem;
+		line-height: 1;
+		transition:
+			border-color var(--transition-fast),
+			background-color var(--transition-fast),
+			color var(--transition-fast);
+	}
+
+	.sidebar-search-clear:hover {
+		background: var(--bg-elevated);
+		border-color: var(--border-subtle);
+		color: var(--text-primary);
 	}
 
 	.sidebar-content {
@@ -2486,12 +2606,14 @@
 		overflow: hidden;
 		background: var(--bg-surface);
 		border: 1px solid var(--border-subtle);
+		border-left: 0;
 		border-radius: 0 var(--radius-2xl) var(--radius-2xl) 0;
 		box-shadow: none;
 	}
 
 	.sidebar:not(.mobile-drawer).collapsed + .chat-main {
 		border-radius: var(--radius-2xl);
+		border-left: 1px solid var(--border-subtle);
 	}
 
 	.chat-header {
@@ -2592,8 +2714,8 @@
 		flex-direction: column;
 		overflow-y: auto;
 		padding: clamp(1.15rem, 2.2vw, 2rem)
-			calc(clamp(1.15rem, 2.2vw, 2rem) + env(safe-area-inset-right)) 1.4rem
-			calc(clamp(1.15rem, 2.2vw, 2rem) + env(safe-area-inset-left));
+			calc(clamp(1.15rem, 2.2vw, 2rem) + env(safe-area-inset-right))
+			calc(1.4rem + env(safe-area-inset-bottom)) calc(clamp(1.15rem, 2.2vw, 2rem) + env(safe-area-inset-left));
 		scroll-behavior: smooth;
 	}
 
@@ -2788,9 +2910,6 @@
 		border-top: none;
 		background: transparent;
 		flex-shrink: 0;
-		position: sticky;
-		bottom: 0;
-		z-index: 22;
 	}
 
 	.composer-shell {
@@ -3378,6 +3497,7 @@
 
 		.chat-main {
 			width: 100%;
+			border-left: 1px solid var(--border-subtle);
 		}
 
 		.chat-header {
