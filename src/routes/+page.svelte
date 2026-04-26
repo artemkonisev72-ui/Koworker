@@ -165,6 +165,9 @@
 	let selectedModelPreference = $state(DEFAULT_MODEL_PREFERENCE);
 	let isModelMenuOpen = $state(false);
 	let modelPickerEl: HTMLDivElement | undefined = $state();
+	let modelMenuEl: HTMLDivElement | undefined = $state();
+	let modelMenuDirection = $state<'down' | 'up'>('down');
+	let modelMenuMaxHeight = $state<number | null>(null);
 	let themeMode = $state<ThemeMode>('light');
 	let welcomeGreeting = $state('Над чем работаем сегодня?');
 	let messageLoadSequence = 0;
@@ -441,17 +444,24 @@
 			}
 		};
 
-		const onViewportChange = () => applyViewportMode();
+		const onViewportChange = () => {
+			applyViewportMode();
+			if (isModelMenuOpen) {
+				void refreshModelMenuLayout();
+			}
+		};
 		const onWindowPointerDown = (event: PointerEvent) => {
 			if (!isModelMenuOpen) return;
 			const target = event.target;
 			if (!(target instanceof Node)) return;
 			if (modelPickerEl?.contains(target)) return;
 			isModelMenuOpen = false;
+			modelMenuMaxHeight = null;
 		};
 		const onWindowKeyDown = (event: KeyboardEvent) => {
 			if (event.key === 'Escape' && isModelMenuOpen) {
 				isModelMenuOpen = false;
+				modelMenuMaxHeight = null;
 			}
 		};
 
@@ -498,6 +508,7 @@
 	$effect(() => {
 		if (hasAnyProcessing && isModelMenuOpen) {
 			isModelMenuOpen = false;
+			modelMenuMaxHeight = null;
 		}
 	});
 
@@ -558,6 +569,7 @@
 		showRevisionBox = false;
 		revisionNotes = '';
 		isModelMenuOpen = false;
+		modelMenuMaxHeight = null;
 		isSharing = false;
 		copySuccess = false;
 		editingChatId = null;
@@ -690,13 +702,43 @@
 		);
 	}
 
+	async function refreshModelMenuLayout() {
+		if (!isModelMenuOpen || !modelPickerEl || typeof window === 'undefined') return;
+		await tick();
+
+		const triggerEl = modelPickerEl.querySelector<HTMLButtonElement>('.model-picker-trigger');
+		if (!triggerEl) return;
+
+		const triggerRect = triggerEl.getBoundingClientRect();
+		const viewportHeight = window.innerHeight;
+		const menuContentHeight = modelMenuEl?.scrollHeight ?? 240;
+		const safeMargin = 8;
+		const menuGap = 6;
+		const availableBelow = viewportHeight - triggerRect.bottom - safeMargin;
+		const availableAbove = triggerRect.top - safeMargin;
+		const neededHeight = Math.min(menuContentHeight, 300);
+		const openUp = availableBelow < neededHeight && availableAbove > availableBelow;
+		const availableOnSide = openUp ? availableAbove : availableBelow;
+
+		modelMenuDirection = openUp ? 'up' : 'down';
+		modelMenuMaxHeight = Math.max(120, Math.min(340, Math.floor(availableOnSide - menuGap)));
+	}
+
 	function toggleModelMenu() {
 		if (hasAnyProcessing) return;
-		isModelMenuOpen = !isModelMenuOpen;
+		if (isModelMenuOpen) {
+			isModelMenuOpen = false;
+			modelMenuMaxHeight = null;
+			return;
+		}
+		modelMenuDirection = 'down';
+		isModelMenuOpen = true;
+		void refreshModelMenuLayout();
 	}
 
 	async function pickModelOption(preference: string) {
 		isModelMenuOpen = false;
+		modelMenuMaxHeight = null;
 		if (normalizeModelPreference(preference) === currentModelPreference()) return;
 		await updateModelPreference(preference);
 	}
@@ -752,6 +794,7 @@
 			selectedChat?.modelPreference || DEFAULT_MODEL_PREFERENCE
 		);
 		isModelMenuOpen = false;
+		modelMenuMaxHeight = null;
 		activeChatId = chatId;
 		showRevisionBox = false;
 		revisionNotes = '';
@@ -1876,7 +1919,14 @@
 						</button>
 
 						{#if isModelMenuOpen}
-							<div class="model-picker-menu" role="listbox" aria-label="Выбор модели">
+							<div
+								bind:this={modelMenuEl}
+								class="model-picker-menu"
+								class:model-picker-menu-up={modelMenuDirection === 'up'}
+								style:max-height={modelMenuMaxHeight ? `${modelMenuMaxHeight}px` : undefined}
+								role="listbox"
+								aria-label="Выбор модели"
+							>
 								{#each MODEL_OPTIONS as option (option.value)}
 									<button
 										type="button"
@@ -2980,6 +3030,14 @@
 		box-shadow: var(--shadow-md);
 		z-index: 40;
 		animation: scaleIn 0.16s ease;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		scrollbar-gutter: stable;
+	}
+
+	.model-picker-menu.model-picker-menu-up {
+		top: auto;
+		bottom: calc(100% + 0.38rem);
 	}
 
 	.model-picker-option {
