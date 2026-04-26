@@ -50,7 +50,7 @@ export const actions: Actions = {
 		const emailNormalized = normalizeEmail(rawEmail);
 
 		if (!isEmailFormatValid(emailNormalized)) {
-			return fail(400, { email: rawEmail.trim(), message: 'Enter a valid email address.', success: false });
+			return fail(400, { email: rawEmail.trim(), message: 'Введите корректный адрес электронной почты.', success: false });
 		}
 
 		const rateLimit = await enforceAuthRateLimit(event, 'resend', emailNormalized);
@@ -58,7 +58,7 @@ export const actions: Actions = {
 			return fail(429, {
 				email: emailNormalized,
 				success: false,
-				message: `Too many requests. Try again in ${rateLimit.retryAfterSeconds} seconds.`
+				message: `Слишком много запросов. Попробуйте ещё раз через ${rateLimit.retryAfterSeconds} сек.`
 			});
 		}
 
@@ -80,7 +80,7 @@ export const actions: Actions = {
 		return {
 			email: emailNormalized,
 			success: true,
-			message: 'If this address exists, a verification link has been sent.'
+			message: 'Если этот адрес зарегистрирован, ссылка для подтверждения отправлена.'
 		};
 	}
 };

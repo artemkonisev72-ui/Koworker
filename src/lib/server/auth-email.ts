@@ -44,20 +44,23 @@ function getTransporter(): Transporter | null {
 }
 
 function renderVerificationEmail(name: string | null | undefined, verificationUrl: string): { text: string; html: string } {
-	const safeName = name?.trim() ? `${name.trim()}, ` : '';
+	const greeting = name?.trim() ? `Здравствуйте, ${name.trim()}!` : 'Здравствуйте!';
 	const text = [
-		`Hello ${safeName}please confirm your email address.`,
+		greeting,
 		'',
-		`Verification link: ${verificationUrl}`,
+		'Подтвердите адрес электронной почты, чтобы завершить активацию аккаунта.',
 		'',
-		'If you did not create this account, ignore this email.'
+		`Ссылка для подтверждения: ${verificationUrl}`,
+		'',
+		'Если вы не создавали этот аккаунт, просто проигнорируйте это письмо.'
 	].join('\n');
 
 	const html = [
 		'<div style="font-family: Arial, sans-serif; line-height: 1.5; color: #111;">',
-		`<p>Hello ${safeName}please confirm your email address.</p>`,
-		`<p><a href="${verificationUrl}">Confirm email</a></p>`,
-		'<p>If you did not create this account, ignore this email.</p>',
+		`<p>${greeting}</p>`,
+		'<p>Подтвердите адрес электронной почты, чтобы завершить активацию аккаунта.</p>',
+		`<p><a href="${verificationUrl}">Подтвердить почту</a></p>`,
+		'<p>Если вы не создавали этот аккаунт, просто проигнорируйте это письмо.</p>',
 		'</div>'
 	].join('');
 
@@ -87,7 +90,7 @@ export async function sendVerificationEmail({
 	await transporter.sendMail({
 		from: env.SMTP_FROM,
 		to,
-		subject: 'Confirm your email address',
+		subject: 'Подтвердите адрес электронной почты',
 		text,
 		html
 	});

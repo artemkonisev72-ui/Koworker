@@ -36,13 +36,13 @@ export const actions: Actions = {
 		const emailNormalized = normalizeEmail(rawEmail);
 
 		if (!isEmailFormatValid(emailNormalized)) {
-			return fail(400, { email: emailTrimmed, message: 'Enter a valid email address.' });
+			return fail(400, { email: emailTrimmed, message: 'Введите корректный адрес электронной почты.' });
 		}
 
 		if (!isPasswordFormatValid(rawPassword)) {
 			return fail(400, {
 				email: emailTrimmed,
-				message: 'Password must be between 6 and 128 characters.'
+				message: 'Пароль должен содержать от 6 до 128 символов.'
 			});
 		}
 
@@ -50,7 +50,7 @@ export const actions: Actions = {
 		if (!rateLimit.allowed) {
 			return fail(429, {
 				email: emailTrimmed,
-				message: `Too many requests. Try again in ${rateLimit.retryAfterSeconds} seconds.`
+				message: `Слишком много запросов. Попробуйте ещё раз через ${rateLimit.retryAfterSeconds} сек.`
 			});
 		}
 
@@ -70,7 +70,7 @@ export const actions: Actions = {
 				if (!user) {
 					return fail(500, {
 						email: emailTrimmed,
-						message: 'Unable to create account right now. Please try again.'
+						message: 'Не удалось создать аккаунт. Попробуйте ещё раз.'
 					});
 				}
 			}

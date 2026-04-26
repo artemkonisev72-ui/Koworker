@@ -7,15 +7,15 @@
 <div class="auth-container">
 	<div class="auth-card">
 		<header class="auth-header">
-			<img src="/pwa-192x192.png" alt="Auth Logo" class="auth-logo" />
-			<h1>Verify Email</h1>
-			<p>Confirm your address to finish account activation.</p>
+			<img src="/pwa-192x192.png" alt="Логотип Koworker" class="auth-logo" />
+			<h1>Подтвердите электронную почту</h1>
+			<p>Подтвердите адрес, чтобы завершить активацию аккаунта.</p>
 		</header>
 
 		{#if data.tokenStatus === 'expired'}
-			<div class="auth-error">This verification link has expired. Request a new one below.</div>
+			<div class="auth-error">Срок действия ссылки истёк. Запросите новую ниже.</div>
 		{:else if data.tokenStatus === 'invalid'}
-			<div class="auth-error">Invalid verification link. Request a fresh link below.</div>
+			<div class="auth-error">Некорректная ссылка подтверждения. Запросите новую ниже.</div>
 		{/if}
 
 		{#if form?.message}
@@ -24,7 +24,7 @@
 
 		<form method="POST" class="auth-form">
 			<div class="form-group">
-				<label for="email">Email</label>
+				<label for="email">Электронная почта</label>
 				<input
 					type="email"
 					id="email"
@@ -34,11 +34,11 @@
 					required
 				/>
 			</div>
-			<button type="submit" class="auth-submit">Send verification link</button>
+			<button type="submit" class="auth-submit">Отправить ссылку подтверждения</button>
 		</form>
 
 		<footer class="auth-footer">
-			Already verified? <a href={resolve('/login')}>Sign in</a>
+			Уже подтвердили почту? <a href={resolve('/login')}>Войти</a>
 		</footer>
 	</div>
 </div>

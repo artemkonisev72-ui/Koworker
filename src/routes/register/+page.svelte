@@ -7,7 +7,7 @@
 <div class="auth-container">
 	<div class="auth-card">
 		<header class="auth-header">
-			<img src="/pwa-192x192.png" alt="Auth Logo" class="auth-logo" />
+			<img src="/pwa-192x192.png" alt="Логотип Koworker" class="auth-logo" />
 			<h1>Регистрация</h1>
 			<p>Создайте аккаунт, чтобы сохранять свои чаты и настройки.</p>
 		</header>
@@ -23,7 +23,7 @@
 			</div>
 
 			<div class="form-group">
-				<label for="email">Email</label>
+				<label for="email">Электронная почта</label>
 				<input type="email" id="email" name="email" value={form?.email ?? ''} placeholder="name@example.com" required />
 			</div>
 
