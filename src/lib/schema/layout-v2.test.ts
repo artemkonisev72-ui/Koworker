@@ -319,4 +319,175 @@ describe('layout-v2', () => {
 		expect(short?.geometry.length).toBe(0.35);
 		expect(long?.geometry.length).toBe(4);
 	});
+
+	it('anchors full-span distributed load endpoints to the member ends', () => {
+		const schema: SchemaDataV2 = {
+			version: '2.0',
+			nodes: [
+				{ id: 'A', x: 0, y: 0 },
+				{ id: 'B', x: 5, y: 0 },
+				{ id: 'Q1', x: 1, y: -1 },
+				{ id: 'Q2', x: 6, y: -1 }
+			],
+			objects: [
+				{
+					id: 'bar_1',
+					type: 'bar',
+					nodeRefs: ['A', 'B'],
+					geometry: { length: 5, angleDeg: 0 }
+				},
+				{
+					id: 'load_1',
+					type: 'distributed',
+					nodeRefs: ['Q1', 'Q2'],
+					geometry: { kind: 'uniform', intensity: 2, directionAngle: 90 },
+					meta: { memberId: 'bar_1', fromS: 0, toS: 1 }
+				}
+			],
+			results: [],
+			annotations: [],
+			assumptions: [],
+			ambiguities: []
+		};
+
+		const stabilized = stabilizeSchemaLayoutV2(schema);
+		const nodeById = new Map(stabilized.schema.nodes.map((node) => [node.id, node]));
+		const a = nodeById.get('A');
+		const b = nodeById.get('B');
+		const q1 = nodeById.get('Q1');
+		const q2 = nodeById.get('Q2');
+		expect(a && b && q1 && q2).toBeTruthy();
+		if (!a || !b || !q1 || !q2) return;
+
+		expect(q1.x).toBeCloseTo(a.x, 6);
+		expect(q1.y).toBeCloseTo(a.y, 6);
+		expect(q2.x).toBeCloseTo(b.x, 6);
+		expect(q2.y).toBeCloseTo(b.y, 6);
+		expect(stabilized.corrections).toEqual(
+			expect.arrayContaining([expect.stringContaining('distributed_interval:load_1')])
+		);
+	});
+
+	it('does not collapse distributed interval endpoints to midpoint attach', () => {
+		const schema: SchemaDataV2 = {
+			version: '2.0',
+			nodes: [
+				{ id: 'A', x: 0, y: 0 },
+				{ id: 'B', x: 5, y: 0 },
+				{ id: 'Q1', x: 0, y: -1 },
+				{ id: 'Q2', x: 5, y: -1 }
+			],
+			objects: [
+				{
+					id: 'bar_1',
+					type: 'bar',
+					nodeRefs: ['A', 'B'],
+					geometry: { length: 5, angleDeg: 0 }
+				},
+				{
+					id: 'load_1',
+					type: 'distributed',
+					nodeRefs: ['Q1', 'Q2'],
+					geometry: {
+						kind: 'uniform',
+						intensity: 2,
+						directionAngle: 90,
+						attach: { memberId: 'bar_1', s: 0.5, side: 'center' }
+					},
+					meta: { memberId: 'bar_1', fromS: 0.2, toS: 0.8 }
+				}
+			],
+			results: [],
+			annotations: [],
+			assumptions: [],
+			ambiguities: []
+		};
+
+		const stabilized = stabilizeSchemaLayoutV2(schema);
+		const nodeById = new Map(stabilized.schema.nodes.map((node) => [node.id, node]));
+		const a = nodeById.get('A');
+		const b = nodeById.get('B');
+		const q1 = nodeById.get('Q1');
+		const q2 = nodeById.get('Q2');
+		expect(a && b && q1 && q2).toBeTruthy();
+		if (!a || !b || !q1 || !q2) return;
+
+		const abx = b.x - a.x;
+		const aby = b.y - a.y;
+		const ab2 = abx * abx + aby * aby;
+		const s1 = ((q1.x - a.x) * abx + (q1.y - a.y) * aby) / ab2;
+		const s2 = ((q2.x - a.x) * abx + (q2.y - a.y) * aby) / ab2;
+		expect(s1).toBeCloseTo(0.2, 6);
+		expect(s2).toBeCloseTo(0.8, 6);
+		expect(s1).not.toBeCloseTo(0.5, 2);
+		expect(s2).not.toBeCloseTo(0.5, 2);
+	});
+
+	it('uses eccentricity label as slider-crank guide offset when pair has no explicit offset', () => {
+		const schema: SchemaDataV2 = {
+			version: '2.0',
+			meta: { structureKind: 'planar_mechanism' },
+			nodes: [
+				{ id: 'O', x: 0, y: 0, label: 'O' },
+				{ id: 'A', x: 0.3, y: 0.18, label: 'A' },
+				{ id: 'B', x: 1.0, y: 0, label: 'B' },
+				{ id: 'G1', x: 0.5, y: 0, visible: false, meta: { synthetic: true } },
+				{ id: 'G2', x: 1.5, y: 0, visible: false, meta: { synthetic: true } },
+				{ id: 'E1', x: 0.2, y: 0.1 },
+				{ id: 'E2', x: 1.6, y: 0.1 }
+			],
+			objects: [
+				{
+					id: 'bar_oa',
+					type: 'bar',
+					nodeRefs: ['O', 'A'],
+					geometry: { length: 0.35, angleDeg: 30 },
+					label: 'OA'
+				},
+				{
+					id: 'bar_ab',
+					type: 'bar',
+					nodeRefs: ['A', 'B'],
+					geometry: { length: 0.7, angleDeg: -20 },
+					label: 'AB'
+				},
+				{ id: 'pin_o', type: 'revolute_pair', nodeRefs: ['O'], geometry: {}, label: 'O' },
+				{ id: 'pin_a', type: 'revolute_pair', nodeRefs: ['A'], geometry: {}, label: 'A' },
+				{
+					id: 'slider_b',
+					type: 'prismatic_pair',
+					nodeRefs: ['B', 'G1', 'G2'],
+					geometry: { guideHint: 'horizontal', grounded: true },
+					label: 'B'
+				},
+				{
+					id: 'ecc_axis',
+					type: 'axis',
+					nodeRefs: ['E1', 'E2'],
+					geometry: { length: 1.4, angleDeg: 0 },
+					label: 'e=0.1m'
+				}
+			],
+			results: [],
+			annotations: [],
+			assumptions: [],
+			ambiguities: []
+		};
+
+		const stabilized = stabilizeSchemaLayoutV2(schema);
+		const nodeById = new Map(stabilized.schema.nodes.map((node) => [node.id, node]));
+		const o = nodeById.get('O');
+		const b = nodeById.get('B');
+		const guideStart = nodeById.get('G1');
+		const guideEnd = nodeById.get('G2');
+		expect(o && b && guideStart && guideEnd).toBeTruthy();
+		if (!o || !b || !guideStart || !guideEnd) return;
+
+		expect(b.y).toBeGreaterThan(o.y);
+		expect(guideStart.y).toBeCloseTo(b.y, 6);
+		expect(guideEnd.y).toBeCloseTo(b.y, 6);
+		expect(stabilized.corrections).toEqual(
+			expect.arrayContaining([expect.stringContaining('slider-crank')])
+		);
+	});
 });

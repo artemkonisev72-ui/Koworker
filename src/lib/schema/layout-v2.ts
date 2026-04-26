@@ -72,7 +72,6 @@ const LAYOUT_EDGE_TYPES = new Set([
 	'cable',
 	'spring',
 	'damper',
-	'distributed',
 	'dimension',
 	'axis',
 	'ground'
@@ -659,6 +658,13 @@ interface MemberSegment {
 	start: Point;
 	end: Point;
 	length: number;
+	physicalLength: number;
+}
+
+interface DistributedIntervalSpec {
+	memberId: string;
+	fromS: number;
+	toS: number;
 }
 
 function getMemberSegments(schema: SchemaDataV2, nodePositions: Map<string, Point>): MemberSegment[] {
@@ -677,10 +683,324 @@ function getMemberSegments(schema: SchemaDataV2, nodePositions: Map<string, Poin
 				endRef,
 				start,
 				end,
-				length: distance(start, end)
+				length: distance(start, end),
+				physicalLength: toFiniteNumber(object.geometry.length) ?? distance(start, end)
 			};
 		})
 		.filter((segment): segment is MemberSegment => Boolean(segment && segment.length > EPS));
+}
+
+function clamp01(value: number): number {
+	return Math.max(0, Math.min(1, value));
+}
+
+function pointOnSegment(segment: MemberSegment, sRaw: number): Point {
+	const s = clamp01(sRaw);
+	return {
+		x: segment.start.x + (segment.end.x - segment.start.x) * s,
+		y: segment.start.y + (segment.end.y - segment.start.y) * s
+	};
+}
+
+function distributedIntervalFromRecord(record: Record<string, unknown>): DistributedIntervalSpec | null {
+	const memberId =
+		typeof record.memberId === 'string' && record.memberId.trim()
+			? record.memberId.trim()
+			: typeof record.memberRef === 'string' && record.memberRef.trim()
+				? record.memberRef.trim()
+				: null;
+	if (!memberId) return null;
+	const fromS = toFiniteNumber(record.fromS ?? record.from ?? record.startS ?? record.start);
+	const toS = toFiniteNumber(record.toS ?? record.to ?? record.endS ?? record.end);
+	if (fromS === null || toS === null) return null;
+	return {
+		memberId,
+		fromS: clamp01(Math.min(fromS, toS)),
+		toS: clamp01(Math.max(fromS, toS))
+	};
+}
+
+function parseDistributedInterval(object: ObjectV2): DistributedIntervalSpec | null {
+	if (object.type !== 'distributed') return null;
+	if (isRecord(object.meta)) {
+		const fromMeta = distributedIntervalFromRecord(object.meta);
+		if (fromMeta) return fromMeta;
+	}
+	if (isRecord(object.geometry)) {
+		const fromGeometry = distributedIntervalFromRecord(object.geometry);
+		if (fromGeometry) return fromGeometry;
+		if (isRecord(object.geometry.attach)) {
+			const fromAttach = distributedIntervalFromRecord(object.geometry.attach);
+			if (fromAttach) return fromAttach;
+		}
+	}
+	return null;
+}
+
+function applyDistributedLoadIntervals(
+	schema: SchemaDataV2,
+	nodePositions: Map<string, Point>,
+	corrections: string[]
+): void {
+	const segments = getMemberSegments(schema, nodePositions);
+	if (segments.length === 0) return;
+	const segmentById = new Map(segments.map((segment) => [segment.objectId, segment]));
+
+	for (const object of schema.objects) {
+		if (object.type !== 'distributed') continue;
+		const refs = object.nodeRefs ?? [];
+		if (refs.length < 2) continue;
+		const interval = parseDistributedInterval(object);
+		if (!interval) continue;
+		const segment = segmentById.get(interval.memberId);
+		if (!segment) continue;
+		nodePositions.set(refs[0], pointOnSegment(segment, interval.fromS));
+		nodePositions.set(refs[1], pointOnSegment(segment, interval.toS));
+		corrections.push(
+			`distributed_interval:${object.id}@${interval.memberId}:${interval.fromS.toFixed(2)}-${interval.toS.toFixed(2)}`
+		);
+	}
+}
+
+function segmentOtherRef(segment: MemberSegment, nodeRef: string): string | null {
+	if (segment.startRef === nodeRef) return segment.endRef;
+	if (segment.endRef === nodeRef) return segment.startRef;
+	return null;
+}
+
+function hasRevolutePairAt(schema: SchemaDataV2, nodeRef: string): boolean {
+	return schema.objects.some(
+		(object) => object.type === 'revolute_pair' && object.nodeRefs?.[0] === nodeRef
+	);
+}
+
+function nodeLooksLikeGroundPivot(schema: SchemaDataV2, nodeRef: string): boolean {
+	const node = schema.nodes.find((candidate) => candidate.id === nodeRef);
+	const intentKey =
+		typeof node?.meta?.intentKey === 'string' ? node.meta.intentKey.trim().toLowerCase() : '';
+	const label = typeof node?.label === 'string' ? node.label.trim().toLowerCase() : '';
+	return intentKey === 'o' || label === 'o';
+}
+
+function chooseCrankSegment(
+	schema: SchemaDataV2,
+	segments: MemberSegment[],
+	rod: MemberSegment,
+	couplerRef: string
+): { crank: MemberSegment; pivotRef: string } | null {
+	const candidates = segments
+		.filter(
+			(segment) =>
+				segment.objectId !== rod.objectId &&
+				(segment.startRef === couplerRef || segment.endRef === couplerRef)
+		)
+		.map((segment) => {
+			const pivotRef = segmentOtherRef(segment, couplerRef);
+			if (!pivotRef) return null;
+			const score =
+				(hasRevolutePairAt(schema, pivotRef) ? 4 : 0) +
+				(nodeLooksLikeGroundPivot(schema, pivotRef) ? 1 : 0);
+			return { crank: segment, pivotRef, score };
+		})
+		.filter((entry): entry is { crank: MemberSegment; pivotRef: string; score: number } =>
+			Boolean(entry)
+		);
+	if (candidates.length === 0) return null;
+	candidates.sort((a, b) => b.score - a.score);
+	return { crank: candidates[0].crank, pivotRef: candidates[0].pivotRef };
+}
+
+function isHorizontalPrismaticGuide(object: ObjectV2, nodePositions: Map<string, Point>): boolean {
+	const guideHint =
+		typeof object.geometry.guideHint === 'string' ? object.geometry.guideHint.trim().toLowerCase() : '';
+	if (guideHint === 'vertical' || guideHint === 'member_local') return false;
+	if (guideHint === 'horizontal') return true;
+	const start = object.nodeRefs?.[1] ? nodePositions.get(object.nodeRefs[1]) : null;
+	const end = object.nodeRefs?.[2] ? nodePositions.get(object.nodeRefs[2]) : null;
+	if (!start || !end) return true;
+	return Math.abs(end.x - start.x) >= Math.abs(end.y - start.y);
+}
+
+function objectLabelText(object: ObjectV2): string {
+	if (typeof object.label === 'string' && object.label.trim()) return object.label.trim();
+	if (typeof object.geometry.label === 'string' && object.geometry.label.trim()) {
+		return object.geometry.label.trim();
+	}
+	if (typeof object.geometry.text === 'string' && object.geometry.text.trim()) {
+		return object.geometry.text.trim();
+	}
+	return '';
+}
+
+function mentionsEccentricity(value: string): boolean {
+	const normalized = value.trim().toLowerCase();
+	if (!normalized) return false;
+	return (
+		normalized === 'e' ||
+		normalized.startsWith('e=') ||
+		normalized.startsWith('e =') ||
+		normalized.includes('eccentric') ||
+		normalized.includes('эксцентр')
+	);
+}
+
+function guideOffsetHintValue(object: ObjectV2): unknown {
+	const geometry = object.geometry;
+	return (
+		geometry.guideOffset ??
+		geometry.guideOffsetHint ??
+		geometry.eccentricity ??
+		geometry.eccentricityHint ??
+		geometry.e ??
+		geometry.offset
+	);
+}
+
+function displayOffsetFromHint(value: unknown, reference: MemberSegment): number | null {
+	const numeric = toFiniteNumber(value);
+	const defaultOffset = Math.max(0.3, Math.min(0.8, reference.length * 0.25));
+	if (numeric !== null) {
+		if (Math.abs(numeric) < EPS) return 0;
+		const scale =
+			Number.isFinite(reference.physicalLength) && reference.physicalLength > EPS
+				? reference.length / reference.physicalLength
+				: 1;
+		const display = Math.abs(numeric) * scale;
+		const readable = Math.max(display, Math.min(defaultOffset, reference.length * 0.2));
+		return Math.sign(numeric) * readable;
+	}
+	if (typeof value === 'string' && value.trim()) return defaultOffset;
+	return null;
+}
+
+function horizontalGuideYFromPairNodes(
+	object: ObjectV2,
+	nodePositions: Map<string, Point>,
+	pivotY: number
+): number | null {
+	const start = object.nodeRefs?.[1] ? nodePositions.get(object.nodeRefs[1]) : null;
+	const end = object.nodeRefs?.[2] ? nodePositions.get(object.nodeRefs[2]) : null;
+	if (!start || !end) return null;
+	if (Math.abs(start.y - end.y) > Math.max(EPS, Math.abs(start.x - end.x) * 0.05)) return null;
+	const y = (start.y + end.y) / 2;
+	return Math.abs(y - pivotY) > EPS ? y : null;
+}
+
+function horizontalLineY(object: ObjectV2, nodePositions: Map<string, Point>): number | null {
+	const refs = object.nodeRefs ?? [];
+	if (refs.length < 2) return null;
+	const start = nodePositions.get(refs[0]);
+	const end = nodePositions.get(refs[1]);
+	if (!start || !end) return null;
+	if (Math.abs(start.y - end.y) > Math.max(EPS, Math.abs(start.x - end.x) * 0.05)) return null;
+	return (start.y + end.y) / 2;
+}
+
+function eccentricGuideYFromReferenceObjects(
+	schema: SchemaDataV2,
+	nodePositions: Map<string, Point>,
+	pivotY: number,
+	reference: MemberSegment
+): number | null {
+	for (const candidate of schema.objects) {
+		if (candidate.type !== 'axis' && candidate.type !== 'dimension' && candidate.type !== 'ground') {
+			continue;
+		}
+		const label = objectLabelText(candidate);
+		if (!mentionsEccentricity(label)) continue;
+		const lineY = horizontalLineY(candidate, nodePositions);
+		if (lineY !== null && Math.abs(lineY - pivotY) > EPS) return lineY;
+		const offset = displayOffsetFromHint(label, reference);
+		if (offset !== null) return pivotY + offset;
+	}
+	for (const candidate of schema.objects) {
+		if (candidate.type !== 'label') continue;
+		const label = objectLabelText(candidate);
+		if (!mentionsEccentricity(label)) continue;
+		const offset = displayOffsetFromHint(label, reference);
+		if (offset !== null) return pivotY + offset;
+	}
+	return null;
+}
+
+function resolvePrismaticGuideY(
+	schema: SchemaDataV2,
+	object: ObjectV2,
+	nodePositions: Map<string, Point>,
+	pivotY: number,
+	reference: MemberSegment
+): number {
+	const offset = displayOffsetFromHint(guideOffsetHintValue(object), reference);
+	if (offset !== null) return pivotY + offset;
+	const fromPairNodes = horizontalGuideYFromPairNodes(object, nodePositions, pivotY);
+	if (fromPairNodes !== null) return fromPairNodes;
+	return eccentricGuideYFromReferenceObjects(schema, nodePositions, pivotY, reference) ?? pivotY;
+}
+
+function applyPrismaticGuideConstraints(
+	schema: SchemaDataV2,
+	nodePositions: Map<string, Point>,
+	corrections: string[]
+): void {
+	if (schema.meta?.structureKind !== 'planar_mechanism') return;
+	const segments = getMemberSegments(schema, nodePositions);
+	if (segments.length < 2) return;
+
+	for (const object of schema.objects) {
+		if (object.type !== 'prismatic_pair') continue;
+		const refs = object.nodeRefs ?? [];
+		const sliderRef = refs[0];
+		const guideStartRef = refs[1];
+		const guideEndRef = refs[2];
+		if (!sliderRef || !guideStartRef || !guideEndRef) continue;
+		if (!isHorizontalPrismaticGuide(object, nodePositions)) continue;
+
+		const rod = segments.find(
+			(segment) => segment.startRef === sliderRef || segment.endRef === sliderRef
+		);
+		if (!rod) continue;
+		const couplerRef = segmentOtherRef(rod, sliderRef);
+		if (!couplerRef) continue;
+		const crankCandidate = chooseCrankSegment(schema, segments, rod, couplerRef);
+		if (!crankCandidate) continue;
+
+		const pivot = nodePositions.get(crankCandidate.pivotRef);
+		const coupler = nodePositions.get(couplerRef);
+		const slider = nodePositions.get(sliderRef);
+		if (!pivot || !coupler || !slider) continue;
+
+		const guideY = resolvePrismaticGuideY(
+			schema,
+			object,
+			nodePositions,
+			pivot.y,
+			crankCandidate.crank
+		);
+		const transverse = coupler.y - guideY;
+		const axialDistance =
+			Math.abs(transverse) < rod.length
+				? Math.sqrt(Math.max(rod.length * rod.length - transverse * transverse, 0))
+				: Math.max(rod.length * 0.85, Math.abs(transverse) * 0.5);
+		const sign =
+			Math.abs(slider.x - coupler.x) > EPS
+				? Math.sign(slider.x - coupler.x)
+				: Math.sign(coupler.x - pivot.x) || 1;
+		const nextSlider = {
+			x: coupler.x + (sign || 1) * Math.max(axialDistance, rod.length * 0.35),
+			y: guideY
+		};
+		const guideHalfLength = Math.max(0.9, Math.min(1.8, rod.length * 0.45));
+		nodePositions.set(sliderRef, nextSlider);
+		nodePositions.set(guideStartRef, {
+			x: nextSlider.x - guideHalfLength,
+			y: guideY
+		});
+		nodePositions.set(guideEndRef, {
+			x: nextSlider.x + guideHalfLength,
+			y: guideY
+		});
+		corrections.push(`slider-crank_guide:${object.id}:${sliderRef}`);
+	}
 }
 
 function anchorSupportsAndLoadsToMembers(
@@ -733,6 +1053,7 @@ function applyAttachSpecs(
 	const segmentById = new Map(segments.map((segment) => [segment.objectId, segment]));
 
 	for (const object of schema.objects) {
+		if (object.type === 'distributed') continue;
 		const attach = parseAttachSpec(object);
 		if (!attach) continue;
 		const targetNodeRef = object.nodeRefs?.[0];
@@ -981,6 +1302,8 @@ export function stabilizeSchemaLayoutV2(
 		corrections.push(topologyFirst ? 'rebuild_layout_topology' : 'rebuild_layout_graph');
 	}
 
+	applyPrismaticGuideConstraints(schema, nodePositions, corrections);
+	applyDistributedLoadIntervals(schema, nodePositions, corrections);
 	anchorSupportsAndLoadsToMembers(schema, nodePositions, corrections);
 	applyAttachSpecs(schema, nodePositions, corrections);
 	applyFixedWallSideSemantics(schema, nodePositions, corrections);

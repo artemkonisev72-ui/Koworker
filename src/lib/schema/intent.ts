@@ -80,6 +80,7 @@ export interface IntentSupport {
 	s?: number;
 	sideHint?: IntentSupportSideHint;
 	guideHint?: IntentSupportGuideHint;
+	guideOffsetHint?: number | string;
 }
 
 export interface IntentComponent {
@@ -99,6 +100,7 @@ export interface IntentKinematicPair {
 	componentKeys?: string[];
 	grounded?: boolean;
 	guideHint?: IntentSupportGuideHint;
+	guideOffsetHint?: number | string;
 	meshType?: IntentMeshType;
 	beltKind?: IntentBeltKind;
 	crossed?: boolean;
@@ -495,6 +497,7 @@ function normalizeSupportCandidate(raw: unknown, index: number): IntentSupport |
 			: endpointPosition;
 	const sideHint = normalizeSupportSideHint(raw.sideHint ?? raw.side);
 	const guideHint = normalizeSupportGuideHint(raw.guideHint ?? raw.guide ?? raw.orientation);
+	const guideOffsetHint = normalizeGuideOffsetHint(raw);
 
 	const support: IntentSupport = { key, kind };
 	if (jointKeyRaw) support.jointKey = jointKeyRaw;
@@ -502,7 +505,22 @@ function normalizeSupportCandidate(raw: unknown, index: number): IntentSupport |
 	if (s !== undefined) support.s = s;
 	if (sideHint) support.sideHint = sideHint;
 	if (guideHint) support.guideHint = guideHint;
+	if (guideOffsetHint !== undefined) support.guideOffsetHint = guideOffsetHint;
 	return support;
+}
+
+function normalizeGuideOffsetHint(raw: Record<string, unknown>): number | string | undefined {
+	const candidate =
+		raw.guideOffsetHint ??
+		raw.guideOffset ??
+		raw.offsetHint ??
+		raw.eccentricityHint ??
+		raw.eccentricity ??
+		raw.e;
+	const numeric = toFiniteNumber(candidate);
+	if (numeric !== null) return numeric;
+	if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+	return undefined;
 }
 
 function normalizeSupportEndpointPosition(value: unknown): number | null {
@@ -630,6 +648,7 @@ function normalizeKinematicPairCandidate(raw: unknown, index: number): IntentKin
 	const componentKeys = normalizeRefArray(raw.componentKeys, raw.componentKey ?? raw.component);
 	const grounded = typeof raw.grounded === 'boolean' ? raw.grounded : undefined;
 	const guideHint = normalizeSupportGuideHint(raw.guideHint ?? raw.guide ?? raw.orientation);
+	const guideOffsetHint = normalizeGuideOffsetHint(raw);
 	const meshType = normalizeMeshType(raw.meshType);
 	const beltKind = normalizeBeltKind(raw.beltKind);
 	const followerType = normalizeFollowerType(raw.followerType);
@@ -652,6 +671,7 @@ function normalizeKinematicPairCandidate(raw: unknown, index: number): IntentKin
 	if (componentKeys.length > 0) pair.componentKeys = componentKeys;
 	if (grounded !== undefined) pair.grounded = grounded;
 	if (guideHint) pair.guideHint = guideHint;
+	if (guideOffsetHint !== undefined) pair.guideOffsetHint = guideOffsetHint;
 	if (meshType) pair.meshType = meshType;
 	if (beltKind) pair.beltKind = beltKind;
 	if (crossed !== undefined) pair.crossed = crossed;
@@ -682,7 +702,10 @@ function normalizeMagnitudeHint(value: unknown): IntentLoad['magnitudeHint'] | u
 	return undefined;
 }
 
-function normalizeLoadTarget(value: unknown): IntentLoadTarget | null {
+function normalizeLoadTarget(
+	value: unknown,
+	options: { defaultMemberTarget?: 'point' | 'fullInterval' } = {}
+): IntentLoadTarget | null {
 	if (!isRecord(value)) return null;
 	const jointKey = normalizeKey(value.jointKey ?? value.joint ?? value.nodeKey ?? value.node, '');
 	if (jointKey) return { jointKey };
@@ -703,6 +726,9 @@ function normalizeLoadTarget(value: unknown): IntentLoadTarget | null {
 			toS: Math.max(0, Math.min(1, toS))
 		};
 	}
+	if (options.defaultMemberTarget === 'fullInterval') {
+		return { memberKey, fromS: 0, toS: 1 };
+	}
 	return { memberKey, s: 0.5 };
 }
 
@@ -711,9 +737,10 @@ function normalizeLoadCandidate(raw: unknown, index: number): IntentLoad | null 
 	const kind = normalizeLoadKind(raw.kind ?? raw.type ?? raw.loadType);
 	if (!kind) return null;
 	const key = normalizeKey(raw.key ?? raw.id ?? raw.name, `load_${index + 1}`);
+	const targetOptions = kind === 'distributed' ? { defaultMemberTarget: 'fullInterval' as const } : {};
 	const target =
-		normalizeLoadTarget(raw.target) ??
-		normalizeLoadTarget(raw) ??
+		normalizeLoadTarget(raw.target, targetOptions) ??
+		normalizeLoadTarget(raw, targetOptions) ??
 		(kind === 'distributed' ? null : normalizeLoadTarget({ jointKey: raw.jointKey ?? raw.joint }));
 	if (!target) return null;
 	const normalizedTarget: IntentLoadTarget =
@@ -1061,6 +1088,9 @@ export function normalizeSchemeIntent(input: unknown): SchemeIntentNormalizeResu
 					...(support.jointKey ? { jointKey: support.jointKey } : {}),
 					...(support.memberKey ? { memberKeys: [support.memberKey] } : {}),
 					...(support.guideHint ? { guideHint: support.guideHint } : {}),
+					...(support.guideOffsetHint !== undefined
+						? { guideOffsetHint: support.guideOffsetHint }
+						: {}),
 					label: pairKey
 				});
 				warnings.push(`supports["${support.key}"] slider was canonicalized to kinematicPairs as prismatic_pair`);

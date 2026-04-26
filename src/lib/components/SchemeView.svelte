@@ -13,6 +13,7 @@ import {
 	chooseLabelPlacement,
 	type LabelBox
 } from '$lib/schema/label-placement.js';
+import { resolveDistributedLoadVisualMetrics } from '$lib/schema/distributed-load-visuals.js';
 
 type RenderMode = 'chat' | 'print';
 
@@ -843,15 +844,89 @@ function computeBoardSize(): { width: number; height: number } | null {
 		const guideStart = getNode(nodeMap, object.nodeRefs?.[1]);
 		const guideEnd = getNode(nodeMap, object.nodeRefs?.[2]);
 		if (!node || !guideStart || !guideEnd) return;
-		drawSegment(guideStart, guideEnd, { strokeColor: COLOR.muted, strokeWidth: 1.2, dash: 2 });
+		const dx = guideEnd.x - guideStart.x;
+		const dy = guideEnd.y - guideStart.y;
+		const length = Math.hypot(dx, dy) || 1;
+		const tangent = { x: dx / length, y: dy / length };
+		const normal = { x: -tangent.y, y: tangent.x };
+		const halfLength = 0.28;
+		const halfHeight = 0.18;
+		const horizontalGuide = Math.abs(tangent.y) < 0.2;
+		const groundedGuide =
+			object.type === 'slider' || object.type === 'prismatic_pair' || object.geometry.grounded === true;
+
+		if (groundedGuide && horizontalGuide) {
+			const railOffset = halfHeight + 0.08;
+			drawSegment(
+				{
+					x: guideStart.x + normal.x * railOffset,
+					y: guideStart.y + normal.y * railOffset
+				},
+				{ x: guideEnd.x + normal.x * railOffset, y: guideEnd.y + normal.y * railOffset },
+				{ strokeColor: COLOR.support, strokeWidth: 1.2 }
+			);
+			drawSegment(
+				{
+					x: guideStart.x - normal.x * railOffset,
+					y: guideStart.y - normal.y * railOffset
+				},
+				{ x: guideEnd.x - normal.x * railOffset, y: guideEnd.y - normal.y * railOffset },
+				{ strokeColor: COLOR.support, strokeWidth: 1.2 }
+			);
+			for (let i = 0; i <= 5; i++) {
+				const t = i / 5;
+				const base = {
+					x: guideStart.x + dx * t,
+					y: guideStart.y + dy * t
+				};
+				drawSegment(
+					{
+						x: base.x + normal.x * (railOffset + 0.04) - tangent.x * 0.08,
+						y: base.y + normal.y * (railOffset + 0.04) - tangent.y * 0.08
+					},
+					{
+						x: base.x + normal.x * (railOffset + 0.18) + tangent.x * 0.08,
+						y: base.y + normal.y * (railOffset + 0.18) + tangent.y * 0.08
+					},
+					{ strokeColor: COLOR.support, strokeWidth: 0.8 }
+				);
+				drawSegment(
+					{
+						x: base.x - normal.x * (railOffset + 0.04) - tangent.x * 0.08,
+						y: base.y - normal.y * (railOffset + 0.04) - tangent.y * 0.08
+					},
+					{
+						x: base.x - normal.x * (railOffset + 0.18) + tangent.x * 0.08,
+						y: base.y - normal.y * (railOffset + 0.18) + tangent.y * 0.08
+					},
+					{ strokeColor: COLOR.support, strokeWidth: 0.8 }
+				);
+			}
+		} else {
+			drawSegment(guideStart, guideEnd, { strokeColor: COLOR.muted, strokeWidth: 1.2, dash: 2 });
+		}
+
+		const corners = [
+			{
+				x: node.x - tangent.x * halfLength - normal.x * halfHeight,
+				y: node.y - tangent.y * halfLength - normal.y * halfHeight
+			},
+			{
+				x: node.x + tangent.x * halfLength - normal.x * halfHeight,
+				y: node.y + tangent.y * halfLength - normal.y * halfHeight
+			},
+			{
+				x: node.x + tangent.x * halfLength + normal.x * halfHeight,
+				y: node.y + tangent.y * halfLength + normal.y * halfHeight
+			},
+			{
+				x: node.x - tangent.x * halfLength + normal.x * halfHeight,
+				y: node.y - tangent.y * halfLength + normal.y * halfHeight
+			}
+		];
 		board.create(
 			'polygon',
-			[
-				[node.x - 0.16, node.y - 0.12],
-				[node.x + 0.16, node.y - 0.12],
-				[node.x + 0.16, node.y + 0.12],
-				[node.x - 0.16, node.y + 0.12]
-			],
+			corners.map((point) => [point.x, point.y]),
 			{
 				fixed: true,
 				highlight: false,
@@ -861,6 +936,14 @@ function computeBoardSize(): { width: number; height: number } | null {
 				strokeWidth: 1.2
 			}
 		);
+		board.create('circle', [[node.x, node.y], 0.075], {
+			fixed: true,
+			highlight: false,
+			strokeColor: COLOR.base,
+			strokeWidth: 1.4,
+			fillColor: 'var(--bg-surface)',
+			fillOpacity: 1
+		});
 	}
 
 	function drawRevolutePair(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
@@ -1009,10 +1092,10 @@ function computeBoardSize(): { width: number; height: number } | null {
 			object.geometry,
 			isFiniteNumber(object.geometry.directionAngle) ? object.geometry.directionAngle : -90
 		);
-		const count = isFiniteNumber(object.geometry.arrowCount)
-			? Math.max(3, Math.min(16, Math.round(object.geometry.arrowCount)))
-			: 7;
-		const length = 0.75;
+		const span = Math.hypot(end.x - start.x, end.y - start.y);
+		const visualMetrics = resolveDistributedLoadVisualMetrics(span, object.geometry.arrowCount);
+		const count = visualMetrics.arrowCount;
+		const length = visualMetrics.arrowLength;
 
 		for (let i = 0; i < count; i++) {
 			const t = count === 1 ? 0 : i / (count - 1);
@@ -1119,6 +1202,7 @@ function computeBoardSize(): { width: number; height: number } | null {
 
 	function drawNodeLabels(schema: SchemaDataV2, nodeMap: Map<string, NodeV2>): void {
 		for (const node of schema.nodes) {
+			if (node.visible === false || node.meta?.synthetic === true) continue;
 			if (typeof node.label !== 'string' || !node.label.trim()) continue;
 			const projectedNode = getNode(nodeMap, node.id);
 			if (!projectedNode) continue;

@@ -36,6 +36,11 @@ interface ComponentPlacement {
 	center: Vec3;
 }
 
+interface MechanismLayoutCorrections {
+	correctedMemberKeys: Set<string>;
+	layoutCorrections: string[];
+}
+
 export interface CompileSchemaIntentResult {
 	schemaData: SchemaDataV2;
 	warnings: string[];
@@ -190,6 +195,181 @@ function buildInitialJointCoords(intent: SchemeIntentV1): Map<string, Vec3> {
 	return coords;
 }
 
+function memberTouchesJoint(member: IntentMember, jointKey: string): boolean {
+	return member.startJoint === jointKey || member.endJoint === jointKey;
+}
+
+function otherMemberJoint(member: IntentMember, jointKey: string): string | null {
+	if (member.startJoint === jointKey) return member.endJoint;
+	if (member.endJoint === jointKey) return member.startJoint;
+	return null;
+}
+
+function memberJointDegree(intent: SchemeIntentV1): Map<string, number> {
+	const degree = new Map<string, number>();
+	for (const member of intent.members) {
+		degree.set(member.startJoint, (degree.get(member.startJoint) ?? 0) + 1);
+		degree.set(member.endJoint, (degree.get(member.endJoint) ?? 0) + 1);
+	}
+	return degree;
+}
+
+function inferTerminalJointFromMemberReference(
+	intent: SchemeIntentV1,
+	memberKey: string | undefined
+): string | null {
+	if (!memberKey) return null;
+	const member = intent.members.find((candidate) => candidate.key === memberKey);
+	if (!member) return null;
+	const degree = memberJointDegree(intent);
+	const startDegree = degree.get(member.startJoint) ?? 0;
+	const endDegree = degree.get(member.endJoint) ?? 0;
+	if (endDegree <= 1 && startDegree > 1) return member.endJoint;
+	if (startDegree <= 1 && endDegree > 1) return member.startJoint;
+	return member.endJoint;
+}
+
+function resolvePairJointKeyFromIntent(
+	intent: SchemeIntentV1,
+	pair: IntentKinematicPair
+): string | null {
+	if (pair.jointKey) return pair.jointKey;
+	if (pair.kind === 'prismatic_pair' || pair.kind === 'slot_pair') {
+		return inferTerminalJointFromMemberReference(intent, pair.memberKeys?.[0]);
+	}
+	return null;
+}
+
+function shouldUseHorizontalSliderGuide(pair: IntentKinematicPair): boolean {
+	return pair.kind === 'prismatic_pair' && pair.guideHint !== 'vertical' && pair.guideHint !== 'member_local';
+}
+
+function guideOffsetFromHint(value: unknown, referenceLength: number): number {
+	const numeric = toFiniteNumber(value);
+	if (numeric !== null) return numeric;
+	if (typeof value === 'string' && value.trim()) {
+		return Math.max(0.25, referenceLength * 0.25);
+	}
+	return 0;
+}
+
+function preferCrankCandidate(
+	intent: SchemeIntentV1,
+	candidates: IntentMember[],
+	couplerJoint: string
+): { crank: IntentMember; pivotJoint: string } | null {
+	if (candidates.length === 0) return null;
+	const revoluteJointKeys = new Set(
+		intent.kinematicPairs
+			.filter((pair) => pair.kind === 'revolute_pair' && pair.jointKey)
+			.map((pair) => pair.jointKey as string)
+	);
+	const scored = candidates
+		.map((crank) => {
+			const pivotJoint = otherMemberJoint(crank, couplerJoint);
+			if (!pivotJoint) return null;
+			const hasRevolutePivot = revoluteJointKeys.has(pivotJoint);
+			const hasAngleHint = typeof crank.angleHintDeg === 'number' && Number.isFinite(crank.angleHintDeg);
+			const labelLooksLikeGround =
+				pivotJoint.toLowerCase() === 'o' || (crank.label ?? crank.key).toLowerCase().startsWith('o');
+			const score = (hasRevolutePivot ? 4 : 0) + (hasAngleHint ? 2 : 0) + (labelLooksLikeGround ? 1 : 0);
+			return { crank, pivotJoint, score };
+		})
+		.filter((entry): entry is { crank: IntentMember; pivotJoint: string; score: number } =>
+			Boolean(entry)
+		);
+	if (scored.length === 0) return null;
+	scored.sort((a, b) => b.score - a.score);
+	return { crank: scored[0].crank, pivotJoint: scored[0].pivotJoint };
+}
+
+function recomputeCouplerFromCrank(
+	coords: Map<string, Vec3>,
+	crank: IntentMember,
+	pivotJoint: string,
+	couplerJoint: string
+): Vec3 | null {
+	const pivot = coords.get(pivotJoint);
+	if (!pivot) return coords.get(couplerJoint) ?? null;
+	if (typeof crank.angleHintDeg !== 'number' || !Number.isFinite(crank.angleHintDeg)) {
+		return coords.get(couplerJoint) ?? null;
+	}
+	const crankLength = inferLengthHint(crank);
+	const angleRad = (crank.angleHintDeg * Math.PI) / 180;
+	const delta = { x: Math.cos(angleRad) * crankLength, y: Math.sin(angleRad) * crankLength, z: 0 };
+	const coupler =
+		crank.startJoint === pivotJoint && crank.endJoint === couplerJoint
+			? addVec(pivot, delta)
+			: crank.endJoint === pivotJoint && crank.startJoint === couplerJoint
+				? subVec(pivot, delta)
+				: (coords.get(couplerJoint) ?? null);
+	if (coupler) coords.set(couplerJoint, coupler);
+	return coupler;
+}
+
+function applyPlanarMechanismLayoutCorrections(
+	intent: SchemeIntentV1,
+	coords: Map<string, Vec3>
+): MechanismLayoutCorrections {
+	const correctedMemberKeys = new Set<string>();
+	const layoutCorrections: string[] = [];
+	if (intent.structureKind !== 'planar_mechanism') {
+		return { correctedMemberKeys, layoutCorrections };
+	}
+
+	for (const pair of intent.kinematicPairs) {
+		if (!shouldUseHorizontalSliderGuide(pair)) continue;
+		const sliderJoint = resolvePairJointKeyFromIntent(intent, pair);
+		if (!sliderJoint) continue;
+		const rodCandidates = intent.members.filter((member) => memberTouchesJoint(member, sliderJoint));
+		for (const rod of rodCandidates) {
+			const couplerJoint = otherMemberJoint(rod, sliderJoint);
+			if (!couplerJoint) continue;
+			const crankCandidate = preferCrankCandidate(
+				intent,
+				intent.members.filter((member) => member.key !== rod.key && memberTouchesJoint(member, couplerJoint)),
+				couplerJoint
+			);
+			if (!crankCandidate) continue;
+
+			const { crank, pivotJoint } = crankCandidate;
+			const pivot = coords.get(pivotJoint);
+			if (!pivot) continue;
+			const coupler = recomputeCouplerFromCrank(coords, crank, pivotJoint, couplerJoint);
+			if (!coupler) continue;
+
+			const rodLength = inferLengthHint(rod);
+			const guideOffset = guideOffsetFromHint(pair.guideOffsetHint, inferLengthHint(crank));
+			const guideY = pivot.y + guideOffset;
+			const transverse = coupler.y - guideY;
+			const axialDistance =
+				Math.abs(transverse) < rodLength
+					? Math.sqrt(Math.max(rodLength * rodLength - transverse * transverse, 0))
+					: Math.max(rodLength * 0.85, Math.abs(transverse) * 0.5);
+			const currentSlider = coords.get(sliderJoint);
+			const sign =
+				currentSlider && Math.abs(currentSlider.x - coupler.x) > 1e-9
+					? Math.sign(currentSlider.x - coupler.x)
+					: Math.sign(coupler.x - pivot.x) || 1;
+			const slider: Vec3 = {
+				x: coupler.x + (sign || 1) * Math.max(axialDistance, rodLength * 0.35),
+				y: guideY,
+				z: 0
+			};
+			coords.set(sliderJoint, slider);
+			correctedMemberKeys.add(rod.key);
+			layoutCorrections.push(
+				guideOffset
+					? `slider-crank pair "${pair.key}" placed joint "${sliderJoint}" on eccentric horizontal guide through "${pivotJoint}"+${guideOffset}`
+					: `slider-crank pair "${pair.key}" placed joint "${sliderJoint}" on horizontal guide through "${pivotJoint}"`
+			);
+			break;
+		}
+	}
+
+	return { correctedMemberKeys, layoutCorrections };
+}
+
 function angleDegFromPoints(start: Vec3, end: Vec3): number {
 	return (Math.atan2(end.y - start.y, end.x - start.x) * 180) / Math.PI;
 }
@@ -312,6 +492,10 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 	const templateUsed = detectTemplate(intent);
 
 	const jointCoords = buildInitialJointCoords(intent);
+	const { correctedMemberKeys, layoutCorrections } = applyPlanarMechanismLayoutCorrections(
+		intent,
+		jointCoords
+	);
 	const jointToNodeId = new Map<string, string>();
 	const nodes: NodeV2[] = intent.joints.map((joint, index) => {
 		const coord = jointCoords.get(joint.key) ?? { x: index * 3, y: 0, z: 0 };
@@ -359,8 +543,11 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 		const objectId = `${member.kind}_${index + 1}`;
 		const start: Vec3 = { x: startNode.x, y: startNode.y, z: startNode.z ?? 0 };
 		const end: Vec3 = { x: endNode.x, y: endNode.y, z: endNode.z ?? 0 };
-		const length = Math.max(1e-6, vecLength(subVec(end, start)));
-		const angleDeg = member.angleHintDeg ?? angleDegFromPoints(start, end);
+		const renderedLength = Math.max(1e-6, vecLength(subVec(end, start)));
+		const length = inferLengthHint(member) || renderedLength;
+		const angleDeg = correctedMemberKeys.has(member.key)
+			? angleDegFromPoints(start, end)
+			: (member.angleHintDeg ?? angleDegFromPoints(start, end));
 		const geometry: Record<string, unknown> = {
 			length,
 			angleDeg
@@ -439,17 +626,24 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 	let nextNodeIndex = nodes.length + 1;
 	const attachNodeCache = new Map<string, string>();
 
-	function createNode(coord: Vec3, label: string, meta: Record<string, unknown>): string {
+	function createNode(
+		coord: Vec3,
+		label: string,
+		meta: Record<string, unknown>,
+		options: { visible?: boolean } = {}
+	): string {
 		const id = `N${nextNodeIndex}`;
 		nextNodeIndex += 1;
-		nodes.push({
+		const node: NodeV2 = {
 			id,
 			x: coord.x,
 			y: coord.y,
 			z: coord.z,
-			label,
+			...(label.trim() ? { label } : {}),
+			...(typeof options.visible === 'boolean' ? { visible: options.visible } : {}),
 			meta
-		});
+		};
+		nodes.push(node);
 		nodeById.set(id, nodes[nodes.length - 1]);
 		return id;
 	}
@@ -511,13 +705,15 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 		const guideHalfLength = 0.9;
 		const guideStart = createNode(
 			subVec(baseCoord, scaleVec(direction, guideHalfLength)),
-			`${tag}a`,
-			{ synthetic: true, role: 'pair_guide' }
+			'',
+			{ synthetic: true, role: 'pair_guide', helperLabel: `${tag}a` },
+			{ visible: false }
 		);
 		const guideEnd = createNode(
 			addVec(baseCoord, scaleVec(direction, guideHalfLength)),
-			`${tag}b`,
-			{ synthetic: true, role: 'pair_guide' }
+			'',
+			{ synthetic: true, role: 'pair_guide', helperLabel: `${tag}b` },
+			{ visible: false }
 		);
 		return [guideStart, guideEnd];
 	}
@@ -591,8 +787,9 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 		const memberHint = pair.memberKeys?.[0];
 
 		let baseNodeId: string | null = null;
-		if (pair.jointKey) {
-			baseNodeId = jointToNodeId.get(pair.jointKey) ?? null;
+		const resolvedPairJointKey = resolvePairJointKeyFromIntent(intent, pair);
+		if (resolvedPairJointKey) {
+			baseNodeId = jointToNodeId.get(resolvedPairJointKey) ?? null;
 		}
 		if (!baseNodeId && memberHint) {
 			const placement = memberByIntentKey.get(memberHint);
@@ -672,6 +869,7 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 		if (typeof pair.crossed === 'boolean') geometry.crossed = pair.crossed;
 		if (pair.followerType) geometry.followerType = pair.followerType;
 		if (pair.guideHint) geometry.guideHint = pair.guideHint;
+		if (pair.guideOffsetHint !== undefined) geometry.guideOffset = pair.guideOffsetHint;
 		if (pair.grounded !== undefined) geometry.grounded = pair.grounded;
 
 		objects.push({
@@ -742,12 +940,7 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 					load.directionHint,
 					warnings,
 					`loads[${index}]`
-				),
-				attach: {
-					memberId: placement.objectId,
-					s: clamp01((fromS + toS) / 2),
-					side: 'center'
-				}
+				)
 			};
 
 			objects.push({
@@ -871,6 +1064,9 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 			intentVersion: intent.version,
 			intentConfidence: intent.confidence,
 			templateUsed,
+			...(layoutCorrections.length > 0
+				? { layoutAutoCorrected: true, layoutCorrections }
+				: {}),
 			...(requestedResults.length > 0 ? { requestedResults } : {})
 		},
 		coordinateSystem: buildCoordinateSystem(intent),

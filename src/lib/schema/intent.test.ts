@@ -301,7 +301,7 @@ describe('scheme intent validation', () => {
 			members: [{ key: 'OA', kind: 'bar', startJoint: 'O', endJoint: 'A' }],
 			supports: [
 				{ key: 'h1', kind: 'internal_hinge', jointKey: 'A' },
-				{ key: 'sl1', kind: 'slider', jointKey: 'B', guideHint: 'horizontal' }
+				{ key: 'sl1', kind: 'slider', jointKey: 'B', guideHint: 'horizontal', guideOffsetHint: 0.1 }
 			],
 			loads: [],
 			assumptions: [],
@@ -310,6 +310,10 @@ describe('scheme intent validation', () => {
 
 		expect(normalized.value.kinematicPairs.some((pair) => pair.kind === 'revolute_pair')).toBe(true);
 		expect(normalized.value.kinematicPairs.some((pair) => pair.kind === 'prismatic_pair')).toBe(true);
+		const sliderPair = normalized.value.kinematicPairs.find((pair) => pair.kind === 'prismatic_pair');
+		expect(sliderPair?.jointKey).toBe('B');
+		expect(sliderPair?.guideHint).toBe('horizontal');
+		expect(sliderPair?.guideOffsetHint).toBe(0.1);
 		expect(normalized.value.supports).toHaveLength(0);
 		expect(
 			normalized.warnings.some((warning) => warning.includes('canonicalized to kinematicPairs'))
@@ -361,6 +365,30 @@ describe('scheme intent validation', () => {
 
 		const validated = validateSchemeIntent(normalized.value);
 		expect(validated.ok).toBe(true);
+	});
+
+	it('defaults distributed member-only target to the full member interval', () => {
+		const normalized = normalizeSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'beam',
+			modelSpace: 'planar',
+			confidence: 'medium',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'A' }, { key: 'B' }],
+			members: [{ key: 'm1', kind: 'bar', startJoint: 'A', endJoint: 'B' }],
+			supports: [],
+			loads: [{ key: 'q1', kind: 'distributed', target: { memberKey: 'm1' } }],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		const target = normalized.value.loads[0]?.target;
+		expect(target).toBeTruthy();
+		if (!target || !('fromS' in target) || !('toS' in target)) return;
+		expect(target.fromS).toBe(0);
+		expect(target.toS).toBe(1);
+		expect(validateSchemeIntent(normalized.value).ok).toBe(true);
 	});
 
 	it('rejects distributed load that targets only a joint', () => {

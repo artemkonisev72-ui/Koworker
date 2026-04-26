@@ -1091,8 +1091,8 @@ understanding contract:
   "joints": [{ "key": "...", "role": "start|end|corner|free_end|fixed_end|generic", "label": "..." }],
   "members": [{ "key": "...", "kind": "bar|cable|spring|damper", "startJoint": "...", "endJoint": "...", "relation": "horizontal|vertical|inclined|collinear_with_prev", "lengthHint": 3.5, "angleHintDeg": 30 }],
   "components": [{ "key": "...", "kind": "rigid_disk|cam", "centerJoint": "...", "radiusHint": 1.0, "profileHint": "...", "label": "..." }],
-  "kinematicPairs": [{ "key": "...", "kind": "revolute_pair|prismatic_pair|slot_pair|cam_contact|gear_pair|belt_pair", "jointKey": "...", "memberKeys": ["..."], "componentKeys": ["..."], "guideHint": "horizontal|vertical|member_local", "meshType": "external|internal", "beltKind": "belt|chain", "crossed": false, "followerType": "knife|roller|flat", "label": "..." }],
-  "supports": [{ "key": "...", "kind": "fixed_wall|hinge_fixed|hinge_roller|internal_hinge|slider", "jointKey": "...", "memberKey": "...", "s": 0.5, "sideHint": "left|right|top|bottom", "guideHint": "horizontal|vertical|member_local" }],
+  "kinematicPairs": [{ "key": "...", "kind": "revolute_pair|prismatic_pair|slot_pair|cam_contact|gear_pair|belt_pair", "jointKey": "...", "memberKeys": ["..."], "componentKeys": ["..."], "guideHint": "horizontal|vertical|member_local", "guideOffsetHint": 0.1, "meshType": "external|internal", "beltKind": "belt|chain", "crossed": false, "followerType": "knife|roller|flat", "label": "..." }],
+  "supports": [{ "key": "...", "kind": "fixed_wall|hinge_fixed|hinge_roller|internal_hinge|slider", "jointKey": "...", "memberKey": "...", "s": 0.5, "sideHint": "left|right|top|bottom", "guideHint": "horizontal|vertical|member_local", "guideOffsetHint": 0.1 }],
   "loads": [{ "key": "...", "kind": "force|moment|distributed", "target": {"jointKey":"..."} | {"memberKey":"...","s":0.5} | {"memberKey":"...","fromS":0.2,"toS":0.8}, "directionHint": "up|down|left|right|+x|-x|+y|-y|cw|ccw|member_local_positive|member_local_negative", "magnitudeHint": 10, "distributionKind": "uniform|linear|trapezoid" }],
   "requestedResults": [{ "targetMemberKey": "...", "kind": "N|Q|M|Vy|Vz|T|My|Mz" }],
   "assumptions": [],
@@ -1104,8 +1104,10 @@ Rules:
 3) Keep keys stable and concise.
 4) Keep language of assumptions/ambiguities consistent with user task.
 5) Every joint/member/component/kinematic pair must have a non-empty label. If the task uses names like A, B, OA, AB, preserve them in labels.
-6) For slider-crank, connect crank and rod with revolute_pair and connect slider with prismatic_pair.
-7) If a support is attached by memberKey, always provide s in [0,1]. For end supports on a beam, use s=0 or s=1. If exact position is unknown, explicitly set s=0.5 instead of omitting it.
+6) For slider-crank, connect crank and rod with revolute_pair and connect the rod end slider joint with prismatic_pair.
+7) For slider-crank, set the prismatic_pair jointKey to the slider joint (usually B), guideHint="horizontal" unless stated otherwise, and assume its guide line passes through the grounded crank pivot (usually O). If an eccentricity e is given, put it into guideOffsetHint on the prismatic_pair/support; positive means above O.
+8) If a support is attached by memberKey, always provide s in [0,1]. For end supports on a beam, use s=0 or s=1. If exact position is unknown, explicitly set s=0.5 instead of omitting it.
+9) For a distributed load over the whole member/full length, use target { "memberKey": "...", "fromS": 0, "toS": 1 }; do not encode it as midpoint s=0.5.
 ${languagePolicy(userMessage)}`;
 
 	const question = `Task:\n${userMessage}`;
@@ -1206,8 +1208,8 @@ intent contract:
   "joints": [{ "key": "...", "role": "start|end|corner|free_end|fixed_end|generic", "label": "..." }],
   "members": [{ "key": "...", "kind": "bar|cable|spring|damper", "startJoint": "...", "endJoint": "...", "relation": "horizontal|vertical|inclined|collinear_with_prev", "lengthHint": 3.5, "angleHintDeg": 30 }],
   "components": [{ "key": "...", "kind": "rigid_disk|cam", "centerJoint": "...", "radiusHint": 1.0, "profileHint": "...", "label": "..." }],
-  "kinematicPairs": [{ "key": "...", "kind": "revolute_pair|prismatic_pair|slot_pair|cam_contact|gear_pair|belt_pair", "jointKey": "...", "memberKeys": ["..."], "componentKeys": ["..."], "guideHint": "horizontal|vertical|member_local", "meshType": "external|internal", "beltKind": "belt|chain", "crossed": false, "followerType": "knife|roller|flat", "label": "..." }],
-  "supports": [{ "key": "...", "kind": "fixed_wall|hinge_fixed|hinge_roller|internal_hinge|slider", "jointKey": "...", "memberKey": "...", "s": 0.5, "sideHint": "left|right|top|bottom", "guideHint": "horizontal|vertical|member_local" }],
+  "kinematicPairs": [{ "key": "...", "kind": "revolute_pair|prismatic_pair|slot_pair|cam_contact|gear_pair|belt_pair", "jointKey": "...", "memberKeys": ["..."], "componentKeys": ["..."], "guideHint": "horizontal|vertical|member_local", "guideOffsetHint": 0.1, "meshType": "external|internal", "beltKind": "belt|chain", "crossed": false, "followerType": "knife|roller|flat", "label": "..." }],
+  "supports": [{ "key": "...", "kind": "fixed_wall|hinge_fixed|hinge_roller|internal_hinge|slider", "jointKey": "...", "memberKey": "...", "s": 0.5, "sideHint": "left|right|top|bottom", "guideHint": "horizontal|vertical|member_local", "guideOffsetHint": 0.1 }],
   "loads": [{ "key": "...", "kind": "force|moment|distributed", "target": {"jointKey":"..."} | {"memberKey":"...","s":0.5} | {"memberKey":"...","fromS":0.2,"toS":0.8}, "directionHint": "up|down|left|right|+x|-x|+y|-y|cw|ccw|member_local_positive|member_local_negative", "magnitudeHint": 10, "distributionKind": "uniform|linear|trapezoid" }],
   "requestedResults": [{ "targetMemberKey": "...", "kind": "N|Q|M|Vy|Vz|T|My|Mz" }],
   "assumptions": [],
@@ -1221,7 +1223,9 @@ Rules:
 5) Spatial frame/mechanism must set modelSpace="spatial"; beam/planar frame/mechanism must set modelSpace="planar".
 6) Every joint/member/component/kinematic pair must include label.
 7) For slider-crank, always use revolute_pair between crank and rod.
-8) If a support is attached by memberKey, always provide s in [0,1]. For end supports on a beam, use s=0 or s=1. If exact position is unknown, explicitly set s=0.5 instead of omitting it.
+8) For slider-crank, set the prismatic_pair jointKey to the slider joint at the rod end (usually B), set guideHint="horizontal" unless stated otherwise, and assume its guide line passes through the grounded crank pivot (usually O). If an eccentricity e is given, put it into guideOffsetHint; positive means above O.
+9) If a support is attached by memberKey, always provide s in [0,1]. For end supports on a beam, use s=0 or s=1. If exact position is unknown, explicitly set s=0.5 instead of omitting it.
+10) For a distributed load over the whole member/full length, use target { "memberKey": "...", "fromS": 0, "toS": 1 }; do not encode it as midpoint s=0.5.
 ${languagePolicy(userMessage)}`;
 
 	if (useFastMode) {
@@ -1453,6 +1457,7 @@ For frame/mechanism problems, set meta.structureKind and coordinateSystem.modelS
 For spatial frame nodes include z coordinates where needed.
 For supports and loads, always bind to existing member nodes via nodeRefs (never default to origin).
 For mechanism kinematic pairs, use canonical objects: revolute_pair, prismatic_pair, slot_pair, cam_contact, gear_pair, belt_pair.
+For slider-crank schemes, put the prismatic_pair on the slider joint at the rod end; if eccentricity e is given, set prismatic_pair.geometry.guideOffset (or guideOffsetHint/eccentricity) to e and keep helper guide points hidden/unlabeled if you create them.
 For force/distributed/velocity/acceleration ALWAYS provide explicit direction:
 - prefer geometry.directionAngle in degrees
 - or geometry.direction vector {x,y}
@@ -1461,7 +1466,7 @@ Never omit load direction fields.
 For support/load/moment placement on members, prefer geometry.attach: {memberId, s, side, offset}.
 For fixed_wall use geometry.wallSide = left|right|top|bottom when side semantics matter.
 If exact dimensions are unknown, keep consistent relative lengths and positions.
-For distributed, include geometry.kind and geometry.intensity.
+For distributed, include geometry.kind and geometry.intensity. If it spans a whole member, bind it to that member interval rather than hand-positioning arrow coordinates.
 For moment/angular types, geometry.direction MUST be exactly "cw" or "ccw".
 For epure results, include geometry.fillHatch=true and geometry.showSigns=true.
 Beam epures: include geometry.kind and geometry.axisOrigin when the reference end is known.
@@ -1525,7 +1530,7 @@ Fill canonical geometry per type:
 - cam_contact/gear_pair/belt_pair: nodeRefs [firstRefNode, secondRefNode]
 - force/velocity/acceleration: nodeRefs [node] + direction (+ attach for member-relative placement)
 - moment: nodeRefs [node] + direction cw|ccw (+ optional magnitude or label)
-- distributed: nodeRefs [start,end] + kind + intensity + direction
+- distributed: nodeRefs [start,end] + kind + intensity + direction; for whole-member loads preserve member interval metadata fromS=0,toS=1 when available
 - trajectory: geometry.points array
 - epure (if present): put into results with baseLine + values + fillHatch + showSigns
 - beam epure: include kind + axisOrigin (+ compressedFiberSide for kind "M")
@@ -1596,7 +1601,7 @@ Use geometry.constraints (collinearWith, parallelTo, perpendicularTo, mirrorOf) 
 Use geometry.attach for member-relative placement when loads/supports should be attached by parameter s.
 For fixed_wall side semantics use geometry.wallSide=left|right|top|bottom.
 For supports/loads always attach to member nodes (nodeRefs) instead of origin defaults.
-For distributed include kind + intensity + direction.
+For distributed include kind + intensity + direction. Whole-length distributed loads should be represented as member interval fromS=0,toS=1, not as a midpoint load.
 For moment/angular include direction "cw" | "ccw".
 Preserve existing coordinates unless revision notes explicitly request moving elements.
 Do NOT collapse supports/loads/moments to (0,0) unless the user explicitly requests coincidence at the origin.
