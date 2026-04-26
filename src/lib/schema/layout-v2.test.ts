@@ -201,10 +201,122 @@ describe('layout-v2', () => {
 		if (!a || !b) return;
 
 		const displaySpan = Math.hypot(b.x - a.x, b.y - a.y);
-		expect(displaySpan).toBeCloseTo(6, 6);
+		expect(displaySpan).toBeGreaterThan(5);
 
 		const bar = stabilized.schema.objects.find((object) => object.id === 'bar_1');
 		expect(bar).toBeTruthy();
 		expect(bar?.geometry.length).toBe(5);
+	});
+
+	it('uses readable display scale for tiny physical member lengths', () => {
+		const schema: SchemaDataV2 = {
+			version: '2.0',
+			coordinateSystem: {
+				originPolicy: 'fixed_support'
+			},
+			nodes: [
+				{ id: 'A', x: 0, y: 0 },
+				{ id: 'B', x: 0.35, y: 0 },
+				{ id: 'F', x: 0, y: 0 }
+			],
+			objects: [
+				{
+					id: 'bar_1',
+					type: 'bar',
+					nodeRefs: ['A', 'B'],
+					geometry: { length: 0.35, angleDeg: 0 }
+				},
+				{
+					id: 'fixed_1',
+					type: 'fixed_wall',
+					nodeRefs: ['A'],
+					geometry: { wallSide: 'left' }
+				},
+				{
+					id: 'force_1',
+					type: 'force',
+					nodeRefs: ['F'],
+					geometry: {
+						directionAngle: -90,
+						attach: { memberId: 'bar_1', s: 0.5, side: '+n', offset: 0.35 }
+					}
+				}
+			],
+			results: [],
+			annotations: [],
+			assumptions: [],
+			ambiguities: []
+		};
+
+		const stabilized = stabilizeSchemaLayoutV2(schema);
+		const nodeById = new Map(stabilized.schema.nodes.map((node) => [node.id, node]));
+		const a = nodeById.get('A');
+		const b = nodeById.get('B');
+		const f = nodeById.get('F');
+		expect(a && b && f).toBeTruthy();
+		if (!a || !b || !f) return;
+
+		const displaySpan = Math.hypot(b.x - a.x, b.y - a.y);
+		expect(displaySpan).toBeGreaterThan(5);
+
+		const bar = stabilized.schema.objects.find((object) => object.id === 'bar_1');
+		expect(bar?.geometry.length).toBe(0.35);
+
+		const abx = b.x - a.x;
+		const aby = b.y - a.y;
+		const afx = f.x - a.x;
+		const afy = f.y - a.y;
+		const s = (afx * abx + afy * aby) / (abx * abx + aby * aby);
+		expect(s).toBeGreaterThan(0.4);
+		expect(s).toBeLessThan(0.6);
+		expect(Math.abs(abx * afy - aby * afx)).toBeGreaterThan(0.1);
+	});
+
+	it('keeps mixed physical lengths readable without collapsing short members', () => {
+		const schema: SchemaDataV2 = {
+			version: '2.0',
+			nodes: [
+				{ id: 'A', x: 0, y: 0 },
+				{ id: 'B', x: 0.35, y: 0 },
+				{ id: 'C', x: 4.35, y: 0 }
+			],
+			objects: [
+				{
+					id: 'bar_short',
+					type: 'bar',
+					nodeRefs: ['A', 'B'],
+					geometry: { length: 0.35, angleDeg: 0 }
+				},
+				{
+					id: 'bar_long',
+					type: 'bar',
+					nodeRefs: ['B', 'C'],
+					geometry: { length: 4, angleDeg: 0 }
+				}
+			],
+			results: [],
+			annotations: [],
+			assumptions: [],
+			ambiguities: []
+		};
+
+		const stabilized = stabilizeSchemaLayoutV2(schema);
+		const nodeById = new Map(stabilized.schema.nodes.map((node) => [node.id, node]));
+		const a = nodeById.get('A');
+		const b = nodeById.get('B');
+		const c = nodeById.get('C');
+		expect(a && b && c).toBeTruthy();
+		if (!a || !b || !c) return;
+
+		const shortSpan = Math.hypot(b.x - a.x, b.y - a.y);
+		const longSpan = Math.hypot(c.x - b.x, c.y - b.y);
+		expect(shortSpan).toBeGreaterThan(1.2);
+		expect(longSpan).toBeGreaterThan(shortSpan);
+		expect(longSpan / shortSpan).toBeLessThan(4);
+
+		const short = stabilized.schema.objects.find((object) => object.id === 'bar_short');
+		const long = stabilized.schema.objects.find((object) => object.id === 'bar_long');
+		expect(short?.geometry.length).toBe(0.35);
+		expect(long?.geometry.length).toBe(4);
 	});
 });

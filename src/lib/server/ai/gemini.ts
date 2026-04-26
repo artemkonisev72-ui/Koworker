@@ -941,6 +941,7 @@ Hard rules:
 8) For moment/angular objects, direction must be "cw" or "ccw".
 9) Prefer ids prefixed with "result_" to avoid collisions.
 10) Keep labels concise and in the task language.
+11) Physical dimensions belong in geometry.length/labels/dimensions, not in raw node-coordinate scale.
 
 Context mode: ${mode}
 ${languagePolicy(params.taskContext)}`;
@@ -1440,6 +1441,7 @@ Every object MUST contain non-empty id, type, geometry object.
 Use nodeRefs to reference node ids from nodes array.
 Topology-first policy: your primary responsibility is structure and constraints, not final absolute coordinates.
 Coordinates are only a coarse scaffold and may be overridden by deterministic backend layout.
+Physical dimensions belong in geometry.length/labels/dimensions, not in raw node-coordinate scale.
 For linear members (bar/cable/spring/damper/axis/ground), include geometry.length and geometry.angleDeg or geometry.constraints.
 geometry.constraints object may include: collinearWith[], parallelTo[], perpendicularTo[], mirrorOf.
 For frame/mechanism problems, set meta.structureKind and coordinateSystem.modelSpace explicitly:
@@ -1510,6 +1512,7 @@ Stage B objective: refine geometry/style/details using prepared skeleton.
 Keep existing node ids and object ids stable where possible.
 Do not remove valid supports/loads/moments detected in task.
 Treat node coordinates as a coarse scaffold, not as decorative absolute values.
+Physical dimensions belong in geometry.length/labels/dimensions, not in raw node-coordinate scale.
 Prefer structural constraints in geometry/meta (length, angleDeg, constraints, attach) over arbitrary coordinates.
 Fill canonical geometry per type:
 - bar/cable/spring/damper/axis/dimension/ground: use nodeRefs [start,end]
@@ -1586,6 +1589,7 @@ For moment epure kind "M", ALWAYS include geometry.compressedFiberSide as "+n" o
 For a simple cantilever beam with one fixed_wall at one bar end, keep epure geometry.axisOrigin="free_end" and orient the epure from the free end toward the fixed support.
 For force/distributed/velocity/acceleration include explicit direction (directionAngle or direction vector or cardinal).
 Keep physically meaningful scale/proportions; avoid coordinate collapse and avoid decorative coordinates.
+Physical dimensions belong in geometry.length/labels/dimensions, not in raw node-coordinate scale.
 Prefer coordinates in range [-10, 10] and preserve consistent relative lengths.
 For linear members include geometry.length and geometry.angleDeg or geometry.constraints.
 Use geometry.constraints (collinearWith, parallelTo, perpendicularTo, mirrorOf) when relation is known.

@@ -9,6 +9,10 @@ import type { SchemaData, SchemaPoint } from '$lib/schema/schema-data.js';
 import type { NodeV2, ObjectV2, ResultV2, SchemaDataV2 } from '$lib/schema/schema-v2.js';
 import { normalizeSchemaDataV2 } from '$lib/schema/normalize-v2.js';
 import { adaptSchemaV1ToV2 } from '$lib/schema/adapters-v2.js';
+import {
+	chooseLabelPlacement,
+	type LabelBox
+} from '$lib/schema/label-placement.js';
 
 type RenderMode = 'chat' | 'print';
 
@@ -37,6 +41,8 @@ let initRequested = false;
 const boardId = `scheme-${Math.random().toString(36).slice(2, 10)}`;
 let visibilityObserver: IntersectionObserver | null = null;
 let resizeObserver: ResizeObserver | null = null;
+let labelBoxes: LabelBox[] = [];
+let labelBoardBox: LabelBox | undefined;
 const PRINT_BOARD_HEIGHT_PX = 260;
 let hasReportedRenderState = false;
 let isPrintMode = $derived(renderMode === 'print');
@@ -515,14 +521,52 @@ function computeBoardSize(): { width: number; height: number } | null {
 		);
 	}
 
+	function isSchemaPoint(value: unknown): value is SchemaPoint {
+		return (
+			typeof value === 'object' &&
+			value !== null &&
+			!Array.isArray(value) &&
+			typeof (value as Record<string, unknown>).x === 'number' &&
+			Number.isFinite((value as Record<string, unknown>).x) &&
+			typeof (value as Record<string, unknown>).y === 'number' &&
+			Number.isFinite((value as Record<string, unknown>).y)
+		);
+	}
+
 	function drawText(point: SchemaPoint, text: string, options: Record<string, unknown> = {}): void {
-		if (!text.trim()) return;
-		board.create('text', [point.x, point.y, text], {
+		const normalizedText = text.trim();
+		if (!normalizedText) return;
+		const textOptions = { ...options };
+		const avoidOverlap = textOptions.avoidOverlap !== false;
+		const preferredOffset = isSchemaPoint(textOptions.preferredOffset)
+			? textOptions.preferredOffset
+			: undefined;
+		delete textOptions.avoidOverlap;
+		delete textOptions.preferredOffset;
+
+		const fontSize = isFiniteNumber(textOptions.fontSize) ? textOptions.fontSize : 12;
+		const anchorX = typeof textOptions.anchorX === 'string' ? textOptions.anchorX : 'left';
+		let drawPoint = point;
+		if (avoidOverlap) {
+			const placement = chooseLabelPlacement({
+				anchor: point,
+				text: normalizedText,
+				occupiedBoxes: labelBoxes,
+				boardBox: labelBoardBox,
+				fontSize,
+				anchorX,
+				preferredOffset
+			});
+			drawPoint = placement.point;
+			labelBoxes.push(placement.box);
+		}
+
+		board.create('text', [drawPoint.x, drawPoint.y, normalizedText], {
 			fixed: true,
 			highlight: false,
 			strokeColor: COLOR.text,
 			fontSize: 12,
-			...options
+			...textOptions
 		});
 	}
 
@@ -1116,7 +1160,7 @@ function computeBoardSize(): { width: number; height: number } | null {
 			drawText(
 				{ x: (pair[0].x + pair[1].x) / 2, y: (pair[0].y + pair[1].y) / 2 + 0.12 },
 				`L=${hintedLength}`,
-				{ strokeColor: COLOR.muted, fontSize: 10, anchorX: 'middle' }
+				{ strokeColor: COLOR.muted, fontSize: 10, anchorX: 'middle', avoidOverlap: false }
 			);
 		}
 	}
@@ -1209,7 +1253,8 @@ function computeBoardSize(): { width: number; height: number } | null {
 					fontSize: 26,
 					fontWeight: 'bold',
 					anchorX: 'middle',
-					anchorY: 'middle'
+					anchorY: 'middle',
+					avoidOverlap: false
 				});
 			}
 		}
@@ -1398,6 +1443,13 @@ async function initializeBoard() {
 		const yMax = ys.length > 0 ? Math.max(...ys) : 2;
 		const xPad = Math.max(0.8, (xMax - xMin) * 0.24);
 		const yPad = Math.max(0.8, (yMax - yMin) * 0.24);
+		labelBoxes = [];
+		labelBoardBox = {
+			minX: xMin - xPad,
+			maxX: xMax + xPad,
+			minY: yMin - yPad,
+			maxY: yMax + yPad
+		};
 
 		board = JXG.JSXGraph.initBoard(boardId, {
 			boundingbox: [xMin - xPad, yMax + yPad, xMax + xPad, yMin - yPad],

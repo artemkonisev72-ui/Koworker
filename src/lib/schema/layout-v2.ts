@@ -79,6 +79,9 @@ const LAYOUT_EDGE_TYPES = new Set([
 ]);
 const SUPPORT_TYPES = new Set(['fixed_wall', 'hinge_fixed', 'hinge_roller', 'internal_hinge']);
 const LOAD_TYPES = new Set(['force', 'moment', 'distributed', 'velocity', 'acceleration']);
+const DEFAULT_DISPLAY_EDGE_LENGTH = 2.4;
+const MIN_DISPLAY_EDGE_LENGTH = 1.35;
+const MAX_DISPLAY_EDGE_LENGTH = 4.8;
 const ANGLE_PALETTE: Point[] = [
 	{ x: 1, y: 0 },
 	{ x: 0.9, y: 0.45 },
@@ -286,8 +289,24 @@ function getObjectEdgeLengthHint(object: ObjectV2, nodeMap: Map<string, Point>):
 	return 1;
 }
 
+function medianPositive(values: number[]): number {
+	const sorted = values.filter((value) => Number.isFinite(value) && value > EPS).sort((a, b) => a - b);
+	if (sorted.length === 0) return 1;
+	const mid = Math.floor(sorted.length / 2);
+	if (sorted.length % 2 === 1) return sorted[mid];
+	return (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function displayLengthFromPhysicalHint(length: number, referenceLength: number): number {
+	if (!Number.isFinite(length) || length <= EPS) return DEFAULT_DISPLAY_EDGE_LENGTH;
+	const reference = referenceLength > EPS ? referenceLength : length;
+	const ratio = Math.max(length / reference, EPS);
+	const compressed = Math.sqrt(ratio) * DEFAULT_DISPLAY_EDGE_LENGTH;
+	return Math.max(MIN_DISPLAY_EDGE_LENGTH, Math.min(MAX_DISPLAY_EDGE_LENGTH, compressed));
+}
+
 function extractLayoutEdges(schema: SchemaDataV2, nodeMap: Map<string, Point>): LayoutEdge[] {
-	const edges: LayoutEdge[] = [];
+	const rawEdges: LayoutEdge[] = [];
 	for (const object of schema.objects) {
 		if (!LAYOUT_EDGE_TYPES.has(object.type)) continue;
 		const refs = object.nodeRefs ?? [];
@@ -296,7 +315,7 @@ function extractLayoutEdges(schema: SchemaDataV2, nodeMap: Map<string, Point>): 
 		const b = refs[1];
 		if (!a || !b || a === b) continue;
 		if (!nodeMap.has(a) || !nodeMap.has(b)) continue;
-		edges.push({
+		rawEdges.push({
 			objectId: object.id,
 			type: object.type,
 			a,
@@ -306,7 +325,11 @@ function extractLayoutEdges(schema: SchemaDataV2, nodeMap: Map<string, Point>): 
 			constraints: getObjectConstraintBag(object)
 		});
 	}
-	return edges;
+	const referenceLength = medianPositive(rawEdges.map((edge) => edge.length));
+	return rawEdges.map((edge) => ({
+		...edge,
+		length: displayLengthFromPhysicalHint(edge.length, referenceLength)
+	}));
 }
 
 function nodeRefsBelongToMember(
@@ -902,11 +925,18 @@ function applyOriginPolicy(
 function fitToView(nodePositions: Map<string, Point>, targetHalfSize: number): boolean {
 	if (nodePositions.size === 0) return false;
 	const before = Array.from(nodePositions.values());
+	const bbox = bboxFromPoints(before);
+	const bboxSpan = Math.max(bbox.width, bbox.height, EPS);
 	const maxAbs = before.reduce((acc, point) => Math.max(acc, Math.abs(point.x), Math.abs(point.y)), 0);
 	const currentSpan = Math.max(maxAbs * 2, EPS);
-	const minSpan = 6;
-	const desiredSpan = Math.max(minSpan, currentSpan);
-	const scale = (targetHalfSize * 2) / desiredSpan;
+	const targetSpan = Math.max(targetHalfSize * 2, EPS);
+	const minReadableSpan = Math.min(targetSpan * 0.45, 5.4);
+	let scale = 1;
+	if (bboxSpan < minReadableSpan) {
+		scale = minReadableSpan / bboxSpan;
+	} else if (currentSpan > targetSpan) {
+		scale = targetSpan / currentSpan;
+	}
 
 	let moved = false;
 	for (const [nodeId, point] of nodePositions.entries()) {
