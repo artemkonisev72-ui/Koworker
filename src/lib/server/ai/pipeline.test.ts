@@ -6,14 +6,16 @@ const {
 	answerGeneralQuestionMock,
 	analyzeImageMock,
 	generatePythonCodeMock,
-	assembleFinalAnswerMock
+	assembleFinalAnswerMock,
+	generateResultSchemaPatchMock
 } = vi.hoisted(() => ({
 	routeQuestionMock: vi.fn(),
 	routeApprovedFollowupMock: vi.fn(),
 	answerGeneralQuestionMock: vi.fn(),
 	analyzeImageMock: vi.fn(),
 	generatePythonCodeMock: vi.fn(),
-	assembleFinalAnswerMock: vi.fn()
+	assembleFinalAnswerMock: vi.fn(),
+	generateResultSchemaPatchMock: vi.fn()
 }));
 
 vi.mock('./gemini.ts', () => ({
@@ -22,7 +24,8 @@ vi.mock('./gemini.ts', () => ({
 	answerGeneralQuestion: answerGeneralQuestionMock,
 	analyzeImage: analyzeImageMock,
 	generatePythonCode: generatePythonCodeMock,
-	assembleFinalAnswer: assembleFinalAnswerMock
+	assembleFinalAnswer: assembleFinalAnswerMock,
+	generateResultSchemaPatch: generateResultSchemaPatchMock
 }));
 
 vi.mock('../sandbox/worker-pool.js', () => ({
@@ -34,7 +37,57 @@ vi.mock('../sandbox/worker-pool.js', () => ({
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore Vitest resolves .js to .ts at runtime; svelte-check may report false positive
-import { runPipeline } from './pipeline.ts';
+import { runPipeline, runPipelineWithApprovedSchema } from './pipeline.ts';
+
+function makeApprovedSchema(): any {
+	return {
+		version: '2.0',
+		nodes: [
+			{ id: 'A', x: 0, y: 0 },
+			{ id: 'B', x: 4, y: 0 }
+		],
+		objects: [
+			{
+				id: 'bar_1',
+				type: 'bar',
+				nodeRefs: ['A', 'B'],
+				geometry: { length: 4, angleDeg: 0 }
+			}
+		],
+		results: [],
+		annotations: [],
+		assumptions: [],
+		ambiguities: []
+	};
+}
+
+function makeSolveStdout() {
+	return JSON.stringify({
+		version: 'solve-artifacts-1.0',
+		exactAnswers: [
+			{
+				id: 'v_B',
+				label: 'Velocity B',
+				valueText: '2',
+				numericValue: 2,
+				unit: 'm/s',
+				targetKind: 'support',
+				targetId: 'B',
+				component: 'v'
+			}
+		],
+		graphData: [
+			{
+				title: 'v(t)',
+				type: 'function',
+				points: [
+					{ x: 0, y: 0 },
+					{ x: 1, y: 2 }
+				]
+			}
+		]
+	});
+}
 
 describe('runPipeline status sink', () => {
 	beforeEach(() => {
@@ -162,5 +215,209 @@ describe('runPipeline status sink', () => {
 		expect(routeApprovedFollowupMock).toHaveBeenCalledTimes(1);
 		expect(routeQuestionMock).toHaveBeenCalledTimes(1);
 		expect(answerGeneralQuestionMock).toHaveBeenCalledTimes(1);
+		expect(generateResultSchemaPatchMock).not.toHaveBeenCalled();
+	});
+
+	it('decorates approved-schema solve with an optional result scheme overlay', async () => {
+		generatePythonCodeMock.mockResolvedValue({
+			code: 'print("ok")',
+			model: 'code-model',
+			tokens: 13
+		});
+		assembleFinalAnswerMock.mockResolvedValue({
+			text: 'solution text',
+			model: 'finalizer-model',
+			tokens: 17
+		});
+		generateResultSchemaPatchMock.mockResolvedValue({
+			output: {
+				schemaPatch: {
+					deleteObjectIds: [],
+					deleteResultIds: [],
+					addNodes: [],
+					addObjects: [
+						{
+							id: 'result_v_B',
+							type: 'velocity',
+							nodeRefs: ['B'],
+							geometry: { direction: { x: 1, y: 0 }, magnitude: 2 },
+							label: 'v_B'
+						}
+					],
+					addResults: []
+				}
+			},
+			model: 'overlay-model',
+			tokens: 5
+		});
+
+		const events: Array<Record<string, unknown>> = [];
+		await runPipelineWithApprovedSchema(
+			{
+				userMessage: 'Find velocity at B',
+				approvedSchema: makeApprovedSchema(),
+				approvedSchemeDescription: 'Approved beam'
+			},
+			[],
+			async (event) => {
+				events.push(event as unknown as Record<string, unknown>);
+			},
+			undefined,
+			null,
+			{
+				sandboxExecutor: async () => ({ stdout: makeSolveStdout() })
+			}
+		);
+
+		expect(assembleFinalAnswerMock).toHaveBeenCalledTimes(1);
+		expect(generateResultSchemaPatchMock).toHaveBeenCalledTimes(1);
+		expect(assembleFinalAnswerMock.mock.invocationCallOrder[0]).toBeLessThan(
+			generateResultSchemaPatchMock.mock.invocationCallOrder[0]
+		);
+		const result = events.find((event) => event.type === 'result');
+		const schemaData = result?.schemaData as { objects?: Array<{ id: string; type: string }> };
+		expect(schemaData.objects?.some((object) => object.id === 'result_v_B' && object.type === 'velocity')).toBe(
+			true
+		);
+		expect((result?.graphData as unknown[]).length).toBe(1);
+		expect((result?.exactAnswers as unknown[]).length).toBe(1);
+		expect(result?.schemaDescription).toBe('Approved beam');
+		expect((result?.usedModels as string[]).some((entry) => entry.includes('SchemeOverlay'))).toBe(true);
+	});
+
+	it('falls back to approved schema when result scheme overlay is invalid', async () => {
+		generatePythonCodeMock.mockResolvedValue({
+			code: 'print("ok")',
+			model: 'code-model',
+			tokens: 13
+		});
+		assembleFinalAnswerMock.mockResolvedValue({
+			text: 'solution text',
+			model: 'finalizer-model',
+			tokens: 17
+		});
+		generateResultSchemaPatchMock.mockResolvedValue({
+			output: {
+				schemaPatch: {
+					deleteObjectIds: [],
+					deleteResultIds: [],
+					addNodes: [],
+					addObjects: [
+						{
+							id: 'result_bar',
+							type: 'bar',
+							nodeRefs: ['A', 'B'],
+							geometry: { length: 4, angleDeg: 0 }
+						}
+					],
+					addResults: []
+				}
+			},
+			model: 'overlay-model',
+			tokens: 5
+		});
+
+		const events: Array<Record<string, unknown>> = [];
+		await runPipelineWithApprovedSchema(
+			{
+				userMessage: 'Find velocity at B',
+				approvedSchema: makeApprovedSchema()
+			},
+			[],
+			async (event) => {
+				events.push(event as unknown as Record<string, unknown>);
+			},
+			undefined,
+			null,
+			{
+				sandboxExecutor: async () => ({ stdout: makeSolveStdout() })
+			}
+		);
+
+		const result = events.find((event) => event.type === 'result');
+		const schemaData = result?.schemaData as { objects?: Array<{ id: string; type: string }> };
+		expect(schemaData.objects).toHaveLength(1);
+		expect(schemaData.objects?.[0]).toMatchObject({ id: 'bar_1', type: 'bar' });
+		expect((result?.graphData as unknown[]).length).toBe(1);
+		expect((result?.exactAnswers as unknown[]).length).toBe(1);
+	});
+
+	it('falls back to approved schema when result scheme overlay is empty', async () => {
+		generatePythonCodeMock.mockResolvedValue({
+			code: 'print("ok")',
+			model: 'code-model',
+			tokens: 13
+		});
+		assembleFinalAnswerMock.mockResolvedValue({
+			text: 'solution text',
+			model: 'finalizer-model',
+			tokens: 17
+		});
+		generateResultSchemaPatchMock.mockResolvedValue({
+			output: {
+				schemaPatch: {
+					deleteObjectIds: [],
+					deleteResultIds: [],
+					addNodes: [],
+					addObjects: [],
+					addResults: []
+				}
+			},
+			model: 'overlay-model',
+			tokens: 5
+		});
+
+		const events: Array<Record<string, unknown>> = [];
+		await runPipelineWithApprovedSchema(
+			{
+				userMessage: 'Find velocity at B',
+				approvedSchema: makeApprovedSchema()
+			},
+			[],
+			async (event) => {
+				events.push(event as unknown as Record<string, unknown>);
+			},
+			undefined,
+			null,
+			{
+				sandboxExecutor: async () => ({ stdout: makeSolveStdout() })
+			}
+		);
+
+		const result = events.find((event) => event.type === 'result');
+		const schemaData = result?.schemaData as { objects?: Array<{ id: string; type: string }> };
+		expect(schemaData.objects).toHaveLength(1);
+		expect(schemaData.objects?.[0]).toMatchObject({ id: 'bar_1', type: 'bar' });
+	});
+
+	it('does not request result scheme overlays for raw-prompt solves', async () => {
+		routeQuestionMock.mockResolvedValue({
+			result: true,
+			model: 'router-model',
+			tokens: 3
+		});
+		generatePythonCodeMock.mockResolvedValue({
+			code: 'print("ok")',
+			model: 'code-model',
+			tokens: 13
+		});
+		assembleFinalAnswerMock.mockResolvedValue({
+			text: 'solution text',
+			model: 'finalizer-model',
+			tokens: 17
+		});
+
+		await runPipeline(
+			'Find velocity at B',
+			[],
+			async () => {},
+			undefined,
+			null,
+			{
+				sandboxExecutor: async () => ({ stdout: makeSolveStdout() })
+			}
+		);
+
+		expect(generateResultSchemaPatchMock).not.toHaveBeenCalled();
 	});
 });

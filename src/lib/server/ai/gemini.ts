@@ -147,6 +147,13 @@ export interface SchemeDescriptionGenerationResult {
 	tokens: number;
 }
 
+export interface ResultSchemaPatchGenerationResult {
+	output: unknown;
+	parseError?: string;
+	model: string;
+	tokens: number;
+}
+
 function buildContext(history: GeminiHistory[], systemPrompt: string, currentQuestion: string): GeminiMessage[] {
 	const messages: GeminiMessage[] = history
 		.filter((entry) => entry.content)
@@ -888,6 +895,105 @@ ${params.graphSummaryJson}
 ${languagePolicy(params.taskContext)}`;
 	const messages = buildContext(history, prompt, `Task: ${params.taskContext}`);
 	return generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, forcedModel);
+}
+
+export async function generateResultSchemaPatch(
+	history: GeminiHistory[],
+	params: {
+		taskContext: string;
+		approvedSchemaJson: string;
+		approvedSchemeDescription?: string;
+		exactAnswersJson: string;
+		graphSummaryJson: string;
+		responseMode?: 'full_solve' | 'compute_followup' | 'explain_followup' | 'reformat_followup';
+		followUpRequest?: string;
+	},
+	forcedModel?: string | null
+): Promise<ResultSchemaPatchGenerationResult> {
+	const mode = params.responseMode ?? 'full_solve';
+	const prompt = `You are a result-scheme overlay planner.
+Return STRICT JSON only. No markdown, prose, schemaData, or graphData.
+
+Output shape:
+{
+  "schemaPatch": {
+    "deleteObjectIds": [],
+    "deleteResultIds": [],
+    "addNodes": [],
+    "addObjects": [],
+    "addResults": []
+  }
+}
+
+Goal:
+- Optionally add result-only visual overlays to the approved schema.
+- If no useful overlay is needed, return the same JSON shape with all arrays empty.
+
+Hard rules:
+1) Do not solve the task; exactAnswers and graph summary are authoritative.
+2) Never alter approved topology. deleteObjectIds and deleteResultIds MUST be empty.
+3) addObjects may contain only result/annotation visuals:
+   force, moment, velocity, acceleration, angular_velocity, angular_acceleration, trajectory, label, dimension, axis.
+4) addResults may contain only: epure, trajectory, label, dimension, axis.
+5) Do not add bars, supports, springs, dampers, mechanisms, original loads, or replacement objects.
+6) Reuse existing node ids where possible. Add nodes only for visual helper points or member-section result locations.
+7) For vector objects, include explicit direction (direction vector or directionAngle), magnitude when known, and a clear label.
+8) For moment/angular objects, direction must be "cw" or "ccw".
+9) Prefer ids prefixed with "result_" to avoid collisions.
+10) Keep labels concise and in the task language.
+
+Context mode: ${mode}
+${languagePolicy(params.taskContext)}`;
+
+	const question = `[TASK]
+${params.taskContext}
+
+[FOLLOWUP_REQUEST]
+${params.followUpRequest ?? ''}
+
+[APPROVED_SCHEME_DESCRIPTION]
+${params.approvedSchemeDescription ?? ''}
+
+[APPROVED_SCHEMA_JSON]
+${params.approvedSchemaJson}
+
+[EXACT_ANSWERS_JSON]
+${params.exactAnswersJson}
+
+[GRAPH_SUMMARY_JSON]
+${params.graphSummaryJson}`;
+
+	const messages = buildContext(history, prompt, question);
+	const generation = await generateWithFallback(
+		FAST_SCHEMA_CHAIN[0],
+		FAST_SCHEMA_CHAIN,
+		messages,
+		forcedModel
+	);
+	const candidate = extractFirstJsonObject(generation.text);
+	if (!candidate) {
+		return {
+			output: null,
+			parseError: 'Result schema patch response did not contain a JSON object',
+			model: generation.model,
+			tokens: generation.tokens
+		};
+	}
+
+	try {
+		return {
+			output: JSON.parse(candidate),
+			model: generation.model,
+			tokens: generation.tokens
+		};
+	} catch {
+		return {
+			output: null,
+			parseError: 'Result schema patch response JSON parsing failed',
+			model: generation.model,
+			tokens: generation.tokens
+		};
+	}
 }
 
 export async function answerGeneralQuestion(

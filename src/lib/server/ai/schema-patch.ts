@@ -1,5 +1,11 @@
 import { validateSchemaAny, type SchemaAny, type SchemaVersionTag } from '$lib/schema/schema-any.js';
-import type { NodeV2, ObjectV2, ResultV2, SchemaDataV2 } from '$lib/schema/schema-v2.js';
+import type {
+	NodeV2,
+	ObjectV2,
+	ResultV2,
+	SchemaDataV2,
+	SchemaObjectTypeV2
+} from '$lib/schema/schema-v2.js';
 
 export interface SchemaPatch {
 	deleteObjectIds: string[];
@@ -21,6 +27,35 @@ export interface SchemaPatchApplyResult {
 	value?: SchemaAny;
 	version?: SchemaVersionTag;
 }
+
+export interface ResultOverlayPatchPreparation {
+	ok: boolean;
+	issues: string[];
+	warnings: string[];
+	patch?: SchemaPatch;
+	isEmpty: boolean;
+}
+
+const RESULT_OVERLAY_OBJECT_TYPES = new Set<SchemaObjectTypeV2>([
+	'force',
+	'moment',
+	'velocity',
+	'acceleration',
+	'angular_velocity',
+	'angular_acceleration',
+	'trajectory',
+	'label',
+	'dimension',
+	'axis'
+]);
+
+const RESULT_OVERLAY_RESULT_TYPES = new Set<ResultV2['type']>([
+	'epure',
+	'trajectory',
+	'label',
+	'dimension',
+	'axis'
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -105,6 +140,58 @@ export function extractSchemaPatchFromOutput(output: unknown): SchemaPatchExtrac
 		hasPatch: true,
 		patch,
 		issues
+	};
+}
+
+export function prepareResultOverlayPatch(patch: SchemaPatch): ResultOverlayPatchPreparation {
+	const issues: string[] = [];
+	const warnings: string[] = [];
+
+	if (patch.deleteObjectIds.length > 0) {
+		warnings.push('schemaPatch.deleteObjectIds ignored for result overlays');
+	}
+	if (patch.deleteResultIds.length > 0) {
+		warnings.push('schemaPatch.deleteResultIds ignored for result overlays');
+	}
+
+	for (const [index, object] of patch.addObjects.entries()) {
+		if (!RESULT_OVERLAY_OBJECT_TYPES.has(object.type)) {
+			issues.push(
+				`schemaPatch.addObjects[${index}] type "${String(object.type)}" is not allowed for result overlays`
+			);
+		}
+	}
+
+	for (const [index, result] of patch.addResults.entries()) {
+		if (!RESULT_OVERLAY_RESULT_TYPES.has(result.type)) {
+			issues.push(
+				`schemaPatch.addResults[${index}] type "${String(result.type)}" is not allowed for result overlays`
+			);
+		}
+	}
+
+	if (issues.length > 0) {
+		return { ok: false, issues, warnings, isEmpty: false };
+	}
+
+	const overlayPatch: SchemaPatch = {
+		deleteObjectIds: [],
+		deleteResultIds: [],
+		addNodes: patch.addNodes,
+		addObjects: patch.addObjects,
+		addResults: patch.addResults
+	};
+	const isEmpty =
+		overlayPatch.addNodes.length === 0 &&
+		overlayPatch.addObjects.length === 0 &&
+		overlayPatch.addResults.length === 0;
+
+	return {
+		ok: true,
+		issues: [],
+		warnings,
+		patch: overlayPatch,
+		isEmpty
 	};
 }
 

@@ -12,11 +12,17 @@ import {
 	routeApprovedFollowup,
 	generatePythonCode,
 	assembleFinalAnswer,
+	generateResultSchemaPatch,
 	answerGeneralQuestion,
 	analyzeImage,
 	type GeminiHistory
 } from './gemini.js';
 import { workerPool, SandboxError } from '../sandbox/worker-pool.js';
+import {
+	applySchemaPatchToApprovedSchema,
+	extractSchemaPatchFromOutput,
+	prepareResultOverlayPatch
+} from './schema-patch.js';
 import { validateSchemaAny, type SchemaAny, type SchemaVersionTag } from '$lib/schema/schema-any.js';
 import {
 	normalizeGraphEpure,
@@ -755,6 +761,85 @@ function buildFinalizerContextPayload(
 	return { solveContextJson, exactAnswersJson, graphSummaryJson };
 }
 
+async function resolveApprovedSchemaWithOptionalResultOverlay(params: {
+	input: CanonicalSolveInput;
+	finalizerPayload: { exactAnswersJson: string; graphSummaryJson: string };
+	finalizerMode: 'full_solve' | 'compute_followup' | 'explain_followup' | 'reformat_followup';
+	forcedModel?: string | null;
+	usedModelsList: string[];
+}): Promise<{
+	schemaData?: SchemaAny;
+	schemaVersion?: SchemaVersionTag;
+	schemaDescription?: string;
+}> {
+	const approvedSchemaResult = resolveApprovedSchemaResult(params.input);
+	if (params.input.source !== 'approved_schema' || !approvedSchemaResult.schemaData) {
+		return approvedSchemaResult;
+	}
+
+	try {
+		const overlay = await generateResultSchemaPatch(
+			[],
+			{
+				taskContext: truncateText(
+					params.input.followUpRequest ?? params.input.originalTask,
+					FINALIZER_TASK_MAX_CHARS
+				),
+				approvedSchemaJson: JSON.stringify(approvedSchemaResult.schemaData),
+				approvedSchemeDescription: params.input.approvedSchemeDescription ?? '',
+				exactAnswersJson: params.finalizerPayload.exactAnswersJson,
+				graphSummaryJson: params.finalizerPayload.graphSummaryJson,
+				responseMode: params.finalizerMode,
+				followUpRequest: params.input.followUpRequest
+			},
+			params.forcedModel
+		);
+		params.usedModelsList.push(
+			`${overlay.model} (SchemeOverlay): ${overlay.tokens.toLocaleString('ru-RU')} tokens`
+		);
+
+		if (overlay.parseError) {
+			console.warn('[Pipeline] Result scheme overlay skipped:', overlay.parseError);
+			return approvedSchemaResult;
+		}
+
+		const extraction = extractSchemaPatchFromOutput(overlay.output);
+		if (!extraction.hasPatch) return approvedSchemaResult;
+		if (extraction.issues.length > 0 || !extraction.patch) {
+			console.warn('[Pipeline] Result scheme overlay extraction failed:', extraction.issues);
+			return approvedSchemaResult;
+		}
+
+		const prepared = prepareResultOverlayPatch(extraction.patch);
+		if (prepared.warnings.length > 0) {
+			console.warn('[Pipeline] Result scheme overlay warnings:', prepared.warnings);
+		}
+		if (!prepared.ok || !prepared.patch) {
+			console.warn('[Pipeline] Result scheme overlay rejected:', prepared.issues);
+			return approvedSchemaResult;
+		}
+		if (prepared.isEmpty) return approvedSchemaResult;
+
+		const applied = applySchemaPatchToApprovedSchema(approvedSchemaResult.schemaData, prepared.patch);
+		if (!applied.ok || !applied.value) {
+			console.warn('[Pipeline] Result scheme overlay validation failed:', applied.issues);
+			return approvedSchemaResult;
+		}
+
+		return {
+			...approvedSchemaResult,
+			schemaData: applied.value,
+			schemaVersion: applied.version ?? approvedSchemaResult.schemaVersion
+		};
+	} catch (err) {
+		console.warn(
+			'[Pipeline] Result scheme overlay failed:',
+			err instanceof Error ? err.message : String(err)
+		);
+		return approvedSchemaResult;
+	}
+}
+
 export async function runPipelineWithApprovedSchema(
 	params: {
 		userMessage: string;
@@ -1097,7 +1182,13 @@ export async function runPipeline(
 		);
 		usedModelsList.push(`${finalizer.model} (Finalizer): ${finalizer.tokens.toLocaleString('ru-RU')} токенов`);
 
-		const approvedSchemaResult = resolveApprovedSchemaResult(canonicalInput);
+		const approvedSchemaResult = await resolveApprovedSchemaWithOptionalResultOverlay({
+			input: canonicalInput,
+			finalizerPayload,
+			finalizerMode,
+			forcedModel,
+			usedModelsList
+		});
 
 		await emitStatus({
 			type: 'result',
