@@ -4,7 +4,7 @@ const {
 	routeQuestionMock,
 	routeApprovedFollowupMock,
 	answerGeneralQuestionMock,
-	analyzeImageMock,
+	analyzeImagesMock,
 	generatePythonCodeMock,
 	assembleFinalAnswerMock,
 	generateResultSchemaPatchMock
@@ -12,7 +12,7 @@ const {
 	routeQuestionMock: vi.fn(),
 	routeApprovedFollowupMock: vi.fn(),
 	answerGeneralQuestionMock: vi.fn(),
-	analyzeImageMock: vi.fn(),
+	analyzeImagesMock: vi.fn(),
 	generatePythonCodeMock: vi.fn(),
 	assembleFinalAnswerMock: vi.fn(),
 	generateResultSchemaPatchMock: vi.fn()
@@ -22,7 +22,7 @@ vi.mock('./gemini.ts', () => ({
 	routeQuestion: routeQuestionMock,
 	routeApprovedFollowup: routeApprovedFollowupMock,
 	answerGeneralQuestion: answerGeneralQuestionMock,
-	analyzeImage: analyzeImageMock,
+	analyzeImages: analyzeImagesMock,
 	generatePythonCode: generatePythonCodeMock,
 	assembleFinalAnswer: assembleFinalAnswerMock,
 	generateResultSchemaPatch: generateResultSchemaPatchMock
@@ -127,6 +127,46 @@ describe('runPipeline status sink', () => {
 		});
 
 		expect(routeQuestionMock).toHaveBeenCalledTimes(1);
+		expect(answerGeneralQuestionMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('uses an internal fallback prompt for image-only raw requests', async () => {
+		analyzeImagesMock.mockResolvedValue({
+			text: 'Image describes a beam task.',
+			model: 'vision-model',
+			tokens: 21
+		});
+		routeQuestionMock.mockResolvedValue({
+			result: false,
+			model: 'router-test',
+			tokens: 12
+		});
+		answerGeneralQuestionMock.mockResolvedValue({
+			text: 'answer',
+			model: 'text-test',
+			tokens: 7
+		});
+
+		await runPipeline(
+			'',
+			[],
+			async () => {},
+			[
+				{ base64: 'FIRST', mimeType: 'image/png' },
+				{ base64: 'SECOND', mimeType: 'image/jpeg' }
+			]
+		);
+
+		expect(analyzeImagesMock).toHaveBeenCalledWith(
+			[],
+			[
+				{ base64: 'FIRST', mimeType: 'image/png' },
+				{ base64: 'SECOND', mimeType: 'image/jpeg' }
+			],
+			undefined
+		);
+		expect(routeQuestionMock.mock.calls[0][1]).toContain('attached images');
+		expect(routeQuestionMock.mock.calls[0][1]).toContain('Image describes a beam task.');
 		expect(answerGeneralQuestionMock).toHaveBeenCalledTimes(1);
 	});
 

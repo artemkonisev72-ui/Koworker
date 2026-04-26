@@ -26,7 +26,7 @@ import {
 	ChatProcessingConflictError,
 	type ChatProcessingHandle
 } from '$lib/server/chat-processing.js';
-import { canConfirmStatus, loadGeminiHistory, logSchemaCheck } from '$lib/server/schema/flow.js';
+import { canConfirmStatus, loadGeminiHistory, logSchemaCheck, parseImageData } from '$lib/server/schema/flow.js';
 import {
 	ClientSandboxResultError,
 	cancelClientSandboxRequest,
@@ -458,7 +458,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 									messageId: assistantMessage.id
 								});
 							},
-							undefined,
+							parseImageData(draft.originalImageData),
 							forcedModel,
 							{ sandboxExecutor: requestSandboxExecution }
 						);

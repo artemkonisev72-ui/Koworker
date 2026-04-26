@@ -13,6 +13,13 @@
 		isTempMessageId,
 		reconcileMessageId
 	} from '$lib/chat/reconcile.js';
+	import {
+		ALLOWED_IMAGE_MIME_TYPES,
+		MAX_CHAT_IMAGES,
+		MAX_IMAGE_BASE64_LENGTH,
+		parseStoredChatImages,
+		type ChatImage
+	} from '$lib/chat/images.js';
 	interface ActiveDraftState {
 		draftId: string;
 		status: string;
@@ -149,7 +156,11 @@
 	let canCancelActiveGeneration = $derived(
 		Boolean(activeChatId && abortableChatIds[activeChatId])
 	);
-	let selectedImage = $state<{ base64: string; mimeType: string } | null>(null);
+	let selectedImages = $state<ChatImage[]>([]);
+
+	function messageImages(message: ChatMessage): ChatImage[] {
+		return parseStoredChatImages(message.imageData);
+	}
 	let schemaCheckEnabledByChatId = $state<Record<string, boolean>>({});
 	let schemaCheckEnabledForNewChat = $state(false);
 	let schemaCheckEnabled = $derived(
@@ -912,21 +923,56 @@
 		messagesEnd?.scrollIntoView({ behavior: 'smooth' });
 	}
 
-	function handleFileChange(e: Event) {
-		const target = e.target as HTMLInputElement;
-		const file = target.files?.[0];
-		if (!file) return;
+	function readImageFile(file: File): Promise<ChatImage | null> {
+		if (!ALLOWED_IMAGE_MIME_TYPES.has(file.type)) {
+			alert('Поддерживаются только PNG, JPEG и WebP изображения.');
+			return Promise.resolve(null);
+		}
 
-		const reader = new FileReader();
-		reader.onload = (event) => {
-			const base64 = (event.target?.result as string).split(',')[1];
-			selectedImage = { base64, mimeType: file.type };
-		};
-		reader.readAsDataURL(file);
+		return new Promise((resolve) => {
+			const reader = new FileReader();
+			reader.onload = (event) => {
+				const base64 = String(event.target?.result ?? '').split(',')[1] ?? '';
+				if (!base64 || base64.length > MAX_IMAGE_BASE64_LENGTH) {
+					alert('Одно из изображений слишком большое.');
+					resolve(null);
+					return;
+				}
+				resolve({ base64, mimeType: file.type });
+			};
+			reader.onerror = () => resolve(null);
+			reader.readAsDataURL(file);
+		});
 	}
 
-	function removeImage() {
-		selectedImage = null;
+	async function addImageFiles(files: Iterable<File>) {
+		const imageFiles = Array.from(files).filter((file) => file.type.startsWith('image/'));
+		if (imageFiles.length === 0) return;
+
+		const availableSlots = MAX_CHAT_IMAGES - selectedImages.length;
+		if (availableSlots <= 0) {
+			alert(`Можно прикрепить не больше ${MAX_CHAT_IMAGES} изображений.`);
+			return;
+		}
+		if (imageFiles.length > availableSlots) {
+			alert(`Будут добавлены только первые ${availableSlots} изображений из ${imageFiles.length}.`);
+		}
+
+		const nextImages = await Promise.all(imageFiles.slice(0, availableSlots).map(readImageFile));
+		const validImages = nextImages.filter((image): image is ChatImage => image !== null);
+		if (validImages.length > 0) {
+			selectedImages = [...selectedImages, ...validImages];
+		}
+		if (fileInputEl) fileInputEl.value = '';
+	}
+
+	function handleFileChange(e: Event) {
+		const target = e.target as HTMLInputElement;
+		void addImageFiles(target.files ?? []);
+	}
+
+	function removeImage(index: number) {
+		selectedImages = selectedImages.filter((_, currentIndex) => currentIndex !== index);
 		if (fileInputEl) fileInputEl.value = '';
 	}
 
@@ -981,7 +1027,7 @@
 	function appendOptimisticExchange(
 		chatId: string,
 		text: string,
-		imageData: { base64: string; mimeType: string } | null
+		images: ChatImage[]
 	) {
 		const userTempId = generateSafeId();
 		const assistantTempId = generateSafeId();
@@ -990,7 +1036,7 @@
 			id: userTempId,
 			role: 'USER',
 			content: text,
-			imageData: imageData ? JSON.stringify(imageData) : null,
+			imageData: images.length > 0 ? JSON.stringify(images) : null,
 			createdAt: new Date().toISOString(),
 			isOptimistic: true
 		};
@@ -1142,7 +1188,7 @@
 	async function startSchemaCheckFlow(
 		chatId: string,
 		text: string,
-		imageData: { base64: string; mimeType: string } | null,
+		images: ChatImage[],
 		optimisticExchange: { userTempId: string; assistantTempId: string }
 	) {
 		const modelPreference = currentModelPreference();
@@ -1150,7 +1196,7 @@
 			chatId,
 			modelPreference,
 			messageLength: text.length,
-			hasImage: Boolean(imageData)
+			imageCount: images.length
 		});
 		setProcessingActive(chatId, {
 			kind: 'schema_start',
@@ -1164,7 +1210,7 @@
 				body: JSON.stringify({
 					chatId,
 					message: text,
-					imageData,
+					images,
 					modelPreference,
 					mode: 'schema_check'
 				})
@@ -1363,7 +1409,7 @@
 
 	async function sendMessage() {
 		const text = inputValue.trim();
-		if (!text) return;
+		if (!text && selectedImages.length === 0) return;
 		if (!canSubmitMessages()) return;
 		if (isLoading || isSchemaActionLoading) return;
 		const modelPreference = currentModelPreference();
@@ -1381,20 +1427,20 @@
 			modelPreference,
 			schemaCheckEnabled,
 			messageLength: text.length,
-			hasImage: Boolean(selectedImage)
+			imageCount: selectedImages.length
 		});
 
-		const imageData = selectedImage;
-		selectedImage = null;
+		const images = selectedImages;
+		selectedImages = [];
 		if (fileInputEl) fileInputEl.value = '';
 		inputValue = '';
 
-		const optimisticExchange = appendOptimisticExchange(originChatId, text, imageData);
+		const optimisticExchange = appendOptimisticExchange(originChatId, text, images);
 		await scrollToBottom();
 
 		if (schemaCheckEnabled) {
 			try {
-				await startSchemaCheckFlow(originChatId, text, imageData, optimisticExchange);
+				await startSchemaCheckFlow(originChatId, text, images, optimisticExchange);
 			} catch (err) {
 				console.error('Schema check start failed:', err);
 				alert(err instanceof Error ? err.message : String(err));
@@ -1433,7 +1479,7 @@
 				body: JSON.stringify({
 					chatId: originChatId,
 					message: text,
-					imageData,
+					images,
 					modelPreference
 				}),
 				signal: abortController.signal
@@ -1631,19 +1677,15 @@
 	function handlePaste(e: ClipboardEvent) {
 		const items = e.clipboardData?.items;
 		if (!items) return;
-		for (const item of items) {
-			if (item.type.startsWith('image/')) {
-				const file = item.getAsFile();
-				if (!file) continue;
-				const reader = new FileReader();
-				reader.onload = (event) => {
-					const base64 = (event.target?.result as string).split(',')[1];
-					selectedImage = { base64, mimeType: file.type };
-				};
-				reader.readAsDataURL(file);
-				e.preventDefault();
-				break;
-			}
+		const imageFiles: File[] = [];
+		for (const item of Array.from(items)) {
+			if (!item.type.startsWith('image/')) continue;
+			const file = item.getAsFile();
+			if (file) imageFiles.push(file);
+		}
+		if (imageFiles.length > 0) {
+			e.preventDefault();
+			void addImageFiles(imageFiles);
 		}
 	}
 </script>
@@ -1982,19 +2024,29 @@
 					<input
 						type="file"
 						accept="image/*"
+						multiple
 						hidden
 						bind:this={fileInputEl}
 						onchange={handleFileChange}
 					/>
 
 					<div class="input-wrapper">
-						{#if selectedImage}
-							<div class="image-preview">
-								<img
-									src={`data:${selectedImage.mimeType};base64,${selectedImage.base64}`}
-									alt="Preview"
-								/>
-								<button class="remove-img-btn" onclick={removeImage}>×</button>
+						{#if selectedImages.length > 0}
+							<div class="image-preview-list">
+								{#each selectedImages as image, index}
+									<div class="image-preview">
+										<img
+											src={`data:${image.mimeType};base64,${image.base64}`}
+											alt={`Preview ${index + 1}`}
+										/>
+										<button
+											type="button"
+											class="remove-img-btn"
+											onclick={() => removeImage(index)}
+											aria-label="Убрать изображение"
+										>×</button>
+									</div>
+								{/each}
 							</div>
 						{/if}
 						<textarea
@@ -2019,7 +2071,7 @@
 						<button
 							class="send-btn"
 							onclick={sendMessage}
-							disabled={!inputValue.trim() ||
+							disabled={(!inputValue.trim() && selectedImages.length === 0) ||
 								hasAnyProcessing ||
 								(!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
 							title="Отправить"
@@ -2330,15 +2382,21 @@
 										<div class="status-text">{statusMessage}</div>
 									{/if}
 								{:else if msg.role === 'USER'}
-									{#if msg.imageData}
-										{@const img = JSON.parse(msg.imageData)}
-										<img
-											src={`data:${img.mimeType};base64,${img.base64}`}
-											alt="Uploaded task"
-											class="user-uploaded-img"
-										/>
+									{@const images = messageImages(msg)}
+									{#if images.length > 0}
+										<div class="user-uploaded-images">
+											{#each images as img, index}
+												<img
+													src={`data:${img.mimeType};base64,${img.base64}`}
+													alt={`Uploaded task ${index + 1}`}
+													class="user-uploaded-img"
+												/>
+											{/each}
+										</div>
 									{/if}
-									<p class="user-text">{msg.content}</p>
+									{#if msg.content.trim()}
+										<p class="user-text">{msg.content}</p>
+									{/if}
 								{:else}
 									<MessageRenderer message={msg} />
 									{#if msg.isStreaming && statusMessage}
@@ -2396,8 +2454,7 @@
 		gap: 0;
 		height: 100dvh;
 		min-height: 100svh;
-		padding: max(0px, env(safe-area-inset-top)) max(0px, env(safe-area-inset-right))
-			max(0px, env(safe-area-inset-bottom)) max(0px, env(safe-area-inset-left));
+		padding: 0;
 		overflow: hidden;
 		background: var(--bg-base);
 		position: relative;
@@ -2526,6 +2583,9 @@
 		justify-content: center;
 		width: 2.1rem;
 		height: 2.1rem;
+		min-width: 2.1rem;
+		min-height: 2.1rem;
+		flex: 0 0 2.1rem;
 		border: 1px solid transparent;
 		background: transparent;
 		color: var(--text-secondary);
@@ -2902,9 +2962,13 @@
 		padding: calc(0.48rem + env(safe-area-inset-top)) calc(1.18rem + env(safe-area-inset-right))
 			0.46rem calc(1.18rem + env(safe-area-inset-left));
 		min-height: calc(var(--header-height) + env(safe-area-inset-top));
+		box-sizing: border-box;
 		border-bottom: 1px solid var(--border-subtle);
 		background: color-mix(in srgb, var(--bg-card) 90%, var(--bg-surface));
 		flex-shrink: 0;
+		position: sticky;
+		top: 0;
+		z-index: 12;
 	}
 
 	.header-title {
@@ -3584,15 +3648,21 @@
 		min-width: 0;
 	}
 
-	.image-preview {
-		position: relative;
-		width: fit-content;
+	.image-preview-list {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
 		padding-top: 0.45rem;
 	}
 
+	.image-preview {
+		position: relative;
+		width: fit-content;
+	}
+
 	.image-preview img {
-		max-width: 124px;
-		max-height: 124px;
+		width: 94px;
+		height: 94px;
 		border-radius: var(--radius-md);
 		border: 1px solid var(--border-subtle);
 		object-fit: cover;
@@ -3617,11 +3687,17 @@
 		box-shadow: var(--shadow-sm);
 	}
 
+	.user-uploaded-images {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+		gap: 0.5rem;
+		margin-bottom: 0.55rem;
+	}
+
 	.user-uploaded-img {
 		max-width: 100%;
 		max-height: 300px;
 		border-radius: var(--radius-md);
-		margin-bottom: 0.55rem;
 		display: block;
 		cursor: zoom-in;
 		border: 1px solid var(--border-subtle);
@@ -3833,8 +3909,7 @@
 
 	@media (max-width: 900px) {
 		.app-shell {
-			padding: max(0px, env(safe-area-inset-top)) max(0px, env(safe-area-inset-right))
-				max(0px, env(safe-area-inset-bottom)) max(0px, env(safe-area-inset-left));
+			padding: 0;
 			gap: 0;
 		}
 
@@ -3853,8 +3928,7 @@
 
 	@media (max-width: 768px) {
 		.app-shell {
-			padding: max(0px, env(safe-area-inset-top)) max(0px, env(safe-area-inset-right))
-				max(0px, env(safe-area-inset-bottom)) max(0px, env(safe-area-inset-left));
+			padding: 0;
 			gap: 0;
 		}
 
@@ -3870,9 +3944,9 @@
 		}
 
 		.chat-header {
-			padding: max(0px, env(safe-area-inset-top)) calc(0.76rem + env(safe-area-inset-right)) 0.38rem
+			padding: calc(0.42rem + env(safe-area-inset-top)) calc(0.76rem + env(safe-area-inset-right)) 0.42rem
 				calc(0.76rem + env(safe-area-inset-left));
-			min-height: calc(50px + env(safe-area-inset-top));
+			min-height: calc(52px + env(safe-area-inset-top));
 		}
 
 		.header-title h1 {
@@ -4012,6 +4086,12 @@
 
 		.share-menu {
 			width: min(312px, calc(100vw - 1rem));
+		}
+	}
+
+	@media (display-mode: standalone) and (max-width: 768px) {
+		.chat-header {
+			min-height: calc(54px + env(safe-area-inset-top));
 		}
 	}
 

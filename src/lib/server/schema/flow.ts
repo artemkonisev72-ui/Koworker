@@ -4,9 +4,17 @@ import type { SchemaDataV2 } from '$lib/schema/schema-v2.js';
 import { isSchemaDataV2 } from '$lib/schema/schema-v2.js';
 import { analyzeSchemaLayoutV2 } from '$lib/schema/layout-v2.js';
 import {
+	type ChatImage,
+	hasPromptOrImages,
+	parseStoredChatImages,
+	validateChatImages
+} from '$lib/chat/images.js';
+import {
 	detectPromptLanguage as detectPromptLanguageShared,
 	type PromptLanguage
 } from './language.js';
+
+export { ALLOWED_IMAGE_MIME_TYPES, MAX_IMAGE_BASE64_LENGTH } from '$lib/chat/images.js';
 
 type DraftStatus =
 	| 'DRAFT'
@@ -20,28 +28,20 @@ type DraftStatus =
 	| 'FAILED';
 
 export const MAX_MESSAGE_LENGTH = 8_000;
-export const MAX_IMAGE_BASE64_LENGTH = 2_800_000;
 export const MAX_REVISION_NOTES_LENGTH = 2_000;
-export const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
-export type InputImageData = { base64: string; mimeType: string };
+export type InputImageData = ChatImage;
+export type InputImagesData = ChatImage[];
 export type { PromptLanguage };
 
-export function validateUserPrompt(prompt: string): string | null {
-	if (!prompt.trim()) return 'message is required';
+export function validateUserPrompt(prompt: string, images: InputImagesData = []): string | null {
+	if (!hasPromptOrImages(prompt, images)) return 'message or image is required';
 	if (prompt.length > MAX_MESSAGE_LENGTH) return `message is too large (max ${MAX_MESSAGE_LENGTH} chars)`;
 	return null;
 }
 
-export function validateImageData(imageData?: InputImageData): string | null {
-	if (!imageData) return null;
-	if (!ALLOWED_IMAGE_MIME_TYPES.has(imageData.mimeType)) {
-		return 'Unsupported image mime type';
-	}
-	if (typeof imageData.base64 !== 'string' || imageData.base64.length > MAX_IMAGE_BASE64_LENGTH) {
-		return 'image is too large';
-	}
-	return null;
+export function validateImageData(imageData?: InputImageData | InputImagesData): string | null {
+	return validateChatImages(Array.isArray(imageData) ? imageData : imageData ? [imageData] : []);
 }
 
 export function validateRevisionNotes(notes: string): string | null {
@@ -52,15 +52,8 @@ export function validateRevisionNotes(notes: string): string | null {
 	return null;
 }
 
-export function parseImageData(value: string | null | undefined): InputImageData | undefined {
-	if (!value) return undefined;
-	try {
-		const parsed = JSON.parse(value) as InputImageData;
-		if (!parsed || typeof parsed.base64 !== 'string' || typeof parsed.mimeType !== 'string') return undefined;
-		return parsed;
-	} catch {
-		return undefined;
-	}
+export function parseImageData(value: string | null | undefined): InputImagesData {
+	return parseStoredChatImages(value);
 }
 
 export function detectPromptLanguage(text: string): PromptLanguage {
@@ -77,7 +70,7 @@ export async function loadGeminiHistory(chatId: string, take = 20): Promise<Gemi
 	return rawHistory.map((message) => ({
 		role: message.role as 'USER' | 'ASSISTANT',
 		content: message.content || '',
-		imageData: parseImageData(message.imageData)
+		images: parseImageData(message.imageData)
 	}));
 }
 

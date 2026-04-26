@@ -127,18 +127,23 @@ export async function deleteSession(sessionToken: string): Promise<void> {
 	});
 }
 
-export function setSessionCookie(cookies: Cookies, sessionToken: string): void {
-	cookies.set(SESSION_COOKIE_NAME, sessionToken, {
+export function getSessionCookieOptions() {
+	return {
 		path: '/',
 		httpOnly: true,
-		sameSite: 'strict',
+		sameSite: 'lax' as const,
 		secure: cookieIsSecure(),
 		maxAge: SESSION_COOKIE_MAX_AGE_SECONDS
-	});
+	};
+}
+
+export function setSessionCookie(cookies: Cookies, sessionToken: string): void {
+	cookies.set(SESSION_COOKIE_NAME, sessionToken, getSessionCookieOptions());
 }
 
 export function clearSessionCookie(cookies: Cookies): void {
-	cookies.delete(SESSION_COOKIE_NAME, { path: '/' });
+	const { maxAge: _maxAge, ...deleteOptions } = getSessionCookieOptions();
+	cookies.delete(SESSION_COOKIE_NAME, deleteOptions);
 }
 
 export async function issueEmailVerificationToken(userId: string): Promise<{ token: string; expiresAt: Date }> {

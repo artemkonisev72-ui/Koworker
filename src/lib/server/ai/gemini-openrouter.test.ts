@@ -14,7 +14,7 @@ vi.mock('@google/genai', () => ({
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore Vitest resolves .js to .ts at runtime; svelte-check may report false positive
-import { analyzeImage, routeQuestion } from './gemini.ts';
+import { analyzeImage, analyzeImages, routeQuestion } from './gemini.ts';
 
 describe('openrouter integration in gemini gateway', () => {
 	beforeEach(() => {
@@ -109,6 +109,41 @@ describe('openrouter integration in gemini gateway', () => {
 		expect((imagePart?.image_url as { url?: string } | undefined)?.url).toBe(
 			'data:image/png;base64,AAAABBBBCCCC'
 		);
+	});
+
+	it('encodes multiple image inputs as multiple OpenRouter image_url content parts', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					model: 'google/gemini-3.1-flash-lite-preview',
+					choices: [{ message: { content: 'Extracted text' } }],
+					usage: { total_tokens: 77 }
+				}),
+				{ status: 200, headers: { 'Content-Type': 'application/json' } }
+			)
+		);
+		vi.stubGlobal('fetch', fetchMock);
+
+		await analyzeImages(
+			[],
+			[
+				{ base64: 'FIRST', mimeType: 'image/png' },
+				{ base64: 'SECOND', mimeType: 'image/jpeg' }
+			],
+			'openrouter:google/gemini-3.1-flash-lite-preview'
+		);
+
+		const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(String(init.body)) as {
+			messages: Array<{ role: string; content: unknown }>;
+		};
+		const lastMessage = body.messages[body.messages.length - 1];
+		expect(Array.isArray(lastMessage.content)).toBe(true);
+		const contentParts = lastMessage.content as Array<Record<string, unknown>>;
+		const imageParts = contentParts.filter((part) => part.type === 'image_url');
+		expect(imageParts).toHaveLength(2);
+		expect((imageParts[0].image_url as { url?: string }).url).toBe('data:image/png;base64,FIRST');
+		expect((imageParts[1].image_url as { url?: string }).url).toBe('data:image/jpeg;base64,SECOND');
 	});
 
 	it('uses a direct Google model preference as preferred model, not a single-model dead end', async () => {

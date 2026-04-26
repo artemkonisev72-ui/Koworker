@@ -11,6 +11,7 @@ import { parseSchemeIntentResponse } from '$lib/schema/intent.js';
 import type { SchemeUnderstandingV1 } from '$lib/schema/understanding.js';
 import { parseSchemeUnderstandingResponse } from '$lib/schema/understanding.js';
 import { detectPromptLanguage } from '$lib/server/schema/language.js';
+import type { ChatImage } from '$lib/chat/images.js';
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -94,7 +95,8 @@ const FAST_VISION_CHAIN: GeminiModel[] = [
 export interface GeminiHistory {
 	role: 'USER' | 'ASSISTANT';
 	content: string;
-	imageData?: { base64: string; mimeType: string };
+	imageData?: ChatImage;
+	images?: ChatImage[];
 }
 
 export type ApprovedFollowupIntent =
@@ -154,13 +156,18 @@ export interface ResultSchemaPatchGenerationResult {
 	tokens: number;
 }
 
+function historyImages(entry: GeminiHistory): ChatImage[] {
+	if (Array.isArray(entry.images) && entry.images.length > 0) return entry.images;
+	return entry.imageData ? [entry.imageData] : [];
+}
+
 function buildContext(history: GeminiHistory[], systemPrompt: string, currentQuestion: string): GeminiMessage[] {
 	const messages: GeminiMessage[] = history
-		.filter((entry) => entry.content)
+		.filter((entry) => entry.content || historyImages(entry).length > 0)
 		.map((entry) => {
-			const parts: GeminiMessage['parts'] = [{ text: entry.content }];
-			if (entry.imageData) {
-				parts.push({ inlineData: { mimeType: entry.imageData.mimeType, data: entry.imageData.base64 } });
+			const parts: GeminiMessage['parts'] = entry.content ? [{ text: entry.content }] : [];
+			for (const image of historyImages(entry)) {
+				parts.push({ inlineData: { mimeType: image.mimeType, data: image.base64 } });
 			}
 			return {
 				role: entry.role === 'USER' ? 'user' : 'model',
@@ -609,18 +616,20 @@ function parseUnderstandingResult(
 	};
 }
 
-function attachInlineImage(
+function attachInlineImages(
 	messages: GeminiMessage[],
-	imageData?: { base64: string; mimeType: string }
+	images?: ChatImage[]
 ): GeminiMessage[] {
-	if (!imageData || messages.length === 0) return messages;
+	if (!images || images.length === 0 || messages.length === 0) return messages;
 	const next = messages.map((message) => ({
 		...message,
 		parts: [...message.parts]
 	}));
-	next[next.length - 1].parts.push({
-		inlineData: { mimeType: imageData.mimeType, data: imageData.base64 }
-	});
+	for (const image of images) {
+		next[next.length - 1].parts.push({
+			inlineData: { mimeType: image.mimeType, data: image.base64 }
+		});
+	}
 	return next;
 }
 
@@ -1015,10 +1024,23 @@ export async function analyzeImage(
 	forcedModel?: string | null,
 	options?: { fastMode?: boolean }
 ): Promise<{ text: string; model: string; tokens: number }> {
+	return analyzeImages(history, [{ base64: base64Data, mimeType }], forcedModel, options);
+}
+
+export async function analyzeImages(
+	history: GeminiHistory[],
+	images: ChatImage[],
+	forcedModel?: string | null,
+	options?: { fastMode?: boolean }
+): Promise<{ text: string; model: string; tokens: number }> {
 	const prompt =
-		'Analyze the attached image. Extract the engineering/math task condition and describe the scheme relevant for solving. Return plain text only.';
+		images.length > 1
+			? 'Analyze the attached images as one engineering/math task. Extract the task condition and describe the scheme relevant for solving. Return plain text only.'
+			: 'Analyze the attached image. Extract the engineering/math task condition and describe the scheme relevant for solving. Return plain text only.';
 	const messages = buildContext(history, prompt, '');
-	messages[messages.length - 1].parts.push({ inlineData: { mimeType, data: base64Data } });
+	for (const image of images) {
+		messages[messages.length - 1].parts.push({ inlineData: { mimeType: image.mimeType, data: image.base64 } });
+	}
 	const chain = options?.fastMode ? FAST_VISION_CHAIN : VISION_CHAIN;
 	return generateWithFallback(chain[0], chain, messages, forcedModel);
 }
@@ -1071,12 +1093,14 @@ export async function generateInitialSchemeUnderstanding(
 	history: GeminiHistory[],
 	userMessage: string,
 	params?: {
-		imageData?: { base64: string; mimeType: string };
+		imageData?: ChatImage;
+		images?: ChatImage[];
 		forcedModel?: string | null;
 		fastMode?: boolean;
 	}
 ): Promise<SchemeUnderstandingGenerationResult> {
 	const useFastMode = params?.fastMode === true;
+	const images = params?.images ?? (params?.imageData ? [params.imageData] : []);
 	const basePrompt = `You extract canonical scheme understanding for engineering mechanics.
 Return STRICT JSON with keys: understanding, assumptions, ambiguities.
 Do NOT return schemaData and do NOT solve the task.
@@ -1112,8 +1136,8 @@ ${languagePolicy(userMessage)}`;
 
 	const question = `Task:\n${userMessage}`;
 	const baseMessages = buildContext(history, basePrompt, question);
-	const messages = attachInlineImage(baseMessages, params?.imageData);
-	const chain = params?.imageData
+	const messages = attachInlineImages(baseMessages, images);
+	const chain = images.length > 0
 		? useFastMode
 			? FAST_VISION_CHAIN
 			: VISION_CHAIN
@@ -1172,7 +1196,8 @@ export async function generateInitialIntent(
 	history: GeminiHistory[],
 	userMessage: string,
 	params?: {
-		imageData?: { base64: string; mimeType: string };
+		imageData?: ChatImage;
+		images?: ChatImage[];
 		forcedModel?: string | null;
 		fastMode?: boolean;
 	}
@@ -1180,13 +1205,13 @@ export async function generateInitialIntent(
 	let contextMessage = userMessage;
 	const usedModels: string[] = [];
 	const useFastMode = params?.fastMode === true;
+	const images = params?.images ?? (params?.imageData ? [params.imageData] : []);
 
-	if (params?.imageData) {
-		const vision = await analyzeImage(
+	if (images.length > 0) {
+		const vision = await analyzeImages(
 			history,
-			params.imageData.base64,
-			params.imageData.mimeType,
-			params.forcedModel,
+			images,
+			params?.forcedModel,
 			{ fastMode: useFastMode }
 		);
 		usedModels.push(formatTokenAttribution(vision.model, 'Vision', vision.tokens));
@@ -1407,7 +1432,8 @@ export async function generateInitialSchema(
 	history: GeminiHistory[],
 	userMessage: string,
 	params?: {
-		imageData?: { base64: string; mimeType: string };
+		imageData?: ChatImage;
+		images?: ChatImage[];
 		forcedModel?: string | null;
 		fastMode?: boolean;
 	}
@@ -1415,9 +1441,10 @@ export async function generateInitialSchema(
 	let contextMessage = userMessage;
 	const usedModels: string[] = [];
 	const useFastMode = params?.fastMode === true;
+	const images = params?.images ?? (params?.imageData ? [params.imageData] : []);
 
-	if (params?.imageData) {
-		const vision = await analyzeImage(history, params.imageData.base64, params.imageData.mimeType, params.forcedModel, {
+	if (images.length > 0) {
+		const vision = await analyzeImages(history, images, params?.forcedModel, {
 			fastMode: useFastMode
 		});
 		usedModels.push(formatTokenAttribution(vision.model, 'Vision', vision.tokens));

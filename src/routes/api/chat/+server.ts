@@ -38,10 +38,17 @@ import { executeFallbackSandbox } from '$lib/server/sandbox/fallback-executor.js
 import { SandboxError } from '$lib/server/sandbox/worker-pool.js';
 import { prisma } from '$lib/server/db.js';
 import { json, error } from '@sveltejs/kit';
+import {
+	hasPromptOrImages,
+	normalizeRequestImages,
+	parseStoredChatImages,
+	serializeChatImages,
+	titleFromPromptOrImages,
+	validateChatImages,
+	type ChatImage
+} from '$lib/chat/images.js';
 
 const MAX_MESSAGE_LENGTH = 8_000;
-const MAX_IMAGE_BASE64_LENGTH = 2_800_000; // ~2 MB binary payload in base64
-const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const RATE_WINDOW_MS = 60_000;
 const MAX_REQUESTS_PER_WINDOW = 20;
 const CLIENT_SANDBOX_TIMEOUT_MS = 20_000;
@@ -93,7 +100,8 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	let body: {
 		chatId?: string;
 		message?: string;
-		imageData?: { base64: string; mimeType: string };
+		imageData?: ChatImage;
+		images?: ChatImage[];
 		modelPreference?: string;
 	};
 
@@ -104,34 +112,32 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			body.chatId,
 			'| message:',
 			body.message?.slice(0, 60),
-			'| image:',
-			!!body.imageData
+			'| images:',
+			normalizeRequestImages(body).length
 		);
 	} catch {
 		console.error('[SSE] Failed to parse JSON body');
 		return error(400, 'Invalid JSON body');
 	}
 
-	const { chatId, message, imageData } = body;
+	const { chatId } = body;
+	const message = body.message ?? '';
+	const images = normalizeRequestImages(body);
 	if (body.modelPreference !== undefined && !isModelPreference(body.modelPreference)) {
 		return error(400, `Unsupported modelPreference: ${String(body.modelPreference)}`);
 	}
 
-	if (!chatId || !message?.trim()) {
-		console.error('[SSE] Missing chatId or message');
-		return error(400, 'chatId and message are required');
+	if (!chatId || !hasPromptOrImages(message, images)) {
+		console.error('[SSE] Missing chatId or message/image');
+		return error(400, 'chatId and message or image are required');
 	}
 	if (message.length > MAX_MESSAGE_LENGTH) {
 		return error(413, `message is too large (max ${MAX_MESSAGE_LENGTH} chars)`);
 	}
 
-	if (imageData) {
-		if (!ALLOWED_IMAGE_MIME_TYPES.has(imageData.mimeType)) {
-			return error(400, 'Unsupported image mime type');
-		}
-		if (typeof imageData.base64 !== 'string' || imageData.base64.length > MAX_IMAGE_BASE64_LENGTH) {
-			return error(413, 'image is too large');
-		}
+	const imageError = validateChatImages(images);
+	if (imageError) {
+		return error(imageError.includes('too large') ? 413 : 400, imageError);
 	}
 
 	// Проверяем существование чата и получаем предпочтения модели
@@ -262,7 +268,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const history = rawHistory.map((m) => ({
 		role: m.role as 'USER' | 'ASSISTANT',
 		content: m.content || '',
-		imageData: m.imageData ? JSON.parse(m.imageData) : undefined
+		images: parseStoredChatImages(m.imageData)
 	}));
 
 	const now = Date.now();
@@ -304,7 +310,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				chatId,
 				role: 'USER',
 				content: message,
-				imageData: imageData ? JSON.stringify(imageData) : null
+				imageData: serializeChatImages(images)
 			}
 		});
 		persistedUserMessageId = userMessage.id;
@@ -514,7 +520,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 							// Обновляем заголовок чата если это первое сообщение
 						const msgCount = await prisma.message.count({ where: { chatId } });
 						if (msgCount <= 2) {
-							const title = message.slice(0, 60) + (message.length > 60 ? '...' : '');
+							const title = titleFromPromptOrImages(message, images);
 							await prisma.chat.update({ where: { id: chatId }, data: { title } });
 						}
 
@@ -527,7 +533,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 						send(event);
 					}
 				},
-				imageData,
+				images,
 				forcedModel,
 				{
 					approvedFollowupContext,

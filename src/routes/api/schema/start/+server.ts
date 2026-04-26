@@ -31,11 +31,18 @@ import {
 	validateUserPrompt,
 	type InputImageData
 } from '$lib/server/schema/flow.js';
+import {
+	normalizeRequestImages,
+	serializeChatImages,
+	titleFromPromptOrImages,
+	type ChatImage
+} from '$lib/chat/images.js';
 
 interface StartSchemaBody {
 	chatId?: string;
 	message?: string;
 	imageData?: InputImageData;
+	images?: ChatImage[];
 	mode?: string;
 	modelPreference?: string;
 }
@@ -55,13 +62,13 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 	const chatId = body.chatId;
 	const message = body.message ?? '';
-	const imageData = body.imageData;
+	const images = normalizeRequestImages(body);
 	logSchemaCheck('start.request', {
 		userId: locals.user.id,
 		chatId,
 		mode: body.mode ?? 'schema_check',
 		messageLength: message.length,
-		hasImage: Boolean(imageData)
+		imageCount: images.length
 	});
 
 	if (!chatId) return error(400, 'chatId is required');
@@ -70,13 +77,13 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		return error(400, `Unsupported modelPreference: ${String(body.modelPreference)}`);
 	}
 
-	const promptError = validateUserPrompt(message);
+	const promptError = validateUserPrompt(message, images);
 	if (promptError) {
 		logSchemaCheck('start.validation_error', { userId: locals.user.id, chatId, reason: promptError });
 		return error(400, promptError);
 	}
 
-	const imageError = validateImageData(imageData);
+	const imageError = validateImageData(images);
 	if (imageError) {
 		logSchemaCheck('start.validation_error', { userId: locals.user.id, chatId, reason: imageError });
 		return error(400, imageError);
@@ -132,7 +139,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				chatId,
 				role: 'USER',
 				content: message,
-				imageData: imageData ? JSON.stringify(imageData) : null
+				imageData: serializeChatImages(images)
 			}
 		});
 
@@ -144,7 +151,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 				status: 'DRAFT',
 				schemaVersion: '2.0',
 				originalPrompt: message,
-				originalImageData: imageData ? JSON.stringify(imageData) : null
+				originalImageData: serializeChatImages(images)
 			}
 		});
 		logSchemaCheck('start.draft_created', {
@@ -155,7 +162,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		});
 
 		const generatedUnderstanding = await generateInitialSchemeUnderstanding([], message, {
-			imageData,
+			images,
 			forcedModel,
 			fastMode: false
 		});
@@ -315,7 +322,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 			const msgCount = await tx.message.count({ where: { chatId } });
 			if (msgCount <= 2) {
-				const title = message.slice(0, 60) + (message.length > 60 ? '...' : '');
+				const title = titleFromPromptOrImages(message, images);
 				await tx.chat.update({ where: { id: chatId }, data: { title } });
 			}
 

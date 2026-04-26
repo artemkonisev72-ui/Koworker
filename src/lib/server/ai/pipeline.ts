@@ -14,7 +14,7 @@ import {
 	assembleFinalAnswer,
 	generateResultSchemaPatch,
 	answerGeneralQuestion,
-	analyzeImage,
+	analyzeImages,
 	type GeminiHistory
 } from './gemini.js';
 import { workerPool, SandboxError } from '../sandbox/worker-pool.js';
@@ -30,6 +30,11 @@ import {
 	type GraphPoint
 } from '$lib/graphs/types.js';
 import type { SolverModelV1 } from '$lib/solver/model.js';
+import {
+	effectivePromptForImages,
+	normalizeChatImagesInput,
+	type ChatImage
+} from '$lib/chat/images.js';
 
 export interface ExactAnswerLocation {
 	memberId?: string;
@@ -850,7 +855,7 @@ export async function runPipelineWithApprovedSchema(
 	},
 	history: GeminiHistory[],
 	onStatus: (event: PipelineStatus) => void | Promise<void>,
-	imageData?: { base64: string; mimeType: string },
+	imageData?: ChatImage | ChatImage[],
 	forcedModel?: string | null,
 	options?: {
 		sandboxExecutor?: SandboxExecutor;
@@ -860,9 +865,11 @@ export async function runPipelineWithApprovedSchema(
 		throw new Error('Approved schema is required for schema-check solving');
 	}
 
+	const images = normalizeChatImagesInput(imageData);
+	const effectiveUserMessage = effectivePromptForImages(params.userMessage, images);
 	const canonicalInput: CanonicalSolveInput = {
 		source: 'approved_schema',
-		originalTask: params.userMessage,
+		originalTask: effectiveUserMessage,
 		approvedSchema: params.approvedSchema,
 		approvedSchemeDescription:
 			typeof params.approvedSchemeDescription === 'string'
@@ -883,7 +890,7 @@ export async function runPipeline(
 	userMessage: string,
 	history: GeminiHistory[],
 	onStatus: (event: PipelineStatus) => void | Promise<void>,
-	imageData?: { base64: string; mimeType: string },
+	imageData?: ChatImage | ChatImage[],
 	forcedModel?: string | null,
 	options?: {
 		canonicalSolveInput?: CanonicalSolveInput | null;
@@ -892,8 +899,10 @@ export async function runPipeline(
 		sandboxExecutor?: SandboxExecutor;
 	}
 ): Promise<void> {
-	console.log('[Pipeline] START message:', userMessage.slice(0, 80), '| forcedModel:', forcedModel);
-	let currentContext = userMessage;
+	const images = normalizeChatImagesInput(imageData);
+	const effectiveUserMessage = effectivePromptForImages(userMessage, images);
+	console.log('[Pipeline] START message:', effectiveUserMessage.slice(0, 80), '| forcedModel:', forcedModel);
+	let currentContext = effectiveUserMessage;
 	let imageDescription = '';
 	const usedModelsList: string[] = [];
 	const emitStatus = (event: PipelineStatus) => Promise.resolve(onStatus(event));
@@ -919,7 +928,7 @@ export async function runPipeline(
 				approvedSchemeDescription: approvedFollowup.approvedSchemeDescription ?? '',
 				solverModel: approvedFollowup.solverModel,
 				revisionNotes: approvedFollowup.revisionNotes ?? [],
-				followUpRequest: userMessage,
+				followUpRequest: effectiveUserMessage,
 				recentChatContext: approvedFollowup.recentChatContext ?? [],
 				previousSolved: approvedFollowup.previousSolved
 			};
@@ -931,7 +940,7 @@ export async function runPipeline(
 			const followupRouting = await routeApprovedFollowup(
 				[],
 				{
-					userMessage,
+					userMessage: effectiveUserMessage,
 					originalTask: approvedFollowup.originalTask,
 					approvedSchemeDescription: approvedFollowup.approvedSchemeDescription ?? '',
 					recentTaskChatContext:
@@ -963,18 +972,17 @@ export async function runPipeline(
 			}
 		}
 
-		if (imageData && !options?.canonicalSolveInput && !skipImageAnalysis) {
+		if (images.length > 0 && !options?.canonicalSolveInput && !skipImageAnalysis) {
 			console.log('[Pipeline] Analyzing image...');
 			await emitStatus({ type: 'status', message: STATUS_ANALYZE_IMAGE });
-			const { text: visionText, model: visionModel, tokens: visionTokens } = await analyzeImage(
+			const { text: visionText, model: visionModel, tokens: visionTokens } = await analyzeImages(
 				history,
-				imageData.base64,
-				imageData.mimeType,
+				images,
 				forcedModel
 			);
 			imageDescription = visionText;
 			usedModelsList.push(`${visionModel} (Vision): ${visionTokens.toLocaleString('ru-RU')} токенов`);
-			currentContext = `[IMAGE_DESCRIPTION]\n${visionText}\n\n[USER_TASK]\n${userMessage}`;
+			currentContext = `[IMAGE_DESCRIPTION]\n${visionText}\n\n[USER_TASK]\n${effectiveUserMessage}`;
 		}
 
 		let needsComputation = followupRoute === 'compute_followup' ? true : !forceFinalizerOnly;
@@ -1008,7 +1016,7 @@ export async function runPipeline(
 				? followupCanonicalInput
 				: {
 						source: 'raw_prompt',
-						originalTask: userMessage,
+						originalTask: effectiveUserMessage,
 						...(imageDescription ? { imageDescription } : {})
 					});
 		if (forceFinalizerOnly) {
@@ -1046,7 +1054,7 @@ export async function runPipeline(
 			const finalizer = await assembleFinalAnswer(
 				[],
 				{
-					taskContext: truncateText(canonicalInput.followUpRequest ?? userMessage, FINALIZER_TASK_MAX_CHARS),
+					taskContext: truncateText(canonicalInput.followUpRequest ?? effectiveUserMessage, FINALIZER_TASK_MAX_CHARS),
 					solveContextJson: finalizerPayload.solveContextJson,
 					exactAnswersJson: finalizerPayload.exactAnswersJson,
 					graphSummaryJson: finalizerPayload.graphSummaryJson,

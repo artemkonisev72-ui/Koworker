@@ -22,7 +22,8 @@ import {
 	ChatProcessingConflictError,
 	type ChatProcessingHandle
 } from '$lib/server/chat-processing.js';
-import { canConfirmStatus, loadGeminiHistory, logSchemaCheck } from '$lib/server/schema/flow.js';
+import { canConfirmStatus, loadGeminiHistory, logSchemaCheck, parseImageData } from '$lib/server/schema/flow.js';
+import type { ChatImage } from '$lib/chat/images.js';
 
 function isResultEvent(event: PipelineStatus): event is Extract<PipelineStatus, { type: 'result' }> {
 	return event.type === 'result';
@@ -62,6 +63,7 @@ async function runSolveWithGate(params: {
 	solverModel?: SolverModelV1;
 	revisionNotes: string[];
 	history: Awaited<ReturnType<typeof loadGeminiHistory>>;
+	images?: ChatImage[];
 	forcedModel?: string | null;
 	onStatus?: (status: string) => void;
 }): Promise<Extract<PipelineStatus, { type: 'result' }>> {
@@ -82,7 +84,7 @@ async function runSolveWithGate(params: {
 			if (event.type === 'error') lastError = event.message;
 			if (isResultEvent(event)) finalResult = event;
 		},
-		undefined,
+		params.images,
 		params.forcedModel
 	);
 
@@ -110,6 +112,7 @@ function launchSchemaSolveInBackground(params: {
 	solverModel?: SolverModelV1;
 	schemaVersion: string;
 	revisionNotes: string[];
+	images?: ChatImage[];
 	forcedModel?: string | null;
 	startedAt: number;
 	processingHandle: ChatProcessingHandle;
@@ -131,6 +134,7 @@ function launchSchemaSolveInBackground(params: {
 				solverModel: params.solverModel,
 				revisionNotes: params.revisionNotes,
 				history,
+				images: params.images,
 				forcedModel: params.forcedModel,
 				onStatus: (status) => params.processingHandle.updateStatus(status)
 			});
@@ -408,6 +412,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 			solverModel,
 			schemaVersion: approvedSchemaVersion,
 			revisionNotes,
+			images: parseImageData(draft.originalImageData),
 			forcedModel,
 			startedAt,
 			processingHandle
