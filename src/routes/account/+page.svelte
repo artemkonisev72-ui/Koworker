@@ -94,6 +94,8 @@
 		align-items: center;
 		justify-content: center;
 		min-height: 100dvh;
+		max-height: 100dvh;
+		overflow-y: auto;
 		background: var(--bg-base);
 		padding:
 			calc(1.5rem + env(safe-area-inset-top))
@@ -105,12 +107,18 @@
 	.account-card {
 		width: 100%;
 		max-width: 560px;
+		max-height: calc(100dvh - 3rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+		overflow-y: auto;
 		background: var(--bg-card);
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-lg);
 		padding: 2.5rem;
 		box-shadow: var(--shadow-lg);
 		animation: fadeInUp 0.4s ease;
+	}
+
+	.account-card:focus-within {
+		scroll-behavior: smooth;
 	}
 
 	.account-header {
