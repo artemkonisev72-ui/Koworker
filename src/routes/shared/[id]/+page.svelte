@@ -1,8 +1,22 @@
 <script lang="ts">
 	import MessageRenderer from '$lib/components/MessageRenderer.svelte';
+	import type { ChatImage } from '$lib/chat/images.js';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
+
+	function messageImages(message: PageData['messages'][number]): ChatImage[] {
+		if (!Array.isArray(message.imageData)) return [];
+		return message.imageData.filter(
+			(image: unknown): image is ChatImage =>
+				Boolean(
+					image &&
+						typeof image === 'object' &&
+						typeof (image as ChatImage).base64 === 'string' &&
+						typeof (image as ChatImage).mimeType === 'string'
+				)
+		);
+	}
 </script>
 
 <svelte:head>
@@ -32,7 +46,27 @@
 
 	<main class="message-list">
 		{#each data.messages as message}
-			<MessageRenderer message={message as any} />
+			{#if message.role === 'USER'}
+				{@const images = messageImages(message)}
+				<article class="shared-user-message">
+					{#if images.length > 0}
+						<div class="shared-user-images">
+							{#each images as image, index}
+								<img
+									src={`data:${image.mimeType};base64,${image.base64}`}
+									alt={`Uploaded task ${index + 1}`}
+									class="shared-user-img"
+								/>
+							{/each}
+						</div>
+					{/if}
+					{#if message.content.trim()}
+						<p class="shared-user-text">{message.content}</p>
+					{/if}
+				</article>
+			{:else}
+				<MessageRenderer message={message as any} />
+			{/if}
 		{/each}
 	</main>
 
@@ -111,6 +145,37 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1.5rem;
+	}
+
+	.shared-user-message {
+		background: var(--user-bubble);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-lg);
+		padding: 0.85rem;
+	}
+
+	.shared-user-images {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+		gap: 0.5rem;
+		margin-bottom: 0.65rem;
+	}
+
+	.shared-user-img {
+		max-width: 100%;
+		max-height: 340px;
+		border-radius: var(--radius-md);
+		border: 1px solid var(--border-subtle);
+		display: block;
+		object-fit: cover;
+	}
+
+	.shared-user-text {
+		margin: 0;
+		white-space: pre-wrap;
+		line-height: 1.55;
+		font-size: 0.95rem;
+		color: var(--text-primary);
 	}
 
 	.shared-footer {

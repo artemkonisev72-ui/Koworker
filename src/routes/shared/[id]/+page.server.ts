@@ -1,6 +1,7 @@
 ﻿import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { prisma } from '$lib/server/db';
+import { parseStoredChatImages } from '$lib/chat/images.js';
 
 function parseMaybeJson(value: unknown): unknown {
 	if (value === null || value === undefined) return null;
@@ -43,7 +44,7 @@ export const load: PageServerLoad = async ({ params }) => {
 			id: m.id,
 			role: m.role,
 			content: m.content,
-			imageData: parseMaybeJson(m.imageData),
+			imageData: parseStoredChatImages(m.imageData),
 			generatedCode: m.generatedCode,
 			executionLogs: m.executionLogs,
 			graphData: parseMaybeJson(m.graphData),

@@ -23,17 +23,25 @@ function makeMessage(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-function makeDb(message: Record<string, unknown> | null) {
+function makeDb(
+	message: Record<string, unknown> | null,
+	userImageRows: Array<{ imageData: unknown }> = []
+) {
 	return {
 		message: {
-			findUnique: vi.fn().mockResolvedValue(message)
+			findUnique: vi.fn().mockResolvedValue(message),
+			findMany: vi.fn().mockResolvedValue(userImageRows)
 		}
 	};
 }
 
 describe('loadExportMessageForViewer', () => {
 	it('allows owner to export a private chat message', async () => {
-		const db = makeDb(makeMessage());
+		const db = makeDb(makeMessage(), [
+			{ imageData: '[{"base64":"img-a","mimeType":"image/png"}]' },
+			{ imageData: '[{"base64":"img-b","mimeType":"image/jpeg"}]' },
+			{ imageData: null }
+		]);
 
 		const payload = await loadExportMessageForViewer({
 			messageId: 'msg-1',
@@ -45,6 +53,10 @@ describe('loadExportMessageForViewer', () => {
 		expect(payload.message.id).toBe('msg-1');
 		expect(Array.isArray(payload.message.graphData)).toBe(true);
 		expect(payload.message.createdAt).toBe('2026-04-20T10:20:30.000Z');
+		expect(payload.userImages).toEqual([
+			{ base64: 'img-a', mimeType: 'image/png' },
+			{ base64: 'img-b', mimeType: 'image/jpeg' }
+		]);
 	});
 
 	it('rejects anonymous access to a private chat message', async () => {
@@ -91,5 +103,6 @@ describe('loadExportMessageForViewer', () => {
 
 		expect(payload.chat.isPublic).toBe(true);
 		expect(payload.message.usedModels).toEqual(['gemini-3.1-pro-preview']);
+		expect(payload.userImages).toEqual([]);
 	});
 });

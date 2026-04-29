@@ -1,5 +1,6 @@
 import { prisma } from '$lib/server/db.js';
 import type { GraphData } from '$lib/graphs/types.js';
+import { parseStoredChatImages, type ChatImage } from '$lib/chat/images.js';
 import { error } from '@sveltejs/kit';
 
 interface ExportMessageRecord {
@@ -24,6 +25,7 @@ interface ExportMessageRecord {
 interface ExportLoaderDb {
 	message: {
 		findUnique(args: unknown): Promise<ExportMessageRecord | null>;
+		findMany(args: unknown): Promise<Array<{ imageData: unknown }>>;
 	};
 }
 
@@ -33,6 +35,7 @@ export interface ExportPagePayload {
 		title: string;
 		isPublic: boolean;
 	};
+	userImages: ChatImage[];
 	message: {
 		id: string;
 		role: 'USER' | 'ASSISTANT' | 'SYSTEM';
@@ -54,6 +57,17 @@ function parseMaybeJson(value: unknown): unknown {
 		return JSON.parse(value);
 	} catch {
 		return value;
+	}
+}
+
+function parseChatImagesFromUnknown(value: unknown): ChatImage[] {
+	if (typeof value === 'string' || value === null || value === undefined) {
+		return parseStoredChatImages(value);
+	}
+	try {
+		return parseStoredChatImages(JSON.stringify(value));
+	} catch {
+		return [];
 	}
 }
 
@@ -129,12 +143,27 @@ export async function loadExportMessageForViewer(params: {
 		}
 	}
 
+	const userImageRows = await db.message.findMany({
+		where: {
+			chatId: message.chat.id,
+			role: 'USER'
+		},
+		orderBy: {
+			createdAt: 'asc'
+		},
+		select: {
+			imageData: true
+		}
+	});
+	const userImages = userImageRows.flatMap((row) => parseChatImagesFromUnknown(row.imageData));
+
 	return {
 		chat: {
 			id: message.chat.id,
 			title: message.chat.title,
 			isPublic: message.chat.isPublic
 		},
+		userImages,
 		message: {
 			id: message.id,
 			role: message.role,

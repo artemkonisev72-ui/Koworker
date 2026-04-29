@@ -157,9 +157,24 @@
 		Boolean(activeChatId && abortableChatIds[activeChatId])
 	);
 	let selectedImages = $state<ChatImage[]>([]);
+	let imagePreviewOpen = $state(false);
+	let imagePreviewSrc = $state('');
+	let imagePreviewAlt = $state('');
 
 	function messageImages(message: ChatMessage): ChatImage[] {
 		return parseStoredChatImages(message.imageData);
+	}
+
+	function openImagePreview(image: ChatImage, alt: string) {
+		imagePreviewSrc = `data:${image.mimeType};base64,${image.base64}`;
+		imagePreviewAlt = alt;
+		imagePreviewOpen = true;
+	}
+
+	function closeImagePreview() {
+		imagePreviewOpen = false;
+		imagePreviewSrc = '';
+		imagePreviewAlt = '';
 	}
 	let schemaCheckEnabledByChatId = $state<Record<string, boolean>>({});
 	let schemaCheckEnabledForNewChat = $state(false);
@@ -470,9 +485,13 @@
 			modelMenuMaxHeight = null;
 		};
 		const onWindowKeyDown = (event: KeyboardEvent) => {
-			if (event.key === 'Escape' && isModelMenuOpen) {
+			if (event.key !== 'Escape') return;
+			if (isModelMenuOpen) {
 				isModelMenuOpen = false;
 				modelMenuMaxHeight = null;
+			}
+			if (imagePreviewOpen) {
+				closeImagePreview();
 			}
 		};
 
@@ -2035,10 +2054,17 @@
 							<div class="image-preview-list">
 								{#each selectedImages as image, index}
 									<div class="image-preview">
-										<img
-											src={`data:${image.mimeType};base64,${image.base64}`}
-											alt={`Preview ${index + 1}`}
-										/>
+										<button
+											type="button"
+											class="image-preview-open-btn"
+											onclick={() => openImagePreview(image, `Preview ${index + 1}`)}
+											aria-label={`Открыть предпросмотр изображения ${index + 1}`}
+										>
+											<img
+												src={`data:${image.mimeType};base64,${image.base64}`}
+												alt={`Preview ${index + 1}`}
+											/>
+										</button>
 										<button
 											type="button"
 											class="remove-img-btn"
@@ -2386,11 +2412,18 @@
 									{#if images.length > 0}
 										<div class="user-uploaded-images">
 											{#each images as img, index}
-												<img
-													src={`data:${img.mimeType};base64,${img.base64}`}
-													alt={`Uploaded task ${index + 1}`}
-													class="user-uploaded-img"
-												/>
+												<button
+													type="button"
+													class="user-uploaded-img-btn"
+													onclick={() => openImagePreview(img, `Uploaded task ${index + 1}`)}
+													aria-label={`Открыть прикрепленное изображение ${index + 1}`}
+												>
+													<img
+														src={`data:${img.mimeType};base64,${img.base64}`}
+														alt={`Uploaded task ${index + 1}`}
+														class="user-uploaded-img"
+													/>
+												</button>
 											{/each}
 										</div>
 									{/if}
@@ -2442,6 +2475,26 @@
 				<div class="composer-shell">
 					{@render schemaReviewPanel()}
 					{@render composerCard()}
+				</div>
+			</div>
+		{/if}
+
+		{#if imagePreviewOpen && imagePreviewSrc}
+			<div
+				class="image-lightbox"
+				role="dialog"
+				aria-modal="true"
+				aria-label="Просмотр изображения"
+				tabindex="-1"
+			>
+				<button
+					type="button"
+					class="image-lightbox-backdrop"
+					aria-label="Закрыть просмотр изображения"
+					onclick={closeImagePreview}
+				></button>
+				<div class="image-lightbox-content">
+					<img class="image-lightbox-image" src={imagePreviewSrc} alt={imagePreviewAlt} />
 				</div>
 			</div>
 		{/if}
@@ -3668,6 +3721,16 @@
 		object-fit: cover;
 	}
 
+	.image-preview-open-btn,
+	.user-uploaded-img-btn {
+		border: none;
+		background: transparent;
+		padding: 0;
+		margin: 0;
+		display: block;
+		cursor: zoom-in;
+	}
+
 	.remove-img-btn {
 		position: absolute;
 		top: -2px;
@@ -3701,6 +3764,48 @@
 		display: block;
 		cursor: zoom-in;
 		border: 1px solid var(--border-subtle);
+	}
+
+	.image-lightbox {
+		position: fixed;
+		inset: 0;
+		z-index: 180;
+	}
+
+	.image-lightbox-backdrop {
+		position: absolute;
+		inset: 0;
+		border: none;
+		width: 100%;
+		height: 100%;
+		background: rgba(10, 10, 10, 0.76);
+		cursor: zoom-out;
+	}
+
+	.image-lightbox-content {
+		position: relative;
+		inset: 0;
+		z-index: 1;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 1rem;
+		width: 100%;
+		height: 100%;
+		pointer-events: none;
+	}
+
+	.image-lightbox-image {
+		max-width: min(94vw, 1200px);
+		max-height: 92vh;
+		width: auto;
+		height: auto;
+		object-fit: contain;
+		border-radius: var(--radius-md);
+		border: 1px solid color-mix(in srgb, white 24%, transparent);
+		box-shadow: var(--shadow-lg);
+		cursor: default;
+		pointer-events: auto;
 	}
 
 	.message-input {

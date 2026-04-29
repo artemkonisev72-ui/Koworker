@@ -106,6 +106,25 @@
 			</div>
 		</header>
 
+		{#if data.userImages.length > 0}
+			<section class="export-user-images-block">
+				<h2 class="export-user-images-title">Attached images from user</h2>
+				<div class="export-user-images-grid">
+					{#each data.userImages as image, index}
+						<figure class="export-user-image-figure">
+							<img
+								class="export-user-image"
+								src={`data:${image.mimeType};base64,${image.base64}`}
+								alt={`User attachment ${index + 1}`}
+								loading="eager"
+								decoding="sync"
+							/>
+						</figure>
+					{/each}
+				</div>
+			</section>
+		{/if}
+
 		<MessageRenderer
 			message={data.message}
 			renderMode="print"
@@ -184,6 +203,46 @@
 		color: #555555;
 	}
 
+	.export-user-images-block {
+		margin-bottom: 0.9rem;
+		padding: 0.5rem 0.55rem 0.65rem;
+		border: 1px solid #d7d7d7;
+		border-radius: 8px;
+		break-inside: avoid-page;
+		page-break-inside: avoid;
+	}
+
+	.export-user-images-title {
+		margin: 0 0 0.45rem 0;
+		font-size: 0.82rem;
+		font-weight: 600;
+		color: #2f2f2f;
+	}
+
+	.export-user-images-grid {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.5rem;
+	}
+
+	.export-user-image-figure {
+		margin: 0;
+		border: 1px solid #d8d8d8;
+		border-radius: 6px;
+		padding: 0.22rem;
+		break-inside: avoid-page;
+		page-break-inside: avoid;
+	}
+
+	.export-user-image {
+		display: block;
+		width: 100%;
+		max-height: 75mm;
+		object-fit: contain;
+		background: #ffffff;
+		border-radius: 4px;
+	}
+
 	.export-status {
 		margin-top: 0.9rem;
 		font-size: 0.78rem;
@@ -224,6 +283,10 @@
 		.export-sheet {
 			width: 100%;
 			padding: 0.5rem 0.2rem 0.9rem;
+		}
+
+		.export-user-images-grid {
+			grid-template-columns: 1fr;
 		}
 	}
 
