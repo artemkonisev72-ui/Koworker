@@ -2175,7 +2175,7 @@
 								<textarea
 									bind:value={revisionNotes}
 									rows="3"
-									placeholder="Describe what should be corrected in the scheme..."
+									placeholder="Опишите, что нужно исправить в схеме..."
 									disabled={hasAnyProcessing}
 								></textarea>
 								<div class="schema-revision-actions">
@@ -2184,7 +2184,7 @@
 										onclick={submitSchemaRevision}
 										disabled={!revisionNotes.trim() || hasAnyProcessing}
 									>
-										Submit revision
+										Отправить правку
 									</button>
 									<button
 										class="schema-action-btn"
@@ -2194,7 +2194,7 @@
 										}}
 										disabled={hasAnyProcessing}
 									>
-										Cancel
+										Отмена
 									</button>
 								</div>
 							</div>

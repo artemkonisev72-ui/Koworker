@@ -2,7 +2,7 @@ import type { RequestEvent } from '@sveltejs/kit';
 import { createHash } from 'node:crypto';
 import { prisma } from './db';
 
-export type AuthAction = 'register' | 'login' | 'resend';
+export type AuthAction = 'register' | 'login' | 'resend' | 'password-reset';
 
 type Scope = 'ip' | 'email';
 
@@ -31,6 +31,11 @@ const RULES: Record<AuthAction, AuthThrottleRule[]> = {
 		{ scope: 'email', limit: 5, windowMs: 15 * MINUTE_MS, blockMs: 15 * MINUTE_MS }
 	],
 	resend: [
+		{ scope: 'email', limit: 1, windowMs: MINUTE_MS, blockMs: MINUTE_MS },
+		{ scope: 'email', limit: 5, windowMs: 24 * HOUR_MS, blockMs: HOUR_MS },
+		{ scope: 'ip', limit: 10, windowMs: HOUR_MS, blockMs: HOUR_MS }
+	],
+	'password-reset': [
 		{ scope: 'email', limit: 1, windowMs: MINUTE_MS, blockMs: MINUTE_MS },
 		{ scope: 'email', limit: 5, windowMs: 24 * HOUR_MS, blockMs: HOUR_MS },
 		{ scope: 'ip', limit: 10, windowMs: HOUR_MS, blockMs: HOUR_MS }

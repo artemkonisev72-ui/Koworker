@@ -49,7 +49,7 @@ export class ChatProcessingConflictError extends Error {
 	active: ChatProcessingSnapshot;
 
 	constructor(active: ChatProcessingSnapshot) {
-		super('Another task is already being processed for this user.');
+		super('Другая задача уже обрабатывается для этого пользователя.');
 		this.name = 'ChatProcessingConflictError';
 		this.active = active;
 	}

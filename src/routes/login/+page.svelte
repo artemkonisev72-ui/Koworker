@@ -7,13 +7,17 @@
 <div class="auth-container">
 	<div class="auth-card">
 		<header class="auth-header">
-			<img src="/pwa-192x192.png" alt="Auth Logo" class="auth-logo" />
+			<img src="/pwa-192x192.png" alt="Логотип Koworker" class="auth-logo" />
 			<h1>Koworker</h1>
 		</header>
 
 		<form method="POST" class="auth-form">
 			{#if data?.verified}
-				<div class="auth-success">Email verified. You can sign in now.</div>
+				<div class="auth-success">Почта подтверждена. Теперь можно войти.</div>
+			{/if}
+
+			{#if data?.passwordChanged}
+				<div class="auth-success">Пароль изменён. Войдите с новым паролем.</div>
 			{/if}
 
 			{#if form?.message}
@@ -21,7 +25,7 @@
 			{/if}
 
 			<div class="form-group">
-				<label for="email">Email</label>
+				<label for="email">Электронная почта</label>
 				<input
 					type="email"
 					id="email"
@@ -43,6 +47,10 @@
 					maxlength="128"
 					required
 				/>
+			</div>
+
+			<div class="auth-links">
+				<a href={resolve('/forgot-password')}>Забыли пароль?</a>
 			</div>
 
 			<button type="submit" class="auth-submit">Войти</button>
@@ -115,6 +123,19 @@
 		color: #065f46;
 		font-size: 0.85rem;
 		text-align: center;
+	}
+	.auth-links {
+		margin-top: -0.45rem;
+		text-align: right;
+		font-size: 0.84rem;
+	}
+	.auth-links a {
+		color: var(--text-primary);
+		font-weight: 600;
+		text-decoration: none;
+	}
+	.auth-links a:hover {
+		text-decoration: underline;
 	}
 	.form-group {
 		display: flex;

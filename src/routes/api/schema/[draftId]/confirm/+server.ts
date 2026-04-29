@@ -270,7 +270,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 		});
 	} catch (processingError) {
 		if (processingError instanceof ChatProcessingConflictError) {
-			return error(429, 'Another task is already being processed. Please wait for completion.');
+			return error(429, 'Другая задача уже обрабатывается. Дождитесь завершения.');
 		}
 		throw processingError;
 	}

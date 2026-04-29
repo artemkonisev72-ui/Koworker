@@ -281,7 +281,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		userRate.requestCount = 0;
 	}
 	if (userRate.requestCount >= MAX_REQUESTS_PER_WINDOW) {
-		return error(429, 'Too many requests. Please wait and try again.');
+		return error(429, 'Слишком много запросов. Подождите и попробуйте ещё раз.');
 	}
 	userRate.requestCount += 1;
 	chatRateMap.set(locals.user.id, userRate);
@@ -296,7 +296,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		});
 	} catch (processingError) {
 		if (processingError instanceof ChatProcessingConflictError) {
-			return error(429, 'Another task is already being processed. Please wait for completion.');
+			return error(429, 'Другая задача уже обрабатывается. Дождитесь завершения.');
 		}
 		throw processingError;
 	}

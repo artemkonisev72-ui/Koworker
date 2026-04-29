@@ -8,51 +8,39 @@
 	<div class="auth-card">
 		<header class="auth-header">
 			<img src="/pwa-192x192.png" alt="Логотип Koworker" class="auth-logo" />
-			<h1>Регистрация</h1>
-			<p>Создайте аккаунт, чтобы сохранять свои чаты и настройки.</p>
+			<h1>Восстановление пароля</h1>
+			<p>Введите электронную почту, и мы отправим ссылку для смены пароля.</p>
 		</header>
 
 		<form method="POST" class="auth-form">
 			{#if form?.message}
-				<div class="auth-error">{form.message}</div>
+				<div class={form?.success ? 'auth-success' : 'auth-error'}>{form.message}</div>
 			{/if}
 
 			<div class="form-group">
-				<label for="name">Имя (необязательно)</label>
-				<input type="text" id="name" name="name" placeholder="Иван Иванов" />
-			</div>
-
-			<div class="form-group">
 				<label for="email">Электронная почта</label>
-				<input type="email" id="email" name="email" value={form?.email ?? ''} placeholder="name@example.com" required />
-			</div>
-
-			<div class="form-group">
-				<label for="password">Пароль</label>
 				<input
-					type="password"
-					id="password"
-					name="password"
-					placeholder="••••••••"
-					minlength="6"
-					maxlength="128"
+					type="email"
+					id="email"
+					name="email"
+					value={form?.email ?? ''}
+					placeholder="name@example.com"
 					required
 				/>
 			</div>
 
 			<p class="auth-note">Письмо может прийти в папку "Спам".</p>
 
-			<button type="submit" class="auth-submit">Создать аккаунт</button>
+			<button type="submit" class="auth-submit">Отправить ссылку</button>
 		</form>
 
 		<footer class="auth-footer">
-			Уже есть аккаунт? <a href={resolve('/login')}>Войти</a>
+			Вспомнили пароль? <a href={resolve('/login')}>Войти</a>
 		</footer>
 	</div>
 </div>
 
 <style>
-	/* Same styles as login for consistency */
 	.auth-container {
 		display: flex;
 		align-items: center;
@@ -67,7 +55,7 @@
 	}
 	.auth-card {
 		width: 100%;
-		max-width: 400px;
+		max-width: 420px;
 		background: var(--bg-card);
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-lg);
@@ -77,7 +65,7 @@
 	}
 	.auth-header {
 		text-align: center;
-		margin-bottom: 2rem;
+		margin-bottom: 1.6rem;
 	}
 	.auth-logo {
 		width: 48px;
@@ -87,35 +75,38 @@
 		display: block;
 	}
 	.auth-header h1 {
-		font-size: 1.5rem;
+		font-size: 1.45rem;
 		font-weight: 700;
 		color: var(--text-primary);
 		margin-bottom: 0.5rem;
 	}
 	.auth-header p {
 		color: var(--text-secondary);
-		font-size: 0.88rem;
+		font-size: 0.9rem;
+		line-height: 1.45;
 	}
 	.auth-form {
 		display: flex;
 		flex-direction: column;
-		gap: 1.25rem;
+		gap: 1.2rem;
+	}
+	.auth-error,
+	.auth-success {
+		padding: 0.75rem;
+		border-radius: var(--radius-md);
+		font-size: 0.86rem;
+		text-align: center;
+		line-height: 1.4;
 	}
 	.auth-error {
-		padding: 0.75rem;
-		background: rgba(0, 0, 0, 0.05);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-md);
-		color: var(--text-primary);
-		font-size: 0.85rem;
-		text-align: center;
+		background: rgba(239, 68, 68, 0.1);
+		border: 1px solid rgba(239, 68, 68, 0.35);
+		color: #991b1b;
 	}
-	.auth-note {
-		margin: -0.35rem 0 0;
-		color: var(--text-secondary);
-		font-size: 0.82rem;
-		line-height: 1.4;
-		text-align: center;
+	.auth-success {
+		background: rgba(16, 185, 129, 0.12);
+		border: 1px solid rgba(16, 185, 129, 0.35);
+		color: #065f46;
 	}
 	.form-group {
 		display: flex;
@@ -140,8 +131,14 @@
 		outline: none;
 		border-color: var(--accent-primary);
 	}
+	.auth-note {
+		margin: -0.35rem 0 0;
+		color: var(--text-secondary);
+		font-size: 0.82rem;
+		line-height: 1.4;
+		text-align: center;
+	}
 	.auth-submit {
-		margin-top: 0.5rem;
 		padding: 0.85rem;
 		background: var(--accent-primary);
 		color: var(--bg-base);
@@ -155,7 +152,7 @@
 		opacity: 0.9;
 	}
 	.auth-footer {
-		margin-top: 2rem;
+		margin-top: 1.6rem;
 		text-align: center;
 		font-size: 0.85rem;
 		color: var(--text-secondary);
@@ -170,7 +167,13 @@
 	}
 
 	@keyframes fadeInUp {
-		from { opacity: 0; transform: translateY(10px); }
-		to { opacity: 1; transform: translateY(0); }
+		from {
+			opacity: 0;
+			transform: translateY(10px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
 	}
 </style>

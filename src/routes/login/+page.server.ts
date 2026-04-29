@@ -18,7 +18,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 	}
 
 	return {
-		verified: url.searchParams.get('verified') === '1'
+		verified: url.searchParams.get('verified') === '1',
+		passwordChanged: url.searchParams.get('passwordChanged') === '1'
 	};
 };
 
@@ -32,20 +33,20 @@ export const actions: Actions = {
 		const emailNormalized = normalizeEmail(rawEmail);
 
 		if (!isEmailFormatValid(emailNormalized) || !rawPassword) {
-			return fail(400, { email: emailTrimmed, message: 'Invalid email or password.' });
+			return fail(400, { email: emailTrimmed, message: 'Неверная электронная почта или пароль.' });
 		}
 
 		const rateLimit = await enforceAuthRateLimit(event, 'login', emailNormalized);
 		if (!rateLimit.allowed) {
 			return fail(429, {
 				email: emailTrimmed,
-				message: `Too many requests. Try again in ${rateLimit.retryAfterSeconds} seconds.`
+				message: `Слишком много запросов. Попробуйте ещё раз через ${rateLimit.retryAfterSeconds} сек.`
 			});
 		}
 
 		let user = await findUserByNormalizedEmail(emailNormalized);
 		if (!user || !verifyPassword(rawPassword, user.passwordHash)) {
-			return fail(400, { email: emailTrimmed, message: 'Invalid email or password.' });
+			return fail(400, { email: emailTrimmed, message: 'Неверная электронная почта или пароль.' });
 		}
 
 		if (!user.emailNormalized) {

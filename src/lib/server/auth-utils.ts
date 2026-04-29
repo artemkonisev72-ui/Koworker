@@ -3,6 +3,7 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypt
 export const PASSWORD_MIN_LENGTH = 6;
 export const PASSWORD_MAX_LENGTH = 128;
 export const EMAIL_MAX_LENGTH = 254;
+export const DISPLAY_NAME_MAX_LENGTH = 80;
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -31,7 +32,7 @@ export function sanitizeDisplayName(name: string | null | undefined): string | n
 	if (!name) return null;
 	const trimmed = name.trim();
 	if (!trimmed) return null;
-	return trimmed.slice(0, 80);
+	return trimmed.slice(0, DISPLAY_NAME_MAX_LENGTH);
 }
 
 export function hashPassword(password: string): string {

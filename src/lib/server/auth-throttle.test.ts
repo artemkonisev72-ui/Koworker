@@ -1,5 +1,31 @@
-import { describe, expect, it } from 'vitest';
-import { resolveClientIp } from './auth-throttle';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const authThrottleBucketMock = vi.hoisted(() => ({
+	findUnique: vi.fn(),
+	create: vi.fn(),
+	update: vi.fn()
+}));
+
+const prismaMock = vi.hoisted(() => ({
+	$transaction: vi.fn()
+}));
+
+vi.mock('./db', () => ({
+	prisma: prismaMock
+}));
+
+import { enforceAuthRateLimit, resolveClientIp } from './auth-throttle';
+
+beforeEach(() => {
+	vi.clearAllMocks();
+	authThrottleBucketMock.findUnique.mockResolvedValue(null);
+	authThrottleBucketMock.create.mockResolvedValue({});
+	prismaMock.$transaction.mockImplementation(async (callback) =>
+		callback({
+			authThrottleBucket: authThrottleBucketMock
+		})
+	);
+});
 
 function mockEvent(headers: Record<string, string>, fallbackIp = '127.0.0.1') {
 	return {
@@ -27,5 +53,21 @@ describe('auth throttle ip resolution', () => {
 	it('falls back to getClientAddress', () => {
 		const event = mockEvent({}, '192.0.2.55');
 		expect(resolveClientIp(event)).toBe('192.0.2.55');
+	});
+});
+
+describe('auth throttle password reset action', () => {
+	it('applies rate limits to password reset requests', async () => {
+		const event = mockEvent({}, '192.0.2.55');
+
+		await expect(enforceAuthRateLimit(event, 'password-reset', 'user@example.com')).resolves.toEqual({
+			allowed: true,
+			retryAfterSeconds: 0
+		});
+
+		expect(authThrottleBucketMock.create).toHaveBeenCalledTimes(3);
+		for (const call of authThrottleBucketMock.create.mock.calls) {
+			expect(call[0].data.action).toBe('password-reset');
+		}
 	});
 });

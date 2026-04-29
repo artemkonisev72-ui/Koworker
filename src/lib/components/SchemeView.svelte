@@ -19,7 +19,7 @@ type RenderMode = 'chat' | 'print';
 
 let {
 	schemaData,
-	title = 'Verified scheme',
+	title = 'Проверенная схема',
 	debug = false,
 	renderMode = 'chat',
 	onRenderReady,

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 
-	let { data } = $props();
+	let { data, form } = $props();
 
 	async function logout() {
 		const res = await fetch('/api/auth/logout', { method: 'POST' });
@@ -35,16 +35,49 @@
 
 		<div class="account-details">
 			<div class="detail-item">
+				<span class="label">Электронная почта</span>
+				<span class="value">{data.user?.email}</span>
+			</div>
+			<div class="detail-item">
 				<span class="label">ID пользователя</span>
 				<span class="value">{data.user?.id}</span>
 			</div>
 			<div class="detail-item">
-				<span class="label">Email status</span>
+				<span class="label">Статус почты</span>
 				<span class={`value ${data.user?.emailVerifiedAt ? 'status-active' : 'status-pending'}`}>
-					{data.user?.emailVerifiedAt ? 'Verified' : 'Not verified'}
+					{data.user?.emailVerifiedAt ? 'Подтверждена' : 'Не подтверждена'}
 				</span>
 			</div>
 		</div>
+
+		<form method="POST" action="?/updateName" class="account-form">
+			<h2>Никнейм</h2>
+			{#if form?.action === 'updateName' && form?.message}
+				<div class={form?.success ? 'form-message success' : 'form-message error'}>{form.message}</div>
+			{/if}
+			<div class="form-group">
+				<label for="name">Никнейм</label>
+				<input
+					type="text"
+					id="name"
+					name="name"
+					value={form?.action === 'updateName' ? (form?.name ?? data.user?.name ?? '') : (data.user?.name ?? '')}
+					maxlength="80"
+					required
+				/>
+			</div>
+			<button class="secondary-btn" type="submit">Сохранить никнейм</button>
+		</form>
+
+		<form method="POST" action="?/requestPasswordReset" class="account-form">
+			<h2>Пароль</h2>
+			{#if form?.action === 'requestPasswordReset' && form?.message}
+				<div class={form?.success ? 'form-message success' : 'form-message error'}>{form.message}</div>
+			{/if}
+			<p class="form-note">Ссылка для смены пароля придёт на вашу электронную почту.</p>
+			<p class="form-note">Письмо может прийти в папку "Спам".</p>
+			<button class="secondary-btn" type="submit">Сменить пароль</button>
+		</form>
 
 		<button class="logout-btn" onclick={logout}>
 			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -71,7 +104,7 @@
 
 	.account-card {
 		width: 100%;
-		max-width: 500px;
+		max-width: 560px;
 		background: var(--bg-card);
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-lg);
@@ -170,6 +203,91 @@
 	}
 	.status-pending {
 		color: #f59e0b !important;
+	}
+
+	.account-form {
+		display: flex;
+		flex-direction: column;
+		gap: 0.9rem;
+		padding-bottom: 1.8rem;
+		margin-bottom: 1.8rem;
+		border-bottom: 1px solid var(--border-subtle);
+	}
+
+	.account-form h2 {
+		margin: 0;
+		color: var(--text-primary);
+		font-size: 1.05rem;
+		font-weight: 700;
+	}
+
+	.form-message {
+		padding: 0.75rem;
+		border-radius: var(--radius-md);
+		font-size: 0.86rem;
+		line-height: 1.4;
+	}
+
+	.form-message.success {
+		background: rgba(16, 185, 129, 0.12);
+		border: 1px solid rgba(16, 185, 129, 0.35);
+		color: #065f46;
+	}
+
+	.form-message.error {
+		background: rgba(239, 68, 68, 0.1);
+		border: 1px solid rgba(239, 68, 68, 0.35);
+		color: #991b1b;
+	}
+
+	.form-group {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.form-group label {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+
+	.form-group input {
+		padding: 0.75rem 1rem;
+		background: var(--bg-base);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		color: var(--text-primary);
+		font-size: 0.95rem;
+		transition: border-color var(--transition-fast);
+	}
+
+	.form-group input:focus {
+		outline: none;
+		border-color: var(--accent-primary);
+	}
+
+	.form-note {
+		margin: 0;
+		color: var(--text-secondary);
+		font-size: 0.88rem;
+		line-height: 1.45;
+	}
+
+	.secondary-btn {
+		width: 100%;
+		padding: 0.9rem 1rem;
+		background: var(--accent-primary);
+		color: var(--bg-base);
+		border: none;
+		border-radius: var(--radius-md);
+		font-weight: 700;
+		cursor: pointer;
+		transition: opacity var(--transition-fast);
+	}
+
+	.secondary-btn:hover {
+		opacity: 0.9;
 	}
 
 	.logout-btn {

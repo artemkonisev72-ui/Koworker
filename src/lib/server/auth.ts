@@ -16,7 +16,9 @@ import {
 const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
 const SESSION_COOKIE_MAX_AGE_SECONDS = Math.floor(SESSION_DURATION_MS / 1000);
 const DEFAULT_EMAIL_VERIFY_TTL_MINUTES = 24 * 60;
+const DEFAULT_PASSWORD_RESET_TTL_MINUTES = 60;
 const EMAIL_VERIFY_TTL_MINUTES_VALUE = Number.parseInt(env.EMAIL_VERIFY_TTL_MINUTES || '', 10);
+const PASSWORD_RESET_TTL_MINUTES_VALUE = Number.parseInt(env.PASSWORD_RESET_TTL_MINUTES || '', 10);
 
 export const SESSION_COOKIE_NAME = 'session';
 export { hashPassword, isEmailFormatValid, isPasswordFormatValid, normalizeEmail, sanitizeDisplayName, verifyPassword };
@@ -30,6 +32,13 @@ function getEmailVerifyTtlMinutes(): number {
 		return EMAIL_VERIFY_TTL_MINUTES_VALUE;
 	}
 	return DEFAULT_EMAIL_VERIFY_TTL_MINUTES;
+}
+
+function getPasswordResetTtlMinutes(): number {
+	if (Number.isFinite(PASSWORD_RESET_TTL_MINUTES_VALUE) && PASSWORD_RESET_TTL_MINUTES_VALUE > 0) {
+		return PASSWORD_RESET_TTL_MINUTES_VALUE;
+	}
+	return DEFAULT_PASSWORD_RESET_TTL_MINUTES;
 }
 
 export function isLegacyUnmigratedUser(user: Pick<User, 'emailNormalized' | 'emailVerifiedAt'>): boolean {
@@ -197,4 +206,79 @@ export async function consumeEmailVerificationToken(rawToken: string): Promise<C
 	});
 
 	return 'verified';
+}
+
+export async function issuePasswordResetToken(userId: string): Promise<{ token: string; expiresAt: Date }> {
+	const token = generateOpaqueToken();
+	const expiresAt = new Date(Date.now() + getPasswordResetTtlMinutes() * 60 * 1000);
+
+	await prisma.$transaction(async (tx) => {
+		await tx.passwordResetToken.deleteMany({ where: { userId } });
+		await tx.passwordResetToken.create({
+			data: {
+				userId,
+				tokenHash: hashToken(token),
+				expiresAt
+			}
+		});
+	});
+
+	return { token, expiresAt };
+}
+
+export type PasswordResetTokenStatus = 'valid' | 'invalid' | 'expired';
+
+export async function getPasswordResetTokenStatus(rawToken: string): Promise<PasswordResetTokenStatus> {
+	if (!rawToken) return 'invalid';
+
+	const tokenHash = hashToken(rawToken);
+	const tokenRecord = await prisma.passwordResetToken.findUnique({
+		where: { tokenHash }
+	});
+
+	if (!tokenRecord) return 'invalid';
+
+	if (tokenRecord.expiresAt.getTime() < Date.now()) {
+		await prisma.passwordResetToken.delete({ where: { id: tokenRecord.id } }).catch(() => {});
+		return 'expired';
+	}
+
+	return 'valid';
+}
+
+export type ConsumePasswordResetResult = 'reset' | 'invalid' | 'expired';
+
+export async function consumePasswordResetToken(rawToken: string, newPassword: string): Promise<ConsumePasswordResetResult> {
+	if (!rawToken) return 'invalid';
+
+	const tokenHash = hashToken(rawToken);
+	const tokenRecord = await prisma.passwordResetToken.findUnique({
+		where: { tokenHash }
+	});
+
+	if (!tokenRecord) return 'invalid';
+
+	if (tokenRecord.expiresAt.getTime() < Date.now()) {
+		await prisma.passwordResetToken.delete({ where: { id: tokenRecord.id } }).catch(() => {});
+		return 'expired';
+	}
+
+	await prisma.$transaction(async (tx) => {
+		await tx.user.update({
+			where: { id: tokenRecord.userId },
+			data: {
+				passwordHash: hashPassword(newPassword)
+			}
+		});
+
+		await tx.passwordResetToken.deleteMany({
+			where: { userId: tokenRecord.userId }
+		});
+
+		await tx.session.deleteMany({
+			where: { userId: tokenRecord.userId }
+		});
+	});
+
+	return 'reset';
 }

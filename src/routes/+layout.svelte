@@ -181,7 +181,7 @@
 </svelte:head>
 
 {#if showInstallOffer}
-	<section class="pwa-install-offer" aria-live="polite" aria-label="Install Koworker">
+	<section class="pwa-install-offer" aria-live="polite" aria-label="Установка Koworker">
 		<div class="pwa-install-copy">
 			<h2>Установите Koworker на Android</h2>
 			<p>Закрепите приложение на главном экране и открывайте его в одно касание.</p>

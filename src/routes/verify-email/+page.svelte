@@ -10,6 +10,7 @@
 			<img src="/pwa-192x192.png" alt="Логотип Koworker" class="auth-logo" />
 			<h1>Подтвердите электронную почту</h1>
 			<p>Подтвердите адрес, чтобы завершить активацию аккаунта.</p>
+			<p class="auth-note">Письмо может прийти в папку "Спам".</p>
 		</header>
 
 		{#if data.tokenStatus === 'expired'}
@@ -86,6 +87,11 @@
 	.auth-header p {
 		color: var(--text-secondary);
 		font-size: 0.9rem;
+	}
+	.auth-note {
+		margin-top: 0.45rem;
+		color: var(--text-primary) !important;
+		font-size: 0.84rem !important;
 	}
 	.auth-form {
 		display: flex;

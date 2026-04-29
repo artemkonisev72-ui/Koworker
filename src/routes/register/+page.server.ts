@@ -1,12 +1,10 @@
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import {
-	backfillLegacyUser,
 	findUserByNormalizedEmail,
 	hashPassword,
 	isEmailFormatValid,
 	isPasswordFormatValid,
-	isUserEmailVerified,
 	issueEmailVerificationToken,
 	normalizeEmail,
 	sanitizeDisplayName
@@ -54,41 +52,43 @@ export const actions: Actions = {
 			});
 		}
 
-		let user = await findUserByNormalizedEmail(emailNormalized);
-		if (!user) {
-			try {
-				user = await prisma.user.create({
-					data: {
-						email: emailTrimmed,
-						emailNormalized,
-						name: displayName,
-						passwordHash: hashPassword(rawPassword)
-					}
-				});
-			} catch {
-				user = await findUserByNormalizedEmail(emailNormalized);
-				if (!user) {
-					return fail(500, {
-						email: emailTrimmed,
-						message: 'Не удалось создать аккаунт. Попробуйте ещё раз.'
-					});
-				}
-			}
-		}
-
-		if (!user.emailNormalized) {
-			user = await backfillLegacyUser(user);
-		}
-
-		if (!isUserEmailVerified(user)) {
-			const { token } = await issueEmailVerificationToken(user.id);
-			await sendVerificationEmail({
-				to: user.email,
-				name: user.name,
-				token,
-				baseUrl: url.origin
+		if (await findUserByNormalizedEmail(emailNormalized)) {
+			return fail(409, {
+				email: emailTrimmed,
+				message: 'Аккаунт с этой электронной почтой уже зарегистрирован. Войдите или восстановите пароль.'
 			});
 		}
+
+		let user;
+		try {
+			user = await prisma.user.create({
+				data: {
+					email: emailTrimmed,
+					emailNormalized,
+					name: displayName,
+					passwordHash: hashPassword(rawPassword)
+				}
+			});
+		} catch {
+			if (await findUserByNormalizedEmail(emailNormalized)) {
+				return fail(409, {
+					email: emailTrimmed,
+					message: 'Аккаунт с этой электронной почтой уже зарегистрирован. Войдите или восстановите пароль.'
+				});
+			}
+			return fail(500, {
+				email: emailTrimmed,
+				message: 'Не удалось создать аккаунт. Попробуйте ещё раз.'
+			});
+		}
+
+		const { token } = await issueEmailVerificationToken(user.id);
+		await sendVerificationEmail({
+			to: user.email,
+			name: user.name,
+			token,
+			baseUrl: url.origin
+		});
 
 		verifyRedirect(emailNormalized);
 	}

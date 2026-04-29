@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	DISPLAY_NAME_MAX_LENGTH,
 	generateOpaqueToken,
 	hashPassword,
 	hashToken,
@@ -51,6 +52,6 @@ describe('auth utils', () => {
 		expect(sanitizeDisplayName('  Alice   ')).toBe('Alice');
 		expect(sanitizeDisplayName('')).toBeNull();
 		expect(sanitizeDisplayName(' '.repeat(8))).toBeNull();
-		expect(sanitizeDisplayName('a'.repeat(120))?.length).toBe(80);
+		expect(sanitizeDisplayName('a'.repeat(120))?.length).toBe(DISPLAY_NAME_MAX_LENGTH);
 	});
 });
