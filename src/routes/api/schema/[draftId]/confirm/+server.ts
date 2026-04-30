@@ -205,7 +205,7 @@ function launchSchemaSolveInBackground(params: {
 }
 
 export const POST: RequestHandler = async ({ locals, params, request }) => {
-	if (!locals.user) return error(401, 'Unauthorized');
+	if (!locals.user) return error(401, 'Нужно войти в аккаунт.');
 	const db = prisma as any;
 	const startedAt = Date.now();
 	logSchemaCheck('confirm.request', { userId: locals.user.id, draftId: params.draftId });
@@ -217,7 +217,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 		// Backwards-compatible empty body.
 	}
 	if (requestedModelPreference !== undefined && !isModelPreference(requestedModelPreference)) {
-		return error(400, `Unsupported modelPreference: ${String(requestedModelPreference)}`);
+		return error(400, `Неподдерживаемая модель: ${String(requestedModelPreference)}`);
 	}
 
 	const draft = await db.taskDraft.findUnique({
@@ -234,7 +234,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	});
 
 	if (!draft) return error(404, 'Draft not found');
-	if (draft.userId !== locals.user.id || draft.chat.userId !== locals.user.id) return error(403, 'Forbidden');
+	if (draft.userId !== locals.user.id || draft.chat.userId !== locals.user.id) return error(403, 'Нет доступа к этому черновику.');
 	logSchemaCheck('confirm.draft_loaded', {
 		draftId: draft.id,
 		chatId: draft.chatId,

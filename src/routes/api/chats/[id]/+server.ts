@@ -5,15 +5,15 @@ import { isModelPreference, normalizeModelPreference } from '$lib/server/ai/mode
 
 // PATCH /api/chats/[id] — rename or pin chat
 export const PATCH: RequestHandler = async ({ params, locals, request }) => {
-	if (!locals.user) return error(401, 'Unauthorized');
+	if (!locals.user) return error(401, 'Нужно войти в аккаунт.');
 
 	const { id } = params;
 	const body = await request.json() as { title?: string; isPinned?: boolean; modelPreference?: string; isPublic?: boolean };
 
 	const chat = await prisma.chat.findUnique({ where: { id: id } });
 
-	if (!chat) return error(404, 'Chat not found');
-	if (chat.userId !== locals.user.id) return error(403, 'Forbidden');
+	if (!chat) return error(404, 'Чат не найден.');
+	if (chat.userId !== locals.user.id) return error(403, 'Нет доступа к этому чату.');
 
 	if (body.modelPreference !== undefined) {
 		console.log('[ModelPreference:API] chat patch requested', {
@@ -25,7 +25,7 @@ export const PATCH: RequestHandler = async ({ params, locals, request }) => {
 	}
 
 	if (body.modelPreference !== undefined && !isModelPreference(body.modelPreference)) {
-		return error(400, `Unsupported modelPreference: ${String(body.modelPreference)}`);
+		return error(400, `Неподдерживаемая модель: ${String(body.modelPreference)}`);
 	}
 
 	const updated = await prisma.chat.update({
@@ -57,14 +57,14 @@ export const PATCH: RequestHandler = async ({ params, locals, request }) => {
 
 // DELETE /api/chats/[id] — delete chat
 export const DELETE: RequestHandler = async ({ params, locals }) => {
-	if (!locals.user) return error(401, 'Unauthorized');
+	if (!locals.user) return error(401, 'Нужно войти в аккаунт.');
 
 	const { id } = params;
 
 	const chat = await prisma.chat.findUnique({ where: { id } });
 
-	if (!chat) return error(404, 'Chat not found');
-	if (chat.userId !== locals.user.id) return error(403, 'Forbidden');
+	if (!chat) return error(404, 'Чат не найден.');
+	if (chat.userId !== locals.user.id) return error(403, 'Нет доступа к этому чату.');
 
 	await prisma.chat.delete({ where: { id } });
 

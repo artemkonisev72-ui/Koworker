@@ -33,15 +33,15 @@ describe('chat image helpers', () => {
 
 	it('validates image count, mime and size', () => {
 		expect(validateChatImages([png, jpg])).toBeNull();
-		expect(validateChatImages(Array.from({ length: MAX_CHAT_IMAGES + 1 }, () => png))).toContain('too many');
-		expect(validateChatImages([{ base64: 'CCCC', mimeType: 'image/gif' }])).toContain('Unsupported');
-		expect(validateChatImages([{ base64: '', mimeType: 'image/png' }])).toContain('invalid');
+		expect(validateChatImages(Array.from({ length: MAX_CHAT_IMAGES + 1 }, () => png))).toContain('Слишком много');
+		expect(validateChatImages([{ base64: 'CCCC', mimeType: 'image/gif' }])).toContain('Неподдерживаемый');
+		expect(validateChatImages([{ base64: '', mimeType: 'image/png' }])).toContain('некорректно');
 	});
 
 	it('allows image-only prompts and provides fallback text/title', () => {
 		expect(hasPromptOrImages('', [])).toBe(false);
 		expect(hasPromptOrImages('', [png])).toBe(true);
-		expect(effectivePromptForImages('', [png])).toContain('attached image');
+		expect(effectivePromptForImages('', [png])).toContain('прикреплённому изображению');
 		expect(titleFromPromptOrImages('', [png])).toBe('Задача по изображению');
 	});
 });

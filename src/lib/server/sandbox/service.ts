@@ -45,7 +45,7 @@ async function parseJsonBody(req: http.IncomingMessage): Promise<Record<string, 
 	try {
 		return JSON.parse(raw) as Record<string, unknown>;
 	} catch {
-		throw new Error('Invalid JSON body');
+		throw new Error('Некорректный JSON-запрос.');
 	}
 }
 
@@ -60,7 +60,7 @@ const server = http.createServer(async (req, res) => {
 
 	if (url === '/execute' && method === 'POST') {
 		if (!isAuthorized(req)) {
-			sendJson(res, 401, { ok: false, error: 'Unauthorized' });
+			sendJson(res, 401, { ok: false, error: 'Нужно войти в аккаунт.' });
 			return;
 		}
 

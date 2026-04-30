@@ -47,6 +47,13 @@ import {
 	validateChatImages,
 	type ChatImage
 } from '$lib/chat/images.js';
+import { prepareMessageAttachments, selectAttachmentFields } from '$lib/server/attachments.js';
+import {
+	attachmentRenderedImages,
+	attachmentsFromStoredRows,
+	augmentPromptWithAttachments,
+	type ChatAttachmentInput
+} from '$lib/chat/attachments.js';
 
 const MAX_MESSAGE_LENGTH = 8_000;
 const RATE_WINDOW_MS = 60_000;
@@ -95,13 +102,14 @@ type OutboundEvent = PipelineStatus | SandboxRequestEvent;
 
 export const POST: RequestHandler = async ({ locals, request }) => {
 	console.log('[SSE] POST /api/chat received');
-	if (!locals.user) return error(401, 'Unauthorized');
+	if (!locals.user) return error(401, 'Нужно войти в аккаунт.');
 	
 	let body: {
 		chatId?: string;
 		message?: string;
 		imageData?: ChatImage;
 		images?: ChatImage[];
+		attachments?: ChatAttachmentInput[];
 		modelPreference?: string;
 	};
 
@@ -117,27 +125,28 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		);
 	} catch {
 		console.error('[SSE] Failed to parse JSON body');
-		return error(400, 'Invalid JSON body');
+		return error(400, 'Некорректный JSON-запрос.');
 	}
 
 	const { chatId } = body;
 	const message = body.message ?? '';
 	const images = normalizeRequestImages(body);
+	const hasAttachments = Array.isArray(body.attachments) ? body.attachments.length > 0 : Boolean(body.attachments);
 	if (body.modelPreference !== undefined && !isModelPreference(body.modelPreference)) {
-		return error(400, `Unsupported modelPreference: ${String(body.modelPreference)}`);
+		return error(400, `Неподдерживаемая модель: ${String(body.modelPreference)}`);
 	}
 
-	if (!chatId || !hasPromptOrImages(message, images)) {
+	if (!chatId || (!hasPromptOrImages(message, images) && !hasAttachments)) {
 		console.error('[SSE] Missing chatId or message/image');
-		return error(400, 'chatId and message or image are required');
+		return error(400, 'Нужен чат и сообщение, изображение или документ.');
 	}
 	if (message.length > MAX_MESSAGE_LENGTH) {
-		return error(413, `message is too large (max ${MAX_MESSAGE_LENGTH} chars)`);
+		return error(413, `Сообщение слишком длинное. Максимум ${MAX_MESSAGE_LENGTH} символов.`);
 	}
 
 	const imageError = validateChatImages(images);
 	if (imageError) {
-		return error(imageError.includes('too large') ? 413 : 400, imageError);
+		return error(imageError.toLowerCase().includes('больш') ? 413 : 400, imageError);
 	}
 
 	// Проверяем существование чата и получаем предпочтения модели
@@ -146,11 +155,11 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		select: { id: true, userId: true, modelPreference: true }
 	});
 	if (!chat) {
-		console.error('[SSE] Chat not found:', chatId);
-		return error(404, 'Chat not found');
+		console.error('[SSE] Чат не найден:', chatId);
+		return error(404, 'Чат не найден.');
 	}
 	if (chat.userId !== locals.user.id) {
-		return error(403, 'Forbidden');
+		return error(403, 'Нет доступа к этому чату.');
 	}
 
 	const effectiveModelPreference =
@@ -166,6 +175,27 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		effectiveModelPreference,
 		forcedModel
 	});
+
+	let preparedAttachments: Awaited<ReturnType<typeof prepareMessageAttachments>>;
+	try {
+		preparedAttachments = await prepareMessageAttachments({
+			rawAttachments: body.attachments,
+			prompt: message,
+			existingImageCount: images.length
+		});
+	} catch (attachmentError) {
+		const messageText = attachmentError instanceof Error ? attachmentError.message : String(attachmentError);
+		return error(messageText.includes('больш') || messageText.includes('размер') ? 413 : 400, messageText);
+	}
+
+	const aiImages = [...images, ...preparedAttachments.renderedImages];
+	const combinedImageError = validateChatImages(aiImages);
+	if (combinedImageError) {
+		return error(combinedImageError.toLowerCase().includes('больш') ? 413 : 400, combinedImageError);
+	}
+	if (!hasPromptOrImages(preparedAttachments.augmentedPrompt, aiImages)) {
+		return error(400, 'Не удалось извлечь содержимое из прикреплённых файлов.');
+	}
 
 	// Извлекаем историю сообщений для контекста (последние 20 сообщений)
 	let approvedFollowupContext: ApprovedFollowupContext | null = null;
@@ -259,17 +289,26 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		}
 	}
 
-	const rawHistory = await prisma.message.findMany({
+	const rawHistory = await (prisma as any).message.findMany({
 		where: { chatId },
 		orderBy: { createdAt: 'asc' },
-		take: 20
+		take: 20,
+		include: {
+			attachments: {
+				orderBy: { createdAt: 'asc' },
+				select: selectAttachmentFields()
+			}
+		}
 	});
 
-	const history = rawHistory.map((m) => ({
-		role: m.role as 'USER' | 'ASSISTANT',
-		content: m.content || '',
-		images: parseStoredChatImages(m.imageData)
-	}));
+	const history = rawHistory.map((m: any) => {
+		const attachments = attachmentsFromStoredRows(m.attachments ?? []);
+		return {
+			role: m.role as 'USER' | 'ASSISTANT',
+			content: augmentPromptWithAttachments(m.content || '', attachments),
+			images: [...parseStoredChatImages(m.imageData), ...attachmentRenderedImages(attachments)]
+		};
+	});
 
 	const now = Date.now();
 	const userRate = chatRateMap.get(locals.user.id) ?? {
@@ -305,13 +344,26 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 	// Сохраняем сообщение пользователя
 	try {
-		const userMessage = await prisma.message.create({
-			data: {
-				chatId,
-				role: 'USER',
-				content: message,
-				imageData: serializeChatImages(images)
+		const userMessage = await (prisma as any).$transaction(async (tx: any) => {
+			const created = await tx.message.create({
+				data: {
+					chatId,
+					role: 'USER',
+					content: message,
+					imageData: serializeChatImages(images)
+				}
+			});
+
+			if (preparedAttachments.dbRows.length > 0) {
+				await tx.messageAttachment.createMany({
+					data: preparedAttachments.dbRows.map((attachment) => ({
+						...attachment,
+						messageId: created.id
+					}))
+				});
 			}
+
+			return created;
 		});
 		persistedUserMessageId = userMessage.id;
 	} catch (err) {
@@ -472,7 +524,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 			// Запускаем пайплайн асинхронно
 			runPipeline(
-				message,
+				preparedAttachments.augmentedPrompt,
 				history,
 				async (event) => {
 					if (event.type === 'status') {
@@ -520,7 +572,12 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 							// Обновляем заголовок чата если это первое сообщение
 						const msgCount = await prisma.message.count({ where: { chatId } });
 						if (msgCount <= 2) {
-							const title = titleFromPromptOrImages(message, images);
+							const titleSource =
+								message.trim() ||
+								(preparedAttachments.attachments.length > 0
+									? `Задача из документа: ${preparedAttachments.attachments[0].fileName}`
+									: '');
+							const title = titleFromPromptOrImages(titleSource, aiImages);
 							await prisma.chat.update({ where: { id: chatId }, data: { title } });
 						}
 
@@ -533,7 +590,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 						send(event);
 					}
 				},
-				images,
+				aiImages,
 				forcedModel,
 				{
 					approvedFollowupContext,
@@ -573,19 +630,19 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 // ── GET /api/chat?chatId=xxx — история сообщений ──────────────────────────────
 export const GET: RequestHandler = async ({ url, locals }) => {
 	const chatId = url.searchParams.get('chatId');
-	if (!chatId) return error(400, 'chatId is required');
+	if (!chatId) return error(400, 'Нужен идентификатор чата.');
 
 	const chat = await prisma.chat.findUnique({
 		where: { id: chatId },
 		select: { userId: true, isPublic: true }
 	});
 
-	if (!chat) return error(404, 'Chat not found');
+	if (!chat) return error(404, 'Чат не найден.');
 
 	// Разрешить доступ если чат публичный или если пользователь авторизован и это его чат
 	if (!chat.isPublic) {
-		if (!locals.user) return error(401, 'Unauthorized');
-		if (chat.userId !== locals.user.id) return error(403, 'Forbidden');
+		if (!locals.user) return error(401, 'Нужно войти в аккаунт.');
+		if (chat.userId !== locals.user.id) return error(403, 'Нет доступа к этому чату.');
 	}
 
 	const messages = await (prisma as any).message.findMany({
@@ -603,10 +660,19 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			schemaVersion: true,
 			usedModels: true,
 			imageData: true,
+			attachments: {
+				orderBy: { createdAt: 'asc' },
+				select: selectAttachmentFields()
+			},
 			draftId: true,
 			createdAt: true
 		}
 	});
 
-	return json(messages);
+	return json(
+		messages.map((message: any) => ({
+			...message,
+			attachments: attachmentsFromStoredRows(message.attachments ?? [])
+		}))
+	);
 };

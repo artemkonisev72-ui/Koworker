@@ -165,7 +165,7 @@ describe('runPipeline status sink', () => {
 			],
 			undefined
 		);
-		expect(routeQuestionMock.mock.calls[0][1]).toContain('attached images');
+		expect(routeQuestionMock.mock.calls[0][1]).toContain('прикреплённым изображениям');
 		expect(routeQuestionMock.mock.calls[0][1]).toContain('Image describes a beam task.');
 		expect(answerGeneralQuestionMock).toHaveBeenCalledTimes(1);
 	});

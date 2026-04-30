@@ -15,7 +15,7 @@ import { getChatProcessingForUser } from '$lib/server/chat-processing.js';
 import { json, error } from '@sveltejs/kit';
 
 export const POST: RequestHandler = async ({ locals, request }) => {
-	if (!locals.user) return error(401, 'Unauthorized');
+	if (!locals.user) return error(401, 'Нужно войти в аккаунт.');
 
 	let title = '\u041d\u043e\u0432\u044b\u0439 \u0447\u0430\u0442';
 	let modelPreference: ModelPreference = DEFAULT_MODEL_PREFERENCE;
@@ -28,7 +28,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	if (body.title) title = body.title;
 	if (body.modelPreference !== undefined) {
 		if (!isModelPreference(body.modelPreference)) {
-			return error(400, `Unsupported modelPreference: ${String(body.modelPreference)}`);
+			return error(400, `Неподдерживаемая модель: ${String(body.modelPreference)}`);
 		}
 		modelPreference = normalizeModelPreference(body.modelPreference);
 	}
@@ -46,7 +46,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 };
 
 export const GET: RequestHandler = async ({ locals }) => {
-	if (!locals.user) return error(401, 'Unauthorized');
+	if (!locals.user) return error(401, 'Нужно войти в аккаунт.');
 	const activeProcessing = getChatProcessingForUser(locals.user.id);
 
 	const chats = await prisma.chat.findMany({

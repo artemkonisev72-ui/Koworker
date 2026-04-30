@@ -2,6 +2,8 @@
 import type { PageServerLoad } from './$types';
 import { prisma } from '$lib/server/db';
 import { parseStoredChatImages } from '$lib/chat/images.js';
+import { attachmentsFromStoredRows } from '$lib/chat/attachments.js';
+import { selectAttachmentFields } from '$lib/server/attachments.js';
 
 function parseMaybeJson(value: unknown): unknown {
 	if (value === null || value === undefined) return null;
@@ -21,13 +23,19 @@ export const load: PageServerLoad = async ({ params }) => {
 		where: { id },
 		include: {
 			messages: {
-				orderBy: { createdAt: 'asc' }
+				orderBy: { createdAt: 'asc' },
+				include: {
+					attachments: {
+						orderBy: { createdAt: 'asc' },
+						select: selectAttachmentFields()
+					}
+				}
 			}
 		}
 	});
 
 	if (!chat) {
-		throw error(404, 'Chat not found');
+		throw error(404, 'Чат не найден.');
 	}
 
 	if (!chat.isPublic) {
@@ -45,6 +53,7 @@ export const load: PageServerLoad = async ({ params }) => {
 			role: m.role,
 			content: m.content,
 			imageData: parseStoredChatImages(m.imageData),
+			attachments: attachmentsFromStoredRows(m.attachments ?? []),
 			generatedCode: m.generatedCode,
 			executionLogs: m.executionLogs,
 			graphData: parseMaybeJson(m.graphData),

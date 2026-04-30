@@ -17,7 +17,7 @@ function normalizeErrorKind(value: unknown): SandboxErrorKind {
 }
 
 export const POST: RequestHandler = async ({ locals, request }) => {
-	if (!locals.user) return error(401, 'Unauthorized');
+	if (!locals.user) return error(401, 'Нужно войти в аккаунт.');
 
 	let body: {
 		requestId?: string;
@@ -29,7 +29,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	try {
 		body = (await request.json()) as typeof body;
 	} catch {
-		return error(400, 'Invalid JSON body');
+		return error(400, 'Некорректный JSON-запрос.');
 	}
 
 	if (!body.requestId || typeof body.requestId !== 'string') {

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import MessageRenderer from '$lib/components/MessageRenderer.svelte';
 	import type { ChatImage } from '$lib/chat/images.js';
+	import { formatFileSize, type StoredChatAttachment } from '$lib/chat/attachments.js';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -17,10 +18,14 @@
 				)
 		);
 	}
+
+	function messageAttachments(message: PageData['messages'][number]): StoredChatAttachment[] {
+		return Array.isArray(message.attachments) ? (message.attachments as StoredChatAttachment[]) : [];
+	}
 </script>
 
 <svelte:head>
-	<title>{data.chat.title} — Koworker Shared</title>
+	<title>{data.chat.title} — общий доступ Koworker</title>
 </svelte:head>
 
 <div class="shared-container">
@@ -29,13 +34,13 @@
 			<div class="logo">
 				<img
 					src="/pwa-192x192.png"
-					alt="Koworker Logo"
+					alt="Логотип Koworker"
 					width="24"
 					height="24"
 					style="object-fit: contain;"
 				/>
 				<span class="logo-text">Koworker</span>
-				<span class="badge">SHARED</span>
+				<span class="badge">ОБЩИЙ ДОСТУП</span>
 			</div>
 			<h1>{data.chat.title}</h1>
 			<div class="meta">
@@ -48,13 +53,25 @@
 		{#each data.messages as message}
 			{#if message.role === 'USER'}
 				{@const images = messageImages(message)}
+				{@const attachments = messageAttachments(message)}
 				<article class="shared-user-message">
+					{#if attachments.length > 0}
+						<div class="shared-user-documents">
+							{#each attachments as attachment}
+								<div class="shared-document-chip">
+									<span class="shared-document-kind">{attachment.kind}</span>
+									<span class="shared-document-name">{attachment.fileName}</span>
+									<span class="shared-document-size">{formatFileSize(attachment.sizeBytes)}</span>
+								</div>
+							{/each}
+						</div>
+					{/if}
 					{#if images.length > 0}
 						<div class="shared-user-images">
 							{#each images as image, index}
 								<img
 									src={`data:${image.mimeType};base64,${image.base64}`}
-									alt={`Uploaded task ${index + 1}`}
+									alt={`Прикреплённая задача ${index + 1}`}
 									class="shared-user-img"
 								/>
 							{/each}
@@ -159,6 +176,47 @@
 		grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
 		gap: 0.5rem;
 		margin-bottom: 0.65rem;
+	}
+
+	.shared-user-documents {
+		display: flex;
+		flex-direction: column;
+		gap: 0.55rem;
+		margin-bottom: 0.65rem;
+	}
+
+	.shared-document-chip {
+		display: flex;
+		align-items: center;
+		gap: 0.55rem;
+		padding: 0.62rem 0.7rem;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		font-size: 0.86rem;
+	}
+
+	.shared-document-kind {
+		flex: 0 0 auto;
+		padding: 0.18rem 0.38rem;
+		border-radius: var(--radius-sm);
+		background: var(--accent-soft);
+		color: var(--accent-primary);
+		font-size: 0.72rem;
+		font-weight: 800;
+	}
+
+	.shared-document-name {
+		min-width: 0;
+		font-weight: 650;
+		overflow-wrap: anywhere;
+	}
+
+	.shared-document-size {
+		flex: 0 0 auto;
+		margin-left: auto;
+		color: var(--text-secondary);
+		font-size: 0.78rem;
 	}
 
 	.shared-user-img {

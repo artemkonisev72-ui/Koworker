@@ -4,7 +4,7 @@ import { prisma } from '$lib/server/db.js';
 import { logSchemaCheck } from '$lib/server/schema/flow.js';
 
 export const GET: RequestHandler = async ({ locals, params }) => {
-	if (!locals.user) return error(401, 'Unauthorized');
+	if (!locals.user) return error(401, 'Нужно войти в аккаунт.');
 	const db = prisma as any;
 	logSchemaCheck('get.request', { userId: locals.user.id, draftId: params.draftId });
 
@@ -19,7 +19,7 @@ export const GET: RequestHandler = async ({ locals, params }) => {
 	});
 
 	if (!draft) return error(404, 'Draft not found');
-	if (draft.userId !== locals.user.id) return error(403, 'Forbidden');
+	if (draft.userId !== locals.user.id) return error(403, 'Нет доступа к этому черновику.');
 	logSchemaCheck('get.loaded', {
 		draftId: draft.id,
 		chatId: draft.chatId,

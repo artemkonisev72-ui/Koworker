@@ -123,9 +123,33 @@ model Message {
   createdAt     DateTime    @default(now())
   chat          Chat        @relation(fields: [chatId], references: [id], onDelete: Cascade)
   draft         TaskDraft?  @relation(fields: [draftId], references: [id], onDelete: SetNull)
+  attachments   MessageAttachment[]
 
   @@index([chatId])
   @@index([draftId])
+}
+
+enum MessageAttachmentKind {
+  PDF
+  DOCX
+}
+
+model MessageAttachment {
+  id                String                @id @default(cuid())
+  messageId         String
+  kind              MessageAttachmentKind
+  fileName          String
+  mimeType          String
+  sizeBytes         Int
+  base64Data        String                @db.Text
+  extractedText     String?               @db.Text
+  renderedImageData String?               @db.Text
+  pageCount         Int?
+  usedPageCount     Int?
+  createdAt         DateTime              @default(now())
+  message           Message               @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
 }
 
 model TaskDraft {

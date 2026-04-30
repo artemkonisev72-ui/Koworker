@@ -41,7 +41,7 @@ describe('chat-processing registry', () => {
 			userId: 'user-1',
 			chatId: 'chat-1',
 			kind: 'schema_start',
-			statusMessage: 'Building initial scheme...'
+			statusMessage: 'Строю первичную схему...'
 		});
 
 		expect(() =>

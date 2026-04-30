@@ -10,6 +10,12 @@ import {
 	validateChatImages
 } from '$lib/chat/images.js';
 import {
+	attachmentRenderedImages,
+	attachmentsFromStoredRows,
+	augmentPromptWithAttachments
+} from '$lib/chat/attachments.js';
+import { selectAttachmentFields } from '$lib/server/attachments.js';
+import {
 	detectPromptLanguage as detectPromptLanguageShared,
 	type PromptLanguage
 } from './language.js';
@@ -35,8 +41,8 @@ export type InputImagesData = ChatImage[];
 export type { PromptLanguage };
 
 export function validateUserPrompt(prompt: string, images: InputImagesData = []): string | null {
-	if (!hasPromptOrImages(prompt, images)) return 'message or image is required';
-	if (prompt.length > MAX_MESSAGE_LENGTH) return `message is too large (max ${MAX_MESSAGE_LENGTH} chars)`;
+	if (!hasPromptOrImages(prompt, images)) return 'Нужно сообщение или изображение.';
+	if (prompt.length > MAX_MESSAGE_LENGTH) return `Сообщение слишком длинное. Максимум ${MAX_MESSAGE_LENGTH} символов.`;
 	return null;
 }
 
@@ -45,9 +51,9 @@ export function validateImageData(imageData?: InputImageData | InputImagesData):
 }
 
 export function validateRevisionNotes(notes: string): string | null {
-	if (!notes.trim()) return 'notes are required';
+	if (!notes.trim()) return 'Добавьте комментарий к правкам.';
 	if (notes.length > MAX_REVISION_NOTES_LENGTH) {
-		return `notes are too large (max ${MAX_REVISION_NOTES_LENGTH} chars)`;
+		return `Комментарий слишком длинный. Максимум ${MAX_REVISION_NOTES_LENGTH} символов.`;
 	}
 	return null;
 }
@@ -64,14 +70,23 @@ export async function loadGeminiHistory(chatId: string, take = 20): Promise<Gemi
 	const rawHistory = await prisma.message.findMany({
 		where: { chatId },
 		orderBy: { createdAt: 'asc' },
-		take
+		take,
+		include: {
+			attachments: {
+				orderBy: { createdAt: 'asc' },
+				select: selectAttachmentFields()
+			}
+		}
 	});
 
-	return rawHistory.map((message) => ({
-		role: message.role as 'USER' | 'ASSISTANT',
-		content: message.content || '',
-		images: parseImageData(message.imageData)
-	}));
+	return rawHistory.map((message) => {
+		const attachments = attachmentsFromStoredRows(message.attachments ?? []);
+		return {
+			role: message.role as 'USER' | 'ASSISTANT',
+			content: augmentPromptWithAttachments(message.content || '', attachments),
+			images: [...parseImageData(message.imageData), ...attachmentRenderedImages(attachments)]
+		};
+	});
 }
 
 export function isReviewableStatus(status: DraftStatus): boolean {

@@ -40,7 +40,7 @@ interface ReviseBody {
 }
 
 export const POST: RequestHandler = async ({ locals, request, params }) => {
-	if (!locals.user) return error(401, 'Unauthorized');
+	if (!locals.user) return error(401, 'Нужно войти в аккаунт.');
 	const db = prisma as any;
 	const startedAt = Date.now();
 
@@ -49,12 +49,12 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 		body = (await request.json()) as ReviseBody;
 	} catch {
 		logSchemaCheck('revise.invalid_json', { userId: locals.user.id, draftId: params.draftId });
-		return error(400, 'Invalid JSON body');
+		return error(400, 'Некорректный JSON-запрос.');
 	}
 
 	const notes = body.notes ?? '';
 	if (body.modelPreference !== undefined && !isModelPreference(body.modelPreference)) {
-		return error(400, `Unsupported modelPreference: ${String(body.modelPreference)}`);
+		return error(400, `Неподдерживаемая модель: ${String(body.modelPreference)}`);
 	}
 	logSchemaCheck('revise.request', {
 		userId: locals.user.id,
@@ -77,7 +77,7 @@ export const POST: RequestHandler = async ({ locals, request, params }) => {
 	});
 
 	if (!draft) return error(404, 'Draft not found');
-	if (draft.userId !== locals.user.id || draft.chat.userId !== locals.user.id) return error(403, 'Forbidden');
+	if (draft.userId !== locals.user.id || draft.chat.userId !== locals.user.id) return error(403, 'Нет доступа к этому черновику.');
 	if (!isReviewableStatus(draft.status)) return error(409, `Invalid draft status: ${draft.status}`);
 	if (!draft.currentSchema) return error(409, 'Current schema is missing');
 	logSchemaCheck('revise.draft_loaded', {

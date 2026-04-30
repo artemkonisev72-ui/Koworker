@@ -103,7 +103,7 @@ function assertAllowedImport(modulePath: string): void {
 	const root = modulePath.split('.')[0].trim();
 	if (!root || !ALLOWED_IMPORT_SET.has(root)) {
 		throw new SandboxValidationError(
-			`Forbidden import "${modulePath}". Allowed: ${ALLOWED_IMPORT_ROOTS.join(', ')}`
+			`Запрещённый импорт "${modulePath}". Разрешено: ${ALLOWED_IMPORT_ROOTS.join(', ')}`
 		);
 	}
 }

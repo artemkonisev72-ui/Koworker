@@ -1,6 +1,8 @@
 import { prisma } from '$lib/server/db.js';
 import type { GraphData } from '$lib/graphs/types.js';
 import { parseStoredChatImages, type ChatImage } from '$lib/chat/images.js';
+import { attachmentsFromStoredRows, type StoredChatAttachment } from '$lib/chat/attachments.js';
+import { selectAttachmentFields } from '$lib/server/attachments.js';
 import { error } from '@sveltejs/kit';
 
 interface ExportMessageRecord {
@@ -22,10 +24,12 @@ interface ExportMessageRecord {
 	};
 }
 
+type ExportAttachmentRecord = Parameters<typeof attachmentsFromStoredRows>[0][number];
+
 interface ExportLoaderDb {
 	message: {
 		findUnique(args: unknown): Promise<ExportMessageRecord | null>;
-		findMany(args: unknown): Promise<Array<{ imageData: unknown }>>;
+		findMany(args: unknown): Promise<Array<{ imageData: unknown; attachments?: ExportAttachmentRecord[] }>>;
 	};
 }
 
@@ -36,6 +40,7 @@ export interface ExportPagePayload {
 		isPublic: boolean;
 	};
 	userImages: ChatImage[];
+	userAttachments: StoredChatAttachment[];
 	message: {
 		id: string;
 		role: 'USER' | 'ASSISTANT' | 'SYSTEM';
@@ -136,10 +141,10 @@ export async function loadExportMessageForViewer(params: {
 
 	if (!message.chat.isPublic) {
 		if (!params.viewerUserId) {
-			throw error(401, 'Unauthorized');
+			throw error(401, 'Нужно войти в аккаунт.');
 		}
 		if (message.chat.userId !== params.viewerUserId) {
-			throw error(403, 'Forbidden');
+			throw error(403, 'Нет доступа к этому чату.');
 		}
 	}
 
@@ -152,10 +157,15 @@ export async function loadExportMessageForViewer(params: {
 			createdAt: 'asc'
 		},
 		select: {
-			imageData: true
+			imageData: true,
+			attachments: {
+				orderBy: { createdAt: 'asc' },
+				select: selectAttachmentFields()
+			}
 		}
 	});
 	const userImages = userImageRows.flatMap((row) => parseChatImagesFromUnknown(row.imageData));
+	const userAttachments = userImageRows.flatMap((row) => attachmentsFromStoredRows(row.attachments ?? []));
 
 	return {
 		chat: {
@@ -164,6 +174,7 @@ export async function loadExportMessageForViewer(params: {
 			isPublic: message.chat.isPublic
 		},
 		userImages,
+		userAttachments,
 		message: {
 			id: message.id,
 			role: message.role,

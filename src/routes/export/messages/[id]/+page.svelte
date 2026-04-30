@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import MessageRenderer from '$lib/components/MessageRenderer.svelte';
+	import { formatFileSize } from '$lib/chat/attachments.js';
 
 	let { data }: { data: import('./$types').PageData } = $props();
 
@@ -91,35 +92,50 @@
 </script>
 
 <svelte:head>
-	<title>PDF Export - {data.chat.title}</title>
+	<title>Экспорт PDF - {data.chat.title}</title>
 </svelte:head>
 
 <main class="export-page">
 	<article class="export-sheet">
 		<header class="export-header">
-			<h1 class="export-title">{data.chat.title || 'Coworker solution export'}</h1>
+			<h1 class="export-title">{data.chat.title || 'Экспорт решения Coworker'}</h1>
 			<div class="export-meta">
-				<span>Message ID: {data.message.id}</span>
+				<span>ID сообщения: {data.message.id}</span>
 				{#if createdAtLabel}
-					<span>Created: {createdAtLabel}</span>
+					<span>Создано: {createdAtLabel}</span>
 				{/if}
 			</div>
 		</header>
 
 		{#if data.userImages.length > 0}
 			<section class="export-user-images-block">
-				<h2 class="export-user-images-title">Attached images from user</h2>
+				<h2 class="export-user-images-title">Прикреплённые изображения пользователя</h2>
 				<div class="export-user-images-grid">
 					{#each data.userImages as image, index}
 						<figure class="export-user-image-figure">
 							<img
 								class="export-user-image"
 								src={`data:${image.mimeType};base64,${image.base64}`}
-								alt={`User attachment ${index + 1}`}
+								alt={`Вложение пользователя ${index + 1}`}
 								loading="eager"
 								decoding="sync"
 							/>
 						</figure>
+					{/each}
+				</div>
+			</section>
+		{/if}
+
+		{#if data.userAttachments.length > 0}
+			<section class="export-user-documents-block">
+				<h2 class="export-user-images-title">Прикреплённые документы пользователя</h2>
+				<div class="export-user-documents-list">
+					{#each data.userAttachments as attachment}
+						<div class="export-user-document">
+							<span class="export-user-document-kind">{attachment.kind}</span>
+							<span class="export-user-document-name">{attachment.fileName}</span>
+							<span class="export-user-document-size">{formatFileSize(attachment.sizeBytes)}</span>
+						</div>
 					{/each}
 				</div>
 			</section>
@@ -132,10 +148,10 @@
 		/>
 
 		{#if !autoPrintDone && !renderState.ready}
-			<div class="export-status">Preparing printable layout... pending blocks: {renderState.pendingBlocks}</div>
+			<div class="export-status">Готовим печатную версию... блоков в ожидании: {renderState.pendingBlocks}</div>
 		{:else if timedOut}
 			<div class="export-status warning">
-				Some visual blocks did not finish in time. Check preview before saving.
+				Некоторые визуальные блоки не успели загрузиться. Проверьте предпросмотр перед сохранением.
 			</div>
 		{/if}
 	</article>
@@ -212,6 +228,15 @@
 		page-break-inside: avoid;
 	}
 
+	.export-user-documents-block {
+		margin-bottom: 0.9rem;
+		padding: 0.5rem 0.55rem 0.65rem;
+		border: 1px solid #d7d7d7;
+		border-radius: 8px;
+		break-inside: avoid-page;
+		page-break-inside: avoid;
+	}
+
 	.export-user-images-title {
 		margin: 0 0 0.45rem 0;
 		font-size: 0.82rem;
@@ -223,6 +248,40 @@
 		display: grid;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 		gap: 0.5rem;
+	}
+
+	.export-user-documents-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+
+	.export-user-document {
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
+		padding: 0.42rem 0.5rem;
+		border: 1px solid #dddddd;
+		border-radius: 6px;
+		font-size: 0.76rem;
+		color: #2f2f2f;
+	}
+
+	.export-user-document-kind {
+		font-weight: 700;
+		color: #2f5d8c;
+	}
+
+	.export-user-document-name {
+		min-width: 0;
+		font-weight: 600;
+		overflow-wrap: anywhere;
+	}
+
+	.export-user-document-size {
+		margin-left: auto;
+		color: #555555;
+		white-space: nowrap;
 	}
 
 	.export-user-image-figure {

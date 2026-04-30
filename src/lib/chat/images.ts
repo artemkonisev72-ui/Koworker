@@ -10,8 +10,8 @@ export const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'ima
 
 export function imageOnlyFallbackPrompt(imageCount: number): string {
 	return imageCount > 1
-		? 'Solve the task shown in the attached images. Extract all required conditions from the images.'
-		: 'Solve the task shown in the attached image. Extract all required conditions from the image.';
+		? 'Реши задачу по прикреплённым изображениям. Извлеки все необходимые условия из изображений.'
+		: 'Реши задачу по прикреплённому изображению. Извлеки все необходимые условия из изображения.';
 }
 
 export function effectivePromptForImages(prompt: string, images: ChatImage[]): string {
@@ -40,28 +40,28 @@ export function normalizeRequestImages(body: { images?: unknown; imageData?: unk
 export function validateChatImages(images: ChatImage[]): string | null {
 	if (images.length === 0) return null;
 	if (images.length > MAX_CHAT_IMAGES) {
-		return `too many images (max ${MAX_CHAT_IMAGES})`;
+		return `Слишком много изображений. Максимум ${MAX_CHAT_IMAGES}.`;
 	}
 
 	let totalBase64Length = 0;
 	for (const [index, image] of images.entries()) {
 		if (!image || typeof image !== 'object') {
-			return `image ${index + 1} is invalid`;
+			return `Изображение ${index + 1} некорректно.`;
 		}
 		if (!ALLOWED_IMAGE_MIME_TYPES.has(image.mimeType)) {
-			return `Unsupported image mime type for image ${index + 1}`;
+			return `Неподдерживаемый тип изображения ${index + 1}.`;
 		}
 		if (typeof image.base64 !== 'string' || image.base64.length === 0) {
-			return `image ${index + 1} is invalid`;
+			return `Изображение ${index + 1} некорректно.`;
 		}
 		if (image.base64.length > MAX_IMAGE_BASE64_LENGTH) {
-			return `image ${index + 1} is too large`;
+			return `Изображение ${index + 1} слишком большое.`;
 		}
 		totalBase64Length += image.base64.length;
 	}
 
 	if (totalBase64Length > MAX_TOTAL_IMAGE_BASE64_LENGTH) {
-		return 'images are too large';
+		return 'Суммарный размер изображений слишком большой.';
 	}
 	return null;
 }

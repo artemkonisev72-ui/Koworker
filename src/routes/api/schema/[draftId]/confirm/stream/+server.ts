@@ -98,7 +98,7 @@ async function rollbackSolveToAwaitingReview(params: {
 }
 
 export const POST: RequestHandler = async ({ locals, params, request }) => {
-	if (!locals.user) return error(401, 'Unauthorized');
+	if (!locals.user) return error(401, 'Нужно войти в аккаунт.');
 	const db = prisma as any;
 	const userId = locals.user.id;
 
@@ -110,7 +110,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 		// Backward compatible empty body.
 	}
 	if (requestedModelPreference !== undefined && !isModelPreference(requestedModelPreference)) {
-		return error(400, `Unsupported modelPreference: ${String(requestedModelPreference)}`);
+		return error(400, `Неподдерживаемая модель: ${String(requestedModelPreference)}`);
 	}
 
 	const draft = await db.taskDraft.findUnique({
@@ -127,7 +127,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	});
 
 	if (!draft) return error(404, 'Draft not found');
-	if (draft.userId !== userId || draft.chat.userId !== userId) return error(403, 'Forbidden');
+	if (draft.userId !== userId || draft.chat.userId !== userId) return error(403, 'Нет доступа к этому черновику.');
 	if (draft.status === 'SOLVING') return error(409, 'Draft is already solving');
 	if (draft.status === 'SOLVED') return error(409, 'Draft is already solved');
 	if (!canConfirmStatus(draft.status)) {

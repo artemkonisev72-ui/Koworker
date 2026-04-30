@@ -20,6 +20,20 @@
 		parseStoredChatImages,
 		type ChatImage
 	} from '$lib/chat/images.js';
+	import {
+		DOCX_MIME_TYPE,
+		MAX_ATTACHMENT_SIZE_BYTES,
+		MAX_CHAT_DOCUMENTS,
+		MAX_TOTAL_ATTACHMENT_SIZE_BYTES,
+		PDF_MIME_TYPE,
+		detectAttachmentKind,
+		formatFileSize,
+		isAllowedAttachmentFile,
+		type AttachmentKind,
+		type ChatAttachmentInput,
+		type StoredChatAttachment
+	} from '$lib/chat/attachments.js';
+	import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 	interface ActiveDraftState {
 		draftId: string;
 		status: string;
@@ -39,6 +53,7 @@
 		schemaDescription?: string | null;
 		schemaVersion?: string | null;
 		imageData?: string | null;
+		attachments?: StoredChatAttachment[];
 		usedModels?: string[] | string | null;
 		draftId?: string | null;
 		createdAt?: string;
@@ -95,6 +110,10 @@
 	let messagesEnd: HTMLDivElement | undefined = $state();
 	let inputEl: HTMLTextAreaElement | undefined = $state();
 	let fileInputEl: HTMLInputElement | undefined = $state();
+	type SelectedDocument = ChatAttachmentInput & {
+		id: string;
+		warning?: string;
+	};
 
 	let editingChatId = $state<string | null>(null);
 	let editingTitle = $state('');
@@ -157,12 +176,17 @@
 		Boolean(activeChatId && abortableChatIds[activeChatId])
 	);
 	let selectedImages = $state<ChatImage[]>([]);
+	let selectedDocuments = $state<SelectedDocument[]>([]);
 	let imagePreviewOpen = $state(false);
 	let imagePreviewSrc = $state('');
 	let imagePreviewAlt = $state('');
 
 	function messageImages(message: ChatMessage): ChatImage[] {
 		return parseStoredChatImages(message.imageData);
+	}
+
+	function messageAttachments(message: ChatMessage): StoredChatAttachment[] {
+		return Array.isArray(message.attachments) ? message.attachments : [];
 	}
 
 	function openImagePreview(image: ChatImage, alt: string) {
@@ -964,13 +988,175 @@
 		});
 	}
 
+	function visionSlotCount() {
+		return selectedImages.length + selectedDocuments.reduce((sum, doc) => sum + (doc.renderedImages?.length ?? 0), 0);
+	}
+
+	function documentTotalSize() {
+		return selectedDocuments.reduce((sum, doc) => sum + doc.sizeBytes, 0);
+	}
+
+	function selectedDocumentPreview(doc: SelectedDocument): StoredChatAttachment {
+		return {
+			kind: doc.kind,
+			fileName: doc.fileName,
+			mimeType: doc.mimeType,
+			sizeBytes: doc.sizeBytes,
+			extractedText: doc.extractedText ?? null,
+			renderedImages: doc.renderedImages ?? [],
+			pageCount: doc.pageCount ?? null,
+			usedPageCount: doc.usedPageCount ?? null
+		};
+	}
+
+	function arrayBufferToBase64(buffer: ArrayBuffer): string {
+		const bytes = new Uint8Array(buffer);
+		let binary = '';
+		const chunkSize = 0x8000;
+		for (let index = 0; index < bytes.length; index += chunkSize) {
+			const chunk = bytes.subarray(index, index + chunkSize);
+			binary += String.fromCharCode(...chunk);
+		}
+		return btoa(binary);
+	}
+
+	function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
+		return new Promise((resolve, reject) => {
+			const reader = new FileReader();
+			reader.onload = () => {
+				if (reader.result instanceof ArrayBuffer) {
+					resolve(reader.result);
+				} else {
+					reject(new Error('Не удалось прочитать файл.'));
+				}
+			};
+			reader.onerror = () => reject(new Error('Не удалось прочитать файл.'));
+			reader.readAsArrayBuffer(file);
+		});
+	}
+
+	async function renderPdfPageToImage(page: any): Promise<ChatImage | null> {
+		const scaleOptions = [1.35, 1, 0.75];
+		for (const scale of scaleOptions) {
+			const viewport = page.getViewport({ scale });
+			const canvas = document.createElement('canvas');
+			const context = canvas.getContext('2d');
+			if (!context) return null;
+			canvas.width = Math.max(1, Math.floor(viewport.width));
+			canvas.height = Math.max(1, Math.floor(viewport.height));
+			await page.render({ canvasContext: context, viewport }).promise;
+			const base64 = canvas.toDataURL('image/png').split(',')[1] ?? '';
+			if (base64 && base64.length <= MAX_IMAGE_BASE64_LENGTH) {
+				return { base64, mimeType: 'image/png' };
+			}
+		}
+		return null;
+	}
+
+	async function readPdfDocument(file: File, kind: AttachmentKind): Promise<SelectedDocument | null> {
+		const buffer = await readFileAsArrayBuffer(file);
+		const pdfjs = await import('pdfjs-dist');
+		pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+		const loadingTask = pdfjs.getDocument({ data: buffer.slice(0) });
+		const pdf = await loadingTask.promise;
+		const pageCount = pdf.numPages;
+		const availablePages = Math.max(0, MAX_CHAT_IMAGES - visionSlotCount());
+		const usedPageCount = Math.min(pageCount, availablePages);
+		const textParts: string[] = [];
+		const renderedImages: ChatImage[] = [];
+
+		for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+			const page = await pdf.getPage(pageNumber);
+			try {
+				const textContent = await page.getTextContent();
+				const pageText = textContent.items
+					.map((item: any) => (typeof item?.str === 'string' ? item.str : ''))
+					.filter(Boolean)
+					.join(' ')
+					.trim();
+				if (pageText) textParts.push(pageText);
+			} catch {
+				// Text extraction is best-effort; rendered pages still help scanned PDFs.
+			}
+
+			if (pageNumber <= usedPageCount) {
+				const rendered = await renderPdfPageToImage(page);
+				if (rendered) renderedImages.push(rendered);
+			}
+		}
+
+		let warning = '';
+		if (pageCount > usedPageCount && usedPageCount > 0) {
+			warning = `Будут использованы первые ${usedPageCount} страниц PDF из ${pageCount}.`;
+		} else if (pageCount > 0 && usedPageCount === 0) {
+			warning = 'Страницы PDF не будут отправлены как изображения: достигнут лимит вложений для анализа.';
+		}
+		if (!textParts.join('').trim() && renderedImages.length === 0) {
+			warning = 'Не удалось извлечь текст или страницы PDF для анализа.';
+		}
+
+		return {
+			id: generateSafeId(),
+			kind,
+			fileName: file.name,
+			mimeType: PDF_MIME_TYPE,
+			sizeBytes: file.size,
+			base64Data: arrayBufferToBase64(buffer),
+			extractedText: textParts.join('\n\n'),
+			renderedImages,
+			pageCount,
+			usedPageCount: renderedImages.length,
+			warning
+		};
+	}
+
+	async function readDocxDocument(file: File, kind: AttachmentKind): Promise<SelectedDocument | null> {
+		const buffer = await readFileAsArrayBuffer(file);
+		return {
+			id: generateSafeId(),
+			kind,
+			fileName: file.name,
+			mimeType: DOCX_MIME_TYPE,
+			sizeBytes: file.size,
+			base64Data: arrayBufferToBase64(buffer)
+		};
+	}
+
+	async function readDocumentFile(file: File): Promise<SelectedDocument | null> {
+		const kind = detectAttachmentKind(file.name, file.type);
+		if (!kind || !isAllowedAttachmentFile(file)) {
+			alert('Поддерживаются только PDF и DOCX файлы.');
+			return null;
+		}
+		if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
+			alert(`Файл "${file.name}" слишком большой. Максимум 10 МБ.`);
+			return null;
+		}
+		if (selectedDocuments.length >= MAX_CHAT_DOCUMENTS) {
+			alert(`Можно прикрепить не больше ${MAX_CHAT_DOCUMENTS} документов.`);
+			return null;
+		}
+		if (documentTotalSize() + file.size > MAX_TOTAL_ATTACHMENT_SIZE_BYTES) {
+			alert('Суммарный размер документов не должен превышать 20 МБ.');
+			return null;
+		}
+
+		try {
+			return kind === 'PDF' ? await readPdfDocument(file, kind) : await readDocxDocument(file, kind);
+		} catch (error) {
+			console.error('Failed to read document', error);
+			alert(`Не удалось прочитать файл "${file.name}".`);
+			return null;
+		}
+	}
+
 	async function addImageFiles(files: Iterable<File>) {
 		const imageFiles = Array.from(files).filter((file) => file.type.startsWith('image/'));
 		if (imageFiles.length === 0) return;
 
-		const availableSlots = MAX_CHAT_IMAGES - selectedImages.length;
+		const availableSlots = MAX_CHAT_IMAGES - visionSlotCount();
 		if (availableSlots <= 0) {
-			alert(`Можно прикрепить не больше ${MAX_CHAT_IMAGES} изображений.`);
+			alert(`Можно прикрепить не больше ${MAX_CHAT_IMAGES} изображений с учётом страниц PDF.`);
 			return;
 		}
 		if (imageFiles.length > availableSlots) {
@@ -985,13 +1171,43 @@
 		if (fileInputEl) fileInputEl.value = '';
 	}
 
+	async function addDocumentFiles(files: Iterable<File>) {
+		const documentFiles = Array.from(files).filter((file) => !file.type.startsWith('image/'));
+		if (documentFiles.length === 0) return;
+		const availableSlots = MAX_CHAT_DOCUMENTS - selectedDocuments.length;
+		if (availableSlots <= 0) {
+			alert(`Можно прикрепить не больше ${MAX_CHAT_DOCUMENTS} документов.`);
+			return;
+		}
+		if (documentFiles.length > availableSlots) {
+			alert(`Будут добавлены только первые ${availableSlots} документов из ${documentFiles.length}.`);
+		}
+		const nextDocuments = await Promise.all(documentFiles.slice(0, availableSlots).map(readDocumentFile));
+		const validDocuments = nextDocuments.filter((document): document is SelectedDocument => document !== null);
+		if (validDocuments.length > 0) {
+			selectedDocuments = [...selectedDocuments, ...validDocuments];
+		}
+		if (fileInputEl) fileInputEl.value = '';
+	}
+
+	async function addFiles(files: Iterable<File>) {
+		const fileList = Array.from(files);
+		await addImageFiles(fileList);
+		await addDocumentFiles(fileList);
+	}
+
 	function handleFileChange(e: Event) {
 		const target = e.target as HTMLInputElement;
-		void addImageFiles(target.files ?? []);
+		void addFiles(target.files ?? []);
 	}
 
 	function removeImage(index: number) {
 		selectedImages = selectedImages.filter((_, currentIndex) => currentIndex !== index);
+		if (fileInputEl) fileInputEl.value = '';
+	}
+
+	function removeDocument(index: number) {
+		selectedDocuments = selectedDocuments.filter((_, currentIndex) => currentIndex !== index);
 		if (fileInputEl) fileInputEl.value = '';
 	}
 
@@ -1046,7 +1262,8 @@
 	function appendOptimisticExchange(
 		chatId: string,
 		text: string,
-		images: ChatImage[]
+		images: ChatImage[],
+		attachments: StoredChatAttachment[]
 	) {
 		const userTempId = generateSafeId();
 		const assistantTempId = generateSafeId();
@@ -1056,6 +1273,7 @@
 			role: 'USER',
 			content: text,
 			imageData: images.length > 0 ? JSON.stringify(images) : null,
+			attachments,
 			createdAt: new Date().toISOString(),
 			isOptimistic: true
 		};
@@ -1208,6 +1426,7 @@
 		chatId: string,
 		text: string,
 		images: ChatImage[],
+		attachments: ChatAttachmentInput[],
 		optimisticExchange: { userTempId: string; assistantTempId: string }
 	) {
 		const modelPreference = currentModelPreference();
@@ -1215,11 +1434,12 @@
 			chatId,
 			modelPreference,
 			messageLength: text.length,
-			imageCount: images.length
+			imageCount: images.length,
+			attachmentCount: attachments.length
 		});
 		setProcessingActive(chatId, {
 			kind: 'schema_start',
-			statusMessage: 'Building initial scheme...',
+			statusMessage: 'Строю первичную схему...',
 			placeholderId: optimisticExchange.assistantTempId
 		});
 		try {
@@ -1230,6 +1450,7 @@
 					chatId,
 					message: text,
 					images,
+					attachments,
 					modelPreference,
 					mode: 'schema_check'
 				})
@@ -1428,7 +1649,7 @@
 
 	async function sendMessage() {
 		const text = inputValue.trim();
-		if (!text && selectedImages.length === 0) return;
+		if (!text && selectedImages.length === 0 && selectedDocuments.length === 0) return;
 		if (!canSubmitMessages()) return;
 		if (isLoading || isSchemaActionLoading) return;
 		const modelPreference = currentModelPreference();
@@ -1446,20 +1667,24 @@
 			modelPreference,
 			schemaCheckEnabled,
 			messageLength: text.length,
-			imageCount: selectedImages.length
+			imageCount: selectedImages.length,
+			attachmentCount: selectedDocuments.length
 		});
 
 		const images = selectedImages;
+		const attachments = selectedDocuments;
+		const attachmentPreviews = attachments.map(selectedDocumentPreview);
 		selectedImages = [];
+		selectedDocuments = [];
 		if (fileInputEl) fileInputEl.value = '';
 		inputValue = '';
 
-		const optimisticExchange = appendOptimisticExchange(originChatId, text, images);
+		const optimisticExchange = appendOptimisticExchange(originChatId, text, images, attachmentPreviews);
 		await scrollToBottom();
 
 		if (schemaCheckEnabled) {
 			try {
-				await startSchemaCheckFlow(originChatId, text, images, optimisticExchange);
+				await startSchemaCheckFlow(originChatId, text, images, attachments, optimisticExchange);
 			} catch (err) {
 				console.error('Schema check start failed:', err);
 				alert(err instanceof Error ? err.message : String(err));
@@ -1499,6 +1724,7 @@
 					chatId: originChatId,
 					message: text,
 					images,
+					attachments,
 					modelPreference
 				}),
 				signal: abortController.signal
@@ -1730,7 +1956,7 @@
 	>
 		<div class="sidebar-header">
 			<div class="logo">
-				<img src="/pwa-192x192.png" alt="Koworker Logo" class="logo-icon" />
+				<img src="/pwa-192x192.png" alt="Логотип Koworker" class="logo-icon" />
 				<span class="logo-text">Koworker</span>
 			</div>
 			<button class="icon-btn" onclick={() => (sidebarOpen = !sidebarOpen)} title="Свернуть">
@@ -2024,7 +2250,7 @@
 						class="attach-btn"
 						onclick={() => fileInputEl?.click()}
 						disabled={hasAnyProcessing}
-						title="Прикрепить фото задачи"
+						title="Прикрепить файл"
 					>
 						<svg
 							width="20"
@@ -2042,7 +2268,7 @@
 
 					<input
 						type="file"
-						accept="image/*"
+						accept="image/*,.pdf,application/pdf,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 						multiple
 						hidden
 						bind:this={fileInputEl}
@@ -2050,6 +2276,35 @@
 					/>
 
 					<div class="input-wrapper">
+						{#if selectedDocuments.length > 0}
+							<div class="document-preview-list">
+								{#each selectedDocuments as document, index}
+									<div class="document-chip">
+										<div class="document-chip-icon">{document.kind}</div>
+										<div class="document-chip-body">
+											<div class="document-chip-title">{document.fileName}</div>
+											<div class="document-chip-meta">
+												{formatFileSize(document.sizeBytes)}
+												{#if document.kind === 'PDF' && document.pageCount}
+													 · страниц: {document.usedPageCount ?? 0}/{document.pageCount}
+												{/if}
+											</div>
+											{#if document.warning}
+												<div class="document-chip-warning">{document.warning}</div>
+											{:else}
+												<div class="document-chip-status">Готово к отправке</div>
+											{/if}
+										</div>
+										<button
+											type="button"
+											class="remove-doc-btn"
+											onclick={() => removeDocument(index)}
+											aria-label="Убрать документ"
+										>×</button>
+									</div>
+								{/each}
+							</div>
+						{/if}
 						{#if selectedImages.length > 0}
 							<div class="image-preview-list">
 								{#each selectedImages as image, index}
@@ -2057,12 +2312,12 @@
 										<button
 											type="button"
 											class="image-preview-open-btn"
-											onclick={() => openImagePreview(image, `Preview ${index + 1}`)}
+											onclick={() => openImagePreview(image, `Предпросмотр ${index + 1}`)}
 											aria-label={`Открыть предпросмотр изображения ${index + 1}`}
 										>
 											<img
 												src={`data:${image.mimeType};base64,${image.base64}`}
-												alt={`Preview ${index + 1}`}
+												alt={`Предпросмотр ${index + 1}`}
 											/>
 										</button>
 										<button
@@ -2082,7 +2337,7 @@
 							oninput={autoResize}
 							onkeydown={handleKeydown}
 							onpaste={handlePaste}
-							placeholder="Опишите задачу или прикрепите фото..."
+							placeholder="Опишите задачу или прикрепите файл..."
 							rows="1"
 							disabled={hasAnyProcessing}
 							class="message-input"
@@ -2097,7 +2352,7 @@
 						<button
 							class="send-btn"
 							onclick={sendMessage}
-							disabled={(!inputValue.trim() && selectedImages.length === 0) ||
+							disabled={(!inputValue.trim() && selectedImages.length === 0 && selectedDocuments.length === 0) ||
 								hasAnyProcessing ||
 								(!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
 							title="Отправить"
@@ -2409,18 +2664,37 @@
 									{/if}
 								{:else if msg.role === 'USER'}
 									{@const images = messageImages(msg)}
+									{@const attachments = messageAttachments(msg)}
+									{#if attachments.length > 0}
+										<div class="user-uploaded-documents">
+											{#each attachments as attachment}
+												<div class="document-chip readonly">
+													<div class="document-chip-icon">{attachment.kind}</div>
+													<div class="document-chip-body">
+														<div class="document-chip-title">{attachment.fileName}</div>
+														<div class="document-chip-meta">
+															{formatFileSize(attachment.sizeBytes)}
+															{#if attachment.kind === 'PDF' && attachment.pageCount}
+																 · страниц: {attachment.usedPageCount ?? 0}/{attachment.pageCount}
+															{/if}
+														</div>
+													</div>
+												</div>
+											{/each}
+										</div>
+									{/if}
 									{#if images.length > 0}
 										<div class="user-uploaded-images">
 											{#each images as img, index}
 												<button
 													type="button"
 													class="user-uploaded-img-btn"
-													onclick={() => openImagePreview(img, `Uploaded task ${index + 1}`)}
+													onclick={() => openImagePreview(img, `Прикреплённая задача ${index + 1}`)}
 													aria-label={`Открыть прикрепленное изображение ${index + 1}`}
 												>
 													<img
 														src={`data:${img.mimeType};base64,${img.base64}`}
-														alt={`Uploaded task ${index + 1}`}
+														alt={`Прикреплённая задача ${index + 1}`}
 														class="user-uploaded-img"
 													/>
 												</button>
@@ -3708,6 +3982,76 @@
 		padding-top: 0.45rem;
 	}
 
+	.document-preview-list,
+	.user-uploaded-documents {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.document-preview-list {
+		padding-top: 0.45rem;
+	}
+
+	.user-uploaded-documents {
+		margin-bottom: 0.55rem;
+	}
+
+	.document-chip {
+		position: relative;
+		display: flex;
+		align-items: flex-start;
+		gap: 0.65rem;
+		max-width: 100%;
+		padding: 0.62rem 2.1rem 0.62rem 0.7rem;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+	}
+
+	.document-chip.readonly {
+		padding-right: 0.7rem;
+		background: color-mix(in srgb, var(--bg-elevated) 70%, transparent);
+	}
+
+	.document-chip-icon {
+		flex: 0 0 auto;
+		min-width: 2.35rem;
+		padding: 0.24rem 0.38rem;
+		border-radius: var(--radius-sm);
+		background: var(--accent-soft);
+		color: var(--accent-primary);
+		font-size: 0.72rem;
+		font-weight: 800;
+		text-align: center;
+	}
+
+	.document-chip-body {
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.18rem;
+	}
+
+	.document-chip-title {
+		color: var(--text-primary);
+		font-size: 0.86rem;
+		font-weight: 650;
+		overflow-wrap: anywhere;
+	}
+
+	.document-chip-meta,
+	.document-chip-status,
+	.document-chip-warning {
+		color: var(--text-secondary);
+		font-size: 0.76rem;
+		line-height: 1.35;
+	}
+
+	.document-chip-warning {
+		color: #9a3412;
+	}
+
 	.image-preview {
 		position: relative;
 		width: fit-content;
@@ -3735,6 +4079,25 @@
 		position: absolute;
 		top: -2px;
 		right: -8px;
+		width: 1.3rem;
+		height: 1.3rem;
+		background: var(--error);
+		color: white;
+		border: none;
+		border-radius: 999px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 0.9rem;
+		line-height: 1;
+		cursor: pointer;
+		box-shadow: var(--shadow-sm);
+	}
+
+	.remove-doc-btn {
+		position: absolute;
+		top: 0.45rem;
+		right: 0.45rem;
 		width: 1.3rem;
 		height: 1.3rem;
 		background: var(--error);

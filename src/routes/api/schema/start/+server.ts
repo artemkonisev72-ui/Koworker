@@ -27,6 +27,7 @@ import {
 	formatSchemaAssistantContent,
 	getSchemaLayoutLogDetails,
 	logSchemaCheck,
+	MAX_MESSAGE_LENGTH,
 	validateImageData,
 	validateUserPrompt,
 	type InputImageData
@@ -37,18 +38,22 @@ import {
 	titleFromPromptOrImages,
 	type ChatImage
 } from '$lib/chat/images.js';
+import { prepareMessageAttachments } from '$lib/server/attachments.js';
+import type { ChatAttachmentInput } from '$lib/chat/attachments.js';
 
 interface StartSchemaBody {
 	chatId?: string;
 	message?: string;
 	imageData?: InputImageData;
 	images?: ChatImage[];
+	attachments?: ChatAttachmentInput[];
 	mode?: string;
 	modelPreference?: string;
 }
 
 export const POST: RequestHandler = async ({ locals, request }) => {
-	if (!locals.user) return error(401, 'Unauthorized');
+	if (!locals.user) return error(401, 'Нужно войти в аккаунт.');
+	const userId = locals.user.id;
 	const db = prisma as any;
 	const startedAt = Date.now();
 
@@ -56,36 +61,40 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	try {
 		body = (await request.json()) as StartSchemaBody;
 	} catch {
-		logSchemaCheck('start.invalid_json', { userId: locals.user.id });
-		return error(400, 'Invalid JSON body');
+		logSchemaCheck('start.invalid_json', { userId });
+		return error(400, 'Некорректный JSON-запрос.');
 	}
 
 	const chatId = body.chatId;
 	const message = body.message ?? '';
 	const images = normalizeRequestImages(body);
+	const hasAttachments = Array.isArray(body.attachments) ? body.attachments.length > 0 : Boolean(body.attachments);
 	logSchemaCheck('start.request', {
-		userId: locals.user.id,
+		userId,
 		chatId,
 		mode: body.mode ?? 'schema_check',
 		messageLength: message.length,
-		imageCount: images.length
+		imageCount: images.length,
+		attachmentCount: Array.isArray(body.attachments) ? body.attachments.length : hasAttachments ? 1 : 0
 	});
 
-	if (!chatId) return error(400, 'chatId is required');
-	if (body.mode && body.mode !== 'schema_check') return error(400, 'Unsupported mode');
+	if (!chatId) return error(400, 'Нужен идентификатор чата.');
+	if (body.mode && body.mode !== 'schema_check') return error(400, 'Неподдерживаемый режим.');
 	if (body.modelPreference !== undefined && !isModelPreference(body.modelPreference)) {
-		return error(400, `Unsupported modelPreference: ${String(body.modelPreference)}`);
+		return error(400, `Неподдерживаемая модель: ${String(body.modelPreference)}`);
 	}
 
-	const promptError = validateUserPrompt(message, images);
-	if (promptError) {
-		logSchemaCheck('start.validation_error', { userId: locals.user.id, chatId, reason: promptError });
-		return error(400, promptError);
+	if (!hasAttachments) {
+		const promptError = validateUserPrompt(message, images);
+		if (promptError) {
+			logSchemaCheck('start.validation_error', { userId, chatId, reason: promptError });
+			return error(400, promptError);
+		}
 	}
 
 	const imageError = validateImageData(images);
 	if (imageError) {
-		logSchemaCheck('start.validation_error', { userId: locals.user.id, chatId, reason: imageError });
+		logSchemaCheck('start.validation_error', { userId, chatId, reason: imageError });
 		return error(400, imageError);
 	}
 
@@ -93,10 +102,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		where: { id: chatId },
 		select: { id: true, userId: true, modelPreference: true }
 	});
-	if (!chat) return error(404, 'Chat not found');
-	if (chat.userId !== locals.user.id) return error(403, 'Forbidden');
+	if (!chat) return error(404, 'Чат не найден.');
+	if (chat.userId !== userId) return error(403, 'Нет доступа к этому чату.');
 	logSchemaCheck('start.chat_loaded', {
-		userId: locals.user.id,
+		userId,
 		chatId,
 		modelPreference: chat.modelPreference
 	});
@@ -107,7 +116,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			: normalizeModelPreference(chat.modelPreference);
 	const forcedModel = toForcedModel(effectiveModelPreference);
 	logSchemaCheck('start.model_resolved', {
-		userId: locals.user.id,
+		userId,
 		chatId,
 		modelPreference: chat.modelPreference,
 		requestModelPreference: body.modelPreference ?? null,
@@ -115,13 +124,47 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		forcedModel
 	});
 
+	let preparedAttachments: Awaited<ReturnType<typeof prepareMessageAttachments>>;
+	try {
+		preparedAttachments = await prepareMessageAttachments({
+			rawAttachments: body.attachments,
+			prompt: message,
+			existingImageCount: images.length
+		});
+	} catch (attachmentError) {
+		const messageText = attachmentError instanceof Error ? attachmentError.message : String(attachmentError);
+		logSchemaCheck('start.validation_error', { userId, chatId, reason: messageText });
+		return error(messageText.includes('больш') || messageText.includes('размер') ? 413 : 400, messageText);
+	}
+
+	const aiImages = [...images, ...preparedAttachments.renderedImages];
+	if (hasAttachments) {
+		if (message.length > MAX_MESSAGE_LENGTH) {
+			return error(413, `Сообщение слишком длинное. Максимум ${MAX_MESSAGE_LENGTH} символов.`);
+		}
+		if (!preparedAttachments.augmentedPrompt.trim() && aiImages.length === 0) {
+			return error(400, 'Не удалось извлечь содержимое из прикреплённых файлов.');
+		}
+	} else {
+		const promptError = validateUserPrompt(preparedAttachments.augmentedPrompt, aiImages);
+		if (promptError) {
+			logSchemaCheck('start.validation_error', { userId, chatId, reason: promptError });
+			return error(400, promptError);
+		}
+	}
+	const combinedImageError = validateImageData(aiImages);
+	if (combinedImageError) {
+		logSchemaCheck('start.validation_error', { userId, chatId, reason: combinedImageError });
+		return error(combinedImageError.toLowerCase().includes('больш') ? 413 : 400, combinedImageError);
+	}
+
 	let processingHandle: ChatProcessingHandle;
 	try {
 		processingHandle = acquireChatProcessing({
-			userId: locals.user.id,
+			userId,
 			chatId,
 			kind: 'schema_start',
-			statusMessage: 'Building initial scheme...'
+			statusMessage: 'Строю первичную схему...'
 		});
 	} catch (processingError) {
 		if (processingError instanceof ChatProcessingConflictError) {
@@ -134,35 +177,50 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	let draft: any;
 
 	try {
-		userMessage = await db.message.create({
-			data: {
-				chatId,
-				role: 'USER',
-				content: message,
-				imageData: serializeChatImages(images)
-			}
-		});
+		const created = await db.$transaction(async (tx: any) => {
+			const createdMessage = await tx.message.create({
+				data: {
+					chatId,
+					role: 'USER',
+					content: message,
+					imageData: serializeChatImages(images)
+				}
+			});
 
-		draft = await db.taskDraft.create({
-			data: {
-				chatId,
-				userId: locals.user.id,
-				mode: 'schema_check',
-				status: 'DRAFT',
-				schemaVersion: '2.0',
-				originalPrompt: message,
-				originalImageData: serializeChatImages(images)
+			if (preparedAttachments.dbRows.length > 0) {
+				await tx.messageAttachment.createMany({
+					data: preparedAttachments.dbRows.map((attachment) => ({
+						...attachment,
+						messageId: createdMessage.id
+					}))
+				});
 			}
+
+			const createdDraft = await tx.taskDraft.create({
+				data: {
+					chatId,
+					userId,
+					mode: 'schema_check',
+					status: 'DRAFT',
+					schemaVersion: '2.0',
+					originalPrompt: preparedAttachments.augmentedPrompt,
+					originalImageData: serializeChatImages(aiImages)
+				}
+			});
+
+			return { userMessage: createdMessage, draft: createdDraft };
 		});
+		userMessage = created.userMessage;
+		draft = created.draft;
 		logSchemaCheck('start.draft_created', {
-			userId: locals.user.id,
+			userId,
 			chatId,
 			draftId: draft.id,
 			status: draft.status
 		});
 
-		const generatedUnderstanding = await generateInitialSchemeUnderstanding([], message, {
-			images,
+		const generatedUnderstanding = await generateInitialSchemeUnderstanding([], preparedAttachments.augmentedPrompt, {
+			images: aiImages,
 			forcedModel,
 			fastMode: false
 		});
@@ -322,7 +380,12 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 
 			const msgCount = await tx.message.count({ where: { chatId } });
 			if (msgCount <= 2) {
-				const title = titleFromPromptOrImages(message, images);
+				const titleSource =
+					message.trim() ||
+					(preparedAttachments.attachments.length > 0
+						? `Задача из документа: ${preparedAttachments.attachments[0].fileName}`
+						: '');
+				const title = titleFromPromptOrImages(titleSource, aiImages);
 				await tx.chat.update({ where: { id: chatId }, data: { title } });
 			}
 
