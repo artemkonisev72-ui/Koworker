@@ -417,7 +417,7 @@
 			'mtr',
 			'mtd'
 		],
-		ALLOWED_ATTR: ['class', 'href', 'style', 'aria-hidden', 'focusable', 'xmlns', 'encoding'],
+		ALLOWED_ATTR: ['class', 'href', 'style', 'align', 'aria-hidden', 'focusable', 'xmlns', 'encoding'],
 		FORCE_BODY: true
 	};
 
@@ -572,8 +572,11 @@
 			});
 
 			const rawHtml = await marked.parse(processed);
+			const tableWrappedHtml = rawHtml
+				.replace(/<table(\s[^>]*)?>/g, '<div class="markdown-table-wrap"><table$1>')
+				.replace(/<\/table>/g, '</table></div>');
 			if (currentCycle !== renderCycle) return;
-			renderedHtml = DOMPurify.sanitize(rawHtml, DOMPURIFY_CONFIG as any) as unknown as string;
+			renderedHtml = DOMPurify.sanitize(tableWrappedHtml, DOMPURIFY_CONFIG as any) as unknown as string;
 		} catch (error) {
 			console.error('[MessageRenderer] Failed to render markdown content:', error);
 			if (currentCycle !== renderCycle) return;
@@ -826,6 +829,104 @@
 		page-break-inside: avoid;
 	}
 
+	.message-renderer :global(.markdown-table-wrap) {
+		max-width: 100%;
+		margin: 1rem 0 1.15rem;
+		overflow-x: auto;
+		overflow-y: hidden;
+		border: 1px solid var(--border-subtle);
+		border-radius: 0.5rem;
+		background: color-mix(in srgb, var(--bg-card) 88%, var(--bg-surface));
+		box-shadow: 0 1px 0 color-mix(in srgb, var(--border-subtle) 70%, transparent);
+		scrollbar-gutter: stable;
+		-webkit-overflow-scrolling: touch;
+	}
+
+	.message-renderer :global(.markdown-table-wrap table) {
+		width: max-content;
+		min-width: 100%;
+		margin: 0;
+		border-collapse: separate;
+		border-spacing: 0;
+		font-size: 0.88rem;
+		line-height: 1.45;
+		color: var(--text-primary);
+	}
+
+	.message-renderer :global(.markdown-table-wrap thead th) {
+		background: color-mix(in srgb, var(--bg-surface) 82%, var(--accent-soft));
+		color: var(--text-primary);
+		font-weight: 700;
+	}
+
+	.message-renderer :global(.markdown-table-wrap th),
+	.message-renderer :global(.markdown-table-wrap td) {
+		min-width: 7rem;
+		padding: 0.62rem 0.75rem;
+		border-right: 1px solid var(--border-subtle);
+		border-bottom: 1px solid var(--border-subtle);
+		text-align: left;
+		vertical-align: top;
+		overflow-wrap: normal;
+		word-break: normal;
+		hyphens: none;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.message-renderer :global(.markdown-table-wrap th:first-child),
+	.message-renderer :global(.markdown-table-wrap td:first-child) {
+		width: 1%;
+		min-width: 3.5rem;
+		text-align: center;
+		white-space: nowrap;
+	}
+
+	.message-renderer :global(.markdown-table-wrap th:nth-child(2)),
+	.message-renderer :global(.markdown-table-wrap td:nth-child(2)) {
+		min-width: 12rem;
+	}
+
+	.message-renderer :global(.markdown-table-wrap th:last-child),
+	.message-renderer :global(.markdown-table-wrap td:last-child) {
+		border-right: none;
+	}
+
+	.message-renderer :global(.markdown-table-wrap tbody tr:last-child td) {
+		border-bottom: none;
+	}
+
+	.message-renderer :global(.markdown-table-wrap tbody tr:nth-child(even) td) {
+		background: color-mix(in srgb, var(--bg-surface) 48%, transparent);
+	}
+
+	.message-renderer :global(.markdown-table-wrap tbody tr:hover td) {
+		background: color-mix(in srgb, var(--accent-soft) 32%, transparent);
+	}
+
+	.message-renderer :global(.markdown-table-wrap th[align='center']),
+	.message-renderer :global(.markdown-table-wrap td[align='center']) {
+		text-align: center;
+	}
+
+	.message-renderer :global(.markdown-table-wrap th[align='right']),
+	.message-renderer :global(.markdown-table-wrap td[align='right']) {
+		text-align: right;
+	}
+
+	.message-renderer :global(.markdown-table-wrap p) {
+		margin: 0;
+	}
+
+	.message-renderer :global(.markdown-table-wrap .katex),
+	.message-renderer :global(.markdown-table-wrap code) {
+		white-space: nowrap;
+	}
+
+	.message-renderer.print-mode :global(.markdown-table-wrap) {
+		overflow: visible;
+		box-shadow: none;
+	}
+
 	.attribution-label {
 		font-weight: 600;
 		color: var(--text-secondary);
@@ -915,6 +1016,27 @@
 	}
 
 	@media (max-width: 768px) {
+		.message-renderer :global(.markdown-table-wrap) {
+			margin-right: -0.25rem;
+			margin-left: -0.25rem;
+			border-radius: 0.45rem;
+		}
+
+		.message-renderer :global(.markdown-table-wrap table) {
+			font-size: 0.82rem;
+		}
+
+		.message-renderer :global(.markdown-table-wrap th),
+		.message-renderer :global(.markdown-table-wrap td) {
+			min-width: 6.5rem;
+			padding: 0.52rem 0.62rem;
+		}
+
+		.message-renderer :global(.markdown-table-wrap th:nth-child(2)),
+		.message-renderer :global(.markdown-table-wrap td:nth-child(2)) {
+			min-width: 10rem;
+		}
+
 		.message-actions {
 			width: 100%;
 		}
