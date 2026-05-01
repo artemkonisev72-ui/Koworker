@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	MAX_CHAT_IMAGES,
+	MAX_IMAGE_SIZE_BYTES,
 	effectivePromptForImages,
 	hasPromptOrImages,
 	normalizeRequestImages,
@@ -36,6 +37,7 @@ describe('chat image helpers', () => {
 		expect(validateChatImages(Array.from({ length: MAX_CHAT_IMAGES + 1 }, () => png))).toContain('Слишком много');
 		expect(validateChatImages([{ base64: 'CCCC', mimeType: 'image/gif' }])).toContain('Неподдерживаемый');
 		expect(validateChatImages([{ base64: '', mimeType: 'image/png' }])).toContain('некорректно');
+		expect(MAX_IMAGE_SIZE_BYTES).toBe(10 * 1024 * 1024);
 	});
 
 	it('allows image-only prompts and provides fallback text/title', () => {

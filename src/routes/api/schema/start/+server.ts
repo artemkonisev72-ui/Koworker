@@ -152,7 +152,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			return error(400, promptError);
 		}
 	}
-	const combinedImageError = validateImageData(aiImages);
+	const combinedImageError = validateImageData(aiImages, {
+		maxImages: null,
+		maxTotalBase64Length: null
+	});
 	if (combinedImageError) {
 		logSchemaCheck('start.validation_error', { userId, chatId, reason: combinedImageError });
 		return error(combinedImageError.toLowerCase().includes('больш') ? 413 : 400, combinedImageError);

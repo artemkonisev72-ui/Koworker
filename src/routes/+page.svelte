@@ -17,6 +17,7 @@
 		ALLOWED_IMAGE_MIME_TYPES,
 		MAX_CHAT_IMAGES,
 		MAX_IMAGE_BASE64_LENGTH,
+		MAX_IMAGE_SIZE_BYTES,
 		parseStoredChatImages,
 		type ChatImage
 	} from '$lib/chat/images.js';
@@ -971,6 +972,10 @@
 			alert('Поддерживаются только PNG, JPEG и WebP изображения.');
 			return Promise.resolve(null);
 		}
+		if (file.size > MAX_IMAGE_SIZE_BYTES) {
+			alert(`Изображение "${file.name}" слишком большое. Максимум ${formatFileSize(MAX_IMAGE_SIZE_BYTES)}.`);
+			return Promise.resolve(null);
+		}
 
 		return new Promise((resolve) => {
 			const reader = new FileReader();
@@ -989,7 +994,7 @@
 	}
 
 	function visionSlotCount() {
-		return selectedImages.length + selectedDocuments.reduce((sum, doc) => sum + (doc.renderedImages?.length ?? 0), 0);
+		return selectedImages.length;
 	}
 
 	function documentTotalSize() {
@@ -1060,8 +1065,6 @@
 		const loadingTask = pdfjs.getDocument({ data: buffer.slice(0) });
 		const pdf = await loadingTask.promise;
 		const pageCount = pdf.numPages;
-		const availablePages = Math.max(0, MAX_CHAT_IMAGES - visionSlotCount());
-		const usedPageCount = Math.min(pageCount, availablePages);
 		const textParts: string[] = [];
 		const renderedImages: ChatImage[] = [];
 
@@ -1079,18 +1082,14 @@
 				// Text extraction is best-effort; rendered pages still help scanned PDFs.
 			}
 
-			if (pageNumber <= usedPageCount) {
-				const rendered = await renderPdfPageToImage(page);
-				if (rendered) renderedImages.push(rendered);
+			const rendered = await renderPdfPageToImage(page);
+			if (!rendered) {
+				throw new Error(`Не удалось подготовить страницу ${pageNumber} PDF для анализа.`);
 			}
+			renderedImages.push(rendered);
 		}
 
 		let warning = '';
-		if (pageCount > usedPageCount && usedPageCount > 0) {
-			warning = `Будут использованы первые ${usedPageCount} страниц PDF из ${pageCount}.`;
-		} else if (pageCount > 0 && usedPageCount === 0) {
-			warning = 'Страницы PDF не будут отправлены как изображения: достигнут лимит вложений для анализа.';
-		}
 		if (!textParts.join('').trim() && renderedImages.length === 0) {
 			warning = 'Не удалось извлечь текст или страницы PDF для анализа.';
 		}
@@ -1129,7 +1128,7 @@
 			return null;
 		}
 		if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
-			alert(`Файл "${file.name}" слишком большой. Максимум 10 МБ.`);
+			alert(`Файл "${file.name}" слишком большой. Максимум ${formatFileSize(MAX_ATTACHMENT_SIZE_BYTES)}.`);
 			return null;
 		}
 		if (selectedDocuments.length >= MAX_CHAT_DOCUMENTS) {
@@ -1137,7 +1136,7 @@
 			return null;
 		}
 		if (documentTotalSize() + file.size > MAX_TOTAL_ATTACHMENT_SIZE_BYTES) {
-			alert('Суммарный размер документов не должен превышать 20 МБ.');
+			alert(`Суммарный размер документов не должен превышать ${formatFileSize(MAX_TOTAL_ATTACHMENT_SIZE_BYTES)}.`);
 			return null;
 		}
 
@@ -1156,7 +1155,7 @@
 
 		const availableSlots = MAX_CHAT_IMAGES - visionSlotCount();
 		if (availableSlots <= 0) {
-			alert(`Можно прикрепить не больше ${MAX_CHAT_IMAGES} изображений с учётом страниц PDF.`);
+			alert(`Можно прикрепить не больше ${MAX_CHAT_IMAGES} изображений.`);
 			return;
 		}
 		if (imageFiles.length > availableSlots) {

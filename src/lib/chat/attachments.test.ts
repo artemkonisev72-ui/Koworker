@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	DOCX_MIME_TYPE,
+	MAX_ATTACHMENT_SIZE_BYTES,
 	MAX_CHAT_DOCUMENTS,
 	PDF_MIME_TYPE,
 	attachmentsFromStoredRows,
@@ -21,7 +22,7 @@ const pdfInput: ChatAttachmentInput = {
 	base64Data: 'AAAA',
 	extractedText: 'Условие задачи из PDF',
 	renderedImages: [{ base64: 'BBBB', mimeType: 'image/png' }],
-	pageCount: 4,
+	pageCount: 1,
 	usedPageCount: 1
 };
 
@@ -58,16 +59,18 @@ describe('chat attachment helpers', () => {
 		expect(normalizeAttachmentInputs([{ ...pdfInput, fileName: 'task.txt', mimeType: 'text/plain' }])).toEqual([]);
 	});
 
-	it('validates document count, total size and shared vision slots', () => {
+	it('validates document count, size and complete PDF pages', () => {
 		const attachments = normalizeAttachmentInputs([pdfInput, docxInput]);
 		expect(validatePreparedAttachments(attachments, { existingImageCount: 1 })).toBeNull();
 		expect(
 			validatePreparedAttachments(Array.from({ length: MAX_CHAT_DOCUMENTS + 1 }, () => attachments[0]))
 		).toContain('не больше');
-		expect(validatePreparedAttachments([{ ...attachments[0], sizeBytes: 11 * 1024 * 1024 }])).toContain(
+		expect(validatePreparedAttachments([{ ...attachments[0], sizeBytes: MAX_ATTACHMENT_SIZE_BYTES + 1 }])).toContain(
 			'слишком большой'
 		);
-		expect(validatePreparedAttachments([{ ...attachments[0], renderedImages: Array.from({ length: 4 }, () => ({ base64: 'A', mimeType: 'image/png' })) }], { existingImageCount: 1 })).toContain('Слишком много');
+		expect(validatePreparedAttachments([{ ...attachments[0], pageCount: 2, usedPageCount: 1 }])).toContain(
+			'все страницы PDF'
+		);
 	});
 
 	it('builds AI document context with text and PDF page notes', () => {

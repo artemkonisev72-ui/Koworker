@@ -189,7 +189,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	}
 
 	const aiImages = [...images, ...preparedAttachments.renderedImages];
-	const combinedImageError = validateChatImages(aiImages);
+	const combinedImageError = validateChatImages(aiImages, {
+		maxImages: null,
+		maxTotalBase64Length: null
+	});
 	if (combinedImageError) {
 		return error(combinedImageError.toLowerCase().includes('больш') ? 413 : 400, combinedImageError);
 	}

@@ -4,9 +4,22 @@ export type ChatImage = {
 };
 
 export const MAX_CHAT_IMAGES = 4;
-export const MAX_IMAGE_BASE64_LENGTH = 2_800_000;
+export const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
+export const MAX_IMAGE_BASE64_LENGTH = Math.ceil((MAX_IMAGE_SIZE_BYTES * 4) / 3) + 4;
 export const MAX_TOTAL_IMAGE_BASE64_LENGTH = MAX_CHAT_IMAGES * MAX_IMAGE_BASE64_LENGTH;
 export const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+type ImageValidationOptions = {
+	maxImages?: number | null;
+	maxTotalBase64Length?: number | null;
+};
+
+function estimateBase64DecodedBytes(base64Data: string): number {
+	const compact = base64Data.replace(/\s/g, '');
+	if (!compact) return 0;
+	const padding = compact.endsWith('==') ? 2 : compact.endsWith('=') ? 1 : 0;
+	return Math.max(0, Math.floor((compact.length * 3) / 4) - padding);
+}
 
 export function imageOnlyFallbackPrompt(imageCount: number): string {
 	return imageCount > 1
@@ -37,10 +50,11 @@ export function normalizeRequestImages(body: { images?: unknown; imageData?: unk
 	return normalizeChatImagesInput(body.imageData);
 }
 
-export function validateChatImages(images: ChatImage[]): string | null {
+export function validateChatImages(images: ChatImage[], options?: ImageValidationOptions): string | null {
 	if (images.length === 0) return null;
-	if (images.length > MAX_CHAT_IMAGES) {
-		return `Слишком много изображений. Максимум ${MAX_CHAT_IMAGES}.`;
+	const maxImages = options?.maxImages === undefined ? MAX_CHAT_IMAGES : options.maxImages;
+	if (maxImages !== null && images.length > maxImages) {
+		return `Слишком много изображений. Максимум ${maxImages}.`;
 	}
 
 	let totalBase64Length = 0;
@@ -54,13 +68,20 @@ export function validateChatImages(images: ChatImage[]): string | null {
 		if (typeof image.base64 !== 'string' || image.base64.length === 0) {
 			return `Изображение ${index + 1} некорректно.`;
 		}
-		if (image.base64.length > MAX_IMAGE_BASE64_LENGTH) {
+		if (
+			image.base64.length > MAX_IMAGE_BASE64_LENGTH ||
+			estimateBase64DecodedBytes(image.base64) > MAX_IMAGE_SIZE_BYTES
+		) {
 			return `Изображение ${index + 1} слишком большое.`;
 		}
 		totalBase64Length += image.base64.length;
 	}
 
-	if (totalBase64Length > MAX_TOTAL_IMAGE_BASE64_LENGTH) {
+	const maxTotalBase64Length =
+		options?.maxTotalBase64Length === undefined
+			? MAX_TOTAL_IMAGE_BASE64_LENGTH
+			: options.maxTotalBase64Length;
+	if (maxTotalBase64Length !== null && totalBase64Length > maxTotalBase64Length) {
 		return 'Суммарный размер изображений слишком большой.';
 	}
 	return null;

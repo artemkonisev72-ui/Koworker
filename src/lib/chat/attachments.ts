@@ -1,6 +1,5 @@
 import {
 	ALLOWED_IMAGE_MIME_TYPES,
-	MAX_CHAT_IMAGES,
 	MAX_IMAGE_BASE64_LENGTH,
 	type ChatImage
 } from './images';
@@ -45,10 +44,10 @@ export type PreparedAttachment = {
 };
 
 export const MAX_CHAT_DOCUMENTS = 3;
-export const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024;
-export const MAX_TOTAL_ATTACHMENT_SIZE_BYTES = 20 * 1024 * 1024;
-export const MAX_ATTACHMENT_TEXT_CHARS = 30_000;
-export const MAX_TOTAL_ATTACHMENT_TEXT_CHARS = 60_000;
+export const MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024;
+export const MAX_TOTAL_ATTACHMENT_SIZE_BYTES = 75 * 1024 * 1024;
+export const MAX_ATTACHMENT_TEXT_CHARS = 100_000;
+export const MAX_TOTAL_ATTACHMENT_TEXT_CHARS = 200_000;
 
 export const PDF_MIME_TYPE = 'application/pdf';
 export const DOCX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
@@ -101,6 +100,10 @@ function estimateBase64DecodedBytes(base64Data: string): number {
 	if (!compact) return 0;
 	const padding = compact.endsWith('==') ? 2 : compact.endsWith('=') ? 1 : 0;
 	return Math.max(0, Math.floor((compact.length * 3) / 4) - padding);
+}
+
+function formatWholeMegabytes(sizeBytes: number): number {
+	return Math.floor(sizeBytes / (1024 * 1024));
 }
 
 export function normalizeAttachmentInput(input: unknown): PreparedAttachment | null {
@@ -176,7 +179,7 @@ export function serializeRenderedImages(images: ChatImage[]): string | null {
 
 export function validatePreparedAttachments(
 	attachments: PreparedAttachment[],
-	options?: { existingImageCount?: number }
+	_options?: { existingImageCount?: number }
 ): string | null {
 	if (attachments.length === 0) return null;
 	if (attachments.length > MAX_CHAT_DOCUMENTS) {
@@ -184,23 +187,28 @@ export function validatePreparedAttachments(
 	}
 
 	let totalSize = 0;
-	let renderedImageCount = options?.existingImageCount ?? 0;
 	for (const [index, attachment] of attachments.entries()) {
 		const decodedSize = estimateBase64DecodedBytes(attachment.base64Data);
 		const effectiveSize = Math.max(attachment.sizeBytes, decodedSize);
 		if (effectiveSize > MAX_ATTACHMENT_SIZE_BYTES) {
-			return `Файл "${attachment.fileName || `#${index + 1}`}" слишком большой. Максимум 10 МБ.`;
+			return `Файл "${attachment.fileName || `#${index + 1}`}" слишком большой. Максимум ${formatWholeMegabytes(MAX_ATTACHMENT_SIZE_BYTES)} МБ.`;
+		}
+		if (attachment.kind === 'PDF') {
+			if (!attachment.pageCount) {
+				return `Не удалось определить количество страниц PDF "${attachment.fileName || `#${index + 1}`}".`;
+			}
+			if (attachment.renderedImages.length !== attachment.pageCount) {
+				return `Не удалось подготовить все страницы PDF "${attachment.fileName || `#${index + 1}`}" для анализа. Файл не отправлен.`;
+			}
+			if (attachment.usedPageCount !== null && attachment.usedPageCount !== attachment.pageCount) {
+				return `PDF "${attachment.fileName || `#${index + 1}`}" должен быть отправлен в модель полностью. Файл не отправлен.`;
+			}
 		}
 		totalSize += effectiveSize;
-		renderedImageCount += attachment.renderedImages.length;
 	}
 
 	if (totalSize > MAX_TOTAL_ATTACHMENT_SIZE_BYTES) {
-		return 'Суммарный размер документов не должен превышать 20 МБ.';
-	}
-
-	if (renderedImageCount > MAX_CHAT_IMAGES) {
-		return `Слишком много изображений для анализа. Максимум ${MAX_CHAT_IMAGES} изображения с учётом страниц PDF.`;
+		return `Суммарный размер документов не должен превышать ${formatWholeMegabytes(MAX_TOTAL_ATTACHMENT_SIZE_BYTES)} МБ.`;
 	}
 
 	return null;

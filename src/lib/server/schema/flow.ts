@@ -46,8 +46,11 @@ export function validateUserPrompt(prompt: string, images: InputImagesData = [])
 	return null;
 }
 
-export function validateImageData(imageData?: InputImageData | InputImagesData): string | null {
-	return validateChatImages(Array.isArray(imageData) ? imageData : imageData ? [imageData] : []);
+export function validateImageData(
+	imageData?: InputImageData | InputImagesData,
+	options?: Parameters<typeof validateChatImages>[1]
+): string | null {
+	return validateChatImages(Array.isArray(imageData) ? imageData : imageData ? [imageData] : [], options);
 }
 
 export function validateRevisionNotes(notes: string): string | null {
