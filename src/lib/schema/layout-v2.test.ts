@@ -104,6 +104,42 @@ describe('layout-v2', () => {
 		expect(typeof fixed?.geometry.angle).toBe('number');
 	});
 
+	it('keeps three bars connected to the same T-joint', () => {
+		const schema: SchemaDataV2 = {
+			version: '2.0',
+			meta: { structureKind: 'planar_frame' },
+			nodes: [
+				{ id: 'A', x: 0, y: 0 },
+				{ id: 'B', x: 2, y: 0 },
+				{ id: 'C', x: 4, y: 0 },
+				{ id: 'D', x: 2, y: 2 }
+			],
+			objects: [
+				{ id: 'bar_ab', type: 'bar', nodeRefs: ['A', 'B'], geometry: { length: 2, angleDeg: 0 } },
+				{ id: 'bar_bc', type: 'bar', nodeRefs: ['B', 'C'], geometry: { length: 2, angleDeg: 0 } },
+				{ id: 'bar_bd', type: 'bar', nodeRefs: ['B', 'D'], geometry: { length: 2, angleDeg: 90 } }
+			],
+			results: [],
+			annotations: [],
+			assumptions: [],
+			ambiguities: []
+		};
+
+		const stabilized = stabilizeSchemaLayoutV2(schema);
+		const bRefCount = stabilized.schema.objects
+			.filter((object) => object.type === 'bar')
+			.flatMap((object) => object.nodeRefs ?? [])
+			.filter((nodeRef) => nodeRef === 'B').length;
+		expect(bRefCount).toBe(3);
+
+		const nodeById = new Map(stabilized.schema.nodes.map((node) => [node.id, node]));
+		const b = nodeById.get('B');
+		const d = nodeById.get('D');
+		expect(b && d).toBeTruthy();
+		if (!b || !d) return;
+		expect(Math.hypot(d.x - b.x, d.y - b.y)).toBeGreaterThan(0.5);
+	});
+
 	it('honors attach parameterization for load placement on member', () => {
 		const schema: SchemaDataV2 = {
 			version: '2.0',

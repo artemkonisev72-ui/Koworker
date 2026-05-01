@@ -780,6 +780,40 @@ function sortByAppearance<T extends { key: string }>(items: T[]): T[] {
 	return [...items];
 }
 
+function normalizeJointLabelIdentity(label: string): string {
+	return label.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function mergeDuplicateJointLabels(joints: IntentJoint[], warnings: string[]): Map<string, string> {
+	const canonicalByLabel = new Map<string, string>();
+	const aliases = new Map<string, string>();
+	const kept: IntentJoint[] = [];
+
+	for (const joint of joints) {
+		const labelIdentity = normalizeJointLabelIdentity(joint.label ?? joint.key);
+		const canonicalKey = canonicalByLabel.get(labelIdentity);
+		if (canonicalKey && canonicalKey !== joint.key) {
+			aliases.set(joint.key, canonicalKey);
+			warnings.push(
+				`joints["${joint.key}"] merged into "${canonicalKey}" because both use label "${joint.label ?? joint.key}"`
+			);
+			continue;
+		}
+		canonicalByLabel.set(labelIdentity, joint.key);
+		kept.push(joint);
+	}
+
+	if (aliases.size > 0) {
+		joints.splice(0, joints.length, ...kept);
+	}
+	return aliases;
+}
+
+function resolveJointAlias(jointKey: string | undefined, aliases: Map<string, string>): string | undefined {
+	if (!jointKey) return jointKey;
+	return aliases.get(jointKey) ?? jointKey;
+}
+
 function extractRootIntentCandidate(input: unknown): Record<string, unknown> {
 	if (!isRecord(input)) return {};
 	const direct = input;
@@ -1115,6 +1149,28 @@ export function normalizeSchemeIntent(input: unknown): SchemeIntentNormalizeResu
 	const requestedResults = requestedRaw
 		.map((raw) => normalizeRequestedResultCandidate(raw))
 		.filter((entry): entry is IntentRequestedResult => Boolean(entry));
+
+	const jointAliases = mergeDuplicateJointLabels(joints, warnings);
+	if (jointAliases.size > 0) {
+		for (const member of members) {
+			member.startJoint = resolveJointAlias(member.startJoint, jointAliases) ?? member.startJoint;
+			member.endJoint = resolveJointAlias(member.endJoint, jointAliases) ?? member.endJoint;
+		}
+		for (const component of components) {
+			component.centerJoint = resolveJointAlias(component.centerJoint, jointAliases) ?? component.centerJoint;
+		}
+		for (const pair of kinematicPairs) {
+			if (pair.jointKey) pair.jointKey = resolveJointAlias(pair.jointKey, jointAliases);
+		}
+		for (const support of supports) {
+			if (support.jointKey) support.jointKey = resolveJointAlias(support.jointKey, jointAliases);
+		}
+		for (const load of loads) {
+			if ('jointKey' in load.target) {
+				load.target.jointKey = resolveJointAlias(load.target.jointKey, jointAliases) ?? load.target.jointKey;
+			}
+		}
+	}
 
 	const assumptions = uniqueStrings([
 		...normalizeStringArray(rootPayload.assumptions),

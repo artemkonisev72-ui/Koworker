@@ -103,7 +103,26 @@ export type ApprovedFollowupIntent =
 	| 'independent_message'
 	| 'compute_followup'
 	| 'explain_followup'
-	| 'reformat_followup';
+	| 'reformat_followup'
+	| 'noncomputational_followup';
+
+export type TaskRouteKind =
+	| 'solve_computation'
+	| 'schema_description'
+	| 'document_transform'
+	| 'summary'
+	| 'writing'
+	| 'general_answer';
+
+export type TaskRouteSource = 'rules' | 'model' | 'fallback';
+
+export interface TaskRoute {
+	kind: TaskRouteKind;
+	requiresCodeGen: boolean;
+	confidence: number;
+	reason?: string;
+	source: TaskRouteSource;
+}
 
 interface GeminiMessage {
 	role: 'user' | 'model';
@@ -681,24 +700,330 @@ function languagePolicy(userText: string): string {
 	return 'Language policy: respond ONLY in English. Keep all explanations, assumptions, ambiguities, labels and any natural-language text in English.';
 }
 
+function normalizeRouteText(value: string): string {
+	return value
+		.toLowerCase()
+		.replace(/ё/g, 'е')
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+function hasAnyPattern(text: string, patterns: RegExp[]): boolean {
+	return patterns.some((pattern) => pattern.test(text));
+}
+
+function hasAnyPhrase(text: string, phrases: string[]): boolean {
+	return phrases.some((phrase) => text.includes(phrase));
+}
+
+function makeTaskRoute(
+	kind: TaskRouteKind,
+	source: TaskRouteSource,
+	confidence: number,
+	reason?: string
+): TaskRoute {
+	return {
+		kind,
+		requiresCodeGen: kind === 'solve_computation',
+		confidence,
+		source,
+		...(reason ? { reason } : {})
+	};
+}
+
+const NON_SOLVE_HARD_PATTERNS = [
+	/\bне\s+(?:надо\s+|нужно\s+)?(?:решай|решать|реши|вычисляй|вычислять|считай|считать|рассчитывай|рассчитывать|определяй|определять|находи|найти)\b/u,
+	/\bничего\s+не\s+(?:решай|решать|вычисляй|вычислять|считай|считать)\b/u,
+	/\bбез\s+(?:решения|вычислений|расчета|расчетов|подсчетов)\b/u,
+	/\bтолько\s+(?:описание|опиши|описать|объясни|объяснение)\b/u,
+	/\b(?:no|without)\s+(?:solving|calculation|calculations|computing|computation)\b/u,
+	/\b(?:do\s+not|don't)\s+(?:solve|calculate|compute)\b/u
+];
+
+const EXTRACTION_PATTERNS = [
+	/\b(?:извлеки|вытащи|найди\s+в\s+документе|найди\s+в\s+файле|найди\s+в\s+тексте|составь\s+таблицу\s+по|заполни\s+таблицу|выдели\s+данные)\b/u,
+	/\b(?:extract|find\s+in\s+(?:the\s+)?(?:document|file|text)|make\s+a\s+table\s+from)\b/u
+];
+
+const SUMMARY_PATTERNS = [
+	/\b(?:сделай\s+)?(?:выжимку|кратк(?:ий|ую|ое)\s+(?:пересказ|резюме|сводку)|перескажи|суммаризируй|обобщи|выдели\s+главное|конспект)\b/u,
+	/\b(?:summary|summarize|summarise|brief|key\s+points|abstract)\b/u
+];
+
+const DOCUMENT_TRANSFORM_PATTERNS = [
+	/\b(?:заполни|составь|оформи|подготовь|структурируй|преобразуй|переформатируй)\s+(?:отчет|отчёт|работу|таблицу|план|список|структуру)\b/u,
+	/\b(?:лабораторн(?:ая|ой|ую)|pdf|docx|документ|файл|отчет|отчёт)\b.*\b(?:заполни|составь|оформи|структурируй|вытащи|извлеки)\b/u,
+	/\b(?:fill|draft|prepare|format|structure)\s+(?:a\s+)?(?:lab\s+report|report|table|outline)\b/u
+];
+
+const WRITING_PATTERNS = [
+	/\b(?:напиши|сочини|сформулируй|подготовь)\s+(?:сочинение|эссе|текст|введение|заключение|письмо|объяснение|раздел|вывод)\b/u,
+	/\b(?:сочинение|эссе|введение|заключение)\b/u,
+	/\b(?:write|draft|compose)\s+(?:an?\s+)?(?:essay|text|introduction|conclusion|letter|explanation)\b/u
+];
+
+const SCHEMA_DESCRIPTION_PATTERNS = [
+	/\b(?:опиши|описать|создай\s+описание|составь\s+описание|объясни\s+устройство|объясни\s+схему|описание\s+схемы|описание\s+механизма)\b/u,
+	/\b(?:describe|description\s+of|explain\s+the\s+(?:scheme|mechanism|structure))\b/u
+];
+
+const STRONG_SOLVE_PATTERNS = [
+	/\b(?:реши|решить|решение\s+задачи|вычисли|вычислить|рассчитай|рассчитать|посчитай|посчитать|найди|найти|определи|определить)\b/u,
+	/\b(?:построй|построить)\s+(?:эпюр|эпюру|график|диаграмму)\b/u,
+	/\b(?:реакци[яию]|момент|усили[ея]|напряжени[ея]|перемещени[ея]|скорост[ьи]|ускорени[ея])\b.*\b(?:найди|определи|вычисли|рассчитай|построй)\b/u,
+	/\b(?:solve|calculate|compute|determine|find)\b/u
+];
+
+const NON_SOLVE_HARD_PHRASES = [
+	'не решай',
+	'не решать',
+	'не нужно решать',
+	'не надо решать',
+	'ничего не решай',
+	'ничего не решать',
+	'не вычисляй',
+	'не вычислять',
+	'не считай',
+	'не считать',
+	'без решения',
+	'без вычислений',
+	'без расчета',
+	'без расчетов',
+	'только описание',
+	'только опиши',
+	'только описать'
+];
+
+const EXTRACTION_PHRASES = [
+	'извлеки',
+	'вытащи',
+	'найди в документе',
+	'найди в файле',
+	'найди в тексте',
+	'составь таблицу по',
+	'заполни таблицу',
+	'выдели данные'
+];
+
+const SUMMARY_PHRASES = [
+	'выжимку',
+	'краткий пересказ',
+	'краткую сводку',
+	'краткое резюме',
+	'перескажи',
+	'суммаризируй',
+	'обобщи',
+	'выдели главное',
+	'конспект'
+];
+
+const DOCUMENT_TRANSFORM_PHRASES = [
+	'заполни отчет',
+	'заполни отчёт',
+	'составь отчет',
+	'составь отчёт',
+	'оформи отчет',
+	'оформи отчёт',
+	'подготовь отчет',
+	'подготовь отчёт',
+	'лабораторная работа',
+	'лабораторной работе',
+	'структурируй',
+	'переформатируй',
+	'pdf',
+	'docx'
+];
+
+const WRITING_PHRASES = [
+	'напиши сочинение',
+	'напиши эссе',
+	'напиши текст',
+	'сочинение',
+	'эссе',
+	'введение',
+	'заключение',
+	'сформулируй',
+	'сочини'
+];
+
+const SCHEMA_DESCRIPTION_PHRASES = [
+	'только опиши',
+	'опиши схему',
+	'описать схему',
+	'создай описание',
+	'составь описание',
+	'описание схемы',
+	'описание механизма',
+	'объясни устройство',
+	'объясни схему'
+];
+
+const STRONG_SOLVE_PHRASES = [
+	'реши',
+	'решить',
+	'вычисли',
+	'вычислить',
+	'рассчитай',
+	'рассчитать',
+	'посчитай',
+	'посчитать',
+	'найди',
+	'найти',
+	'определи',
+	'определить',
+	'построй эпюру',
+	'построить эпюру',
+	'построй график'
+];
+
+export function routeTaskByRules(userMessage: string): TaskRoute | null {
+	const text = normalizeRouteText(userMessage);
+	if (!text) return null;
+	const attachmentMarker = '[attached_documents]';
+	const markerIndex = text.indexOf(attachmentMarker);
+	const hasAttachedDocuments = markerIndex >= 0;
+	const intentText = hasAttachedDocuments ? text.slice(0, markerIndex).trim() : text;
+	const routeText = intentText || text;
+
+	const hardNonSolve =
+		hasAnyPhrase(routeText, NON_SOLVE_HARD_PHRASES) || hasAnyPattern(routeText, NON_SOLVE_HARD_PATTERNS);
+	const extraction = hasAnyPhrase(routeText, EXTRACTION_PHRASES) || hasAnyPattern(routeText, EXTRACTION_PATTERNS);
+	const summary = hasAnyPhrase(routeText, SUMMARY_PHRASES) || hasAnyPattern(routeText, SUMMARY_PATTERNS);
+	const documentTransform =
+		hasAnyPhrase(routeText, DOCUMENT_TRANSFORM_PHRASES) ||
+		hasAnyPattern(routeText, DOCUMENT_TRANSFORM_PATTERNS) ||
+		(hasAttachedDocuments && intentText.length === 0);
+	const writing = hasAnyPhrase(routeText, WRITING_PHRASES) || hasAnyPattern(routeText, WRITING_PATTERNS);
+	const schemaDescription =
+		hasAnyPhrase(routeText, SCHEMA_DESCRIPTION_PHRASES) || hasAnyPattern(routeText, SCHEMA_DESCRIPTION_PATTERNS);
+	const strongSolve = hasAnyPhrase(routeText, STRONG_SOLVE_PHRASES) || hasAnyPattern(routeText, STRONG_SOLVE_PATTERNS);
+
+	if (hardNonSolve) {
+		if (schemaDescription) {
+			return makeTaskRoute('schema_description', 'rules', 0.98, 'Explicit request to describe without solving.');
+		}
+		if (documentTransform) {
+			return makeTaskRoute('document_transform', 'rules', 0.98, 'Explicit document/report task without solving.');
+		}
+		if (summary) {
+			return makeTaskRoute('summary', 'rules', 0.98, 'Explicit summary task without solving.');
+		}
+		if (writing) {
+			return makeTaskRoute('writing', 'rules', 0.98, 'Explicit writing task without solving.');
+		}
+		return makeTaskRoute('general_answer', 'rules', 0.96, 'Explicit non-solving instruction.');
+	}
+
+	if (extraction) return makeTaskRoute('document_transform', 'rules', 0.94, 'Document extraction request.');
+	if (summary && !strongSolve) return makeTaskRoute('summary', 'rules', 0.93, 'Summary request.');
+	if (documentTransform && !strongSolve) {
+		return makeTaskRoute('document_transform', 'rules', 0.93, 'Document/report transformation request.');
+	}
+	if (writing && !strongSolve) return makeTaskRoute('writing', 'rules', 0.93, 'Writing request.');
+	if (schemaDescription && !strongSolve) {
+		return makeTaskRoute('schema_description', 'rules', 0.92, 'Scheme description request.');
+	}
+	if (strongSolve) return makeTaskRoute('solve_computation', 'rules', 0.9, 'Explicit solve/compute request.');
+
+	return null;
+}
+
+function parseTaskRoute(text: string): TaskRoute | null {
+	const candidate = extractFirstJsonObject(text);
+	if (!candidate) return null;
+	try {
+		const parsed = JSON.parse(candidate) as Record<string, unknown>;
+		const rawKind = typeof parsed.kind === 'string' ? parsed.kind : '';
+		const allowedKinds = new Set<TaskRouteKind>([
+			'solve_computation',
+			'schema_description',
+			'document_transform',
+			'summary',
+			'writing',
+			'general_answer'
+		]);
+		if (!allowedKinds.has(rawKind as TaskRouteKind)) return null;
+		const confidence =
+			typeof parsed.confidence === 'number' && Number.isFinite(parsed.confidence)
+				? Math.max(0, Math.min(1, parsed.confidence))
+				: 0.7;
+		const reason = typeof parsed.reason === 'string' ? parsed.reason.trim().slice(0, 240) : undefined;
+		return makeTaskRoute(rawKind as TaskRouteKind, 'model', confidence, reason);
+	} catch {
+		return null;
+	}
+}
+
+export async function routeTask(
+	history: GeminiHistory[],
+	userMessage: string,
+	forcedModel?: string | null
+): Promise<TaskRoute & { model: string; tokens: number }> {
+	const ruleRoute = routeTaskByRules(userMessage);
+	if (ruleRoute) {
+		return { ...ruleRoute, model: 'Локальные правила', tokens: 0 };
+	}
+
+	const prompt = `Classify the current user request for Koworker.
+Return STRICT JSON only:
+{
+  "kind": "solve_computation | schema_description | document_transform | summary | writing | general_answer",
+  "confidence": 0.0,
+  "reason": "short reason"
+}
+
+Definitions:
+- solve_computation: the user asks to solve, calculate, determine numeric values, build diagrams/epures, or produce exact engineering/math results.
+- schema_description: the user asks to describe a scheme, mechanism, structure, connections, elements, or visual layout without solving.
+- document_transform: the user asks to process a PDF/DOCX or document into a report, table, outline, extracted fields, structured notes, or lab-work text.
+- summary: the user asks for a summary, digest, key points, abstract, or concise retelling.
+- writing: the user asks to write or rewrite natural-language content such as an essay, introduction, conclusion, letter, or explanation.
+- general_answer: ordinary Q&A that does not require code execution or exact computed anchors.
+
+Hard rules:
+1) If the user explicitly says not to solve/calculate, do not choose solve_computation.
+2) Mathematical or engineering content inside an attached document does not require solve_computation by itself.
+3) If the user asks both to solve and format/write a report, choose solve_computation.
+4) If uncertain, prefer a non-CodeGen kind unless the user clearly asks for computed results.
+
+${languagePolicy(userMessage)}`;
+
+	const messages = buildContext(history, prompt, `Question: ${userMessage}`);
+	const generation = await generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
+	const parsed = parseTaskRoute(generation.text);
+	if (parsed) return { ...parsed, model: generation.model, tokens: generation.tokens };
+
+	const fallbackRule = routeTaskByRules(userMessage);
+	const fallback =
+		fallbackRule ??
+		makeTaskRoute('general_answer', 'fallback', 0.45, 'Router response was not valid JSON; used conservative text path.');
+	return { ...fallback, source: 'fallback', model: generation.model, tokens: generation.tokens };
+}
+
 export async function routeQuestion(
 	history: GeminiHistory[],
 	userMessage: string,
 	forcedModel?: string | null
 ): Promise<{ result: boolean; model: string; tokens: number }> {
-	const prompt =
-		'Determine if the request requires mathematical/engineering computation. Reply with YES or NO only.';
-	const messages = buildContext(history, prompt, `Question: ${userMessage}`);
-	const { text, model, tokens } = await generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
-	return { result: text.trim().toUpperCase().startsWith('YES'), model, tokens };
+	const route = await routeTask(history, userMessage, forcedModel);
+	return { result: route.requiresCodeGen, model: route.model, tokens: route.tokens };
 }
 
 function normalizeApprovedFollowupIntent(raw: string): ApprovedFollowupIntent {
 	const normalized = raw.trim().toLowerCase();
+	if (normalized.includes('noncomputational_followup')) return 'noncomputational_followup';
 	if (normalized.includes('compute_followup')) return 'compute_followup';
 	if (normalized.includes('explain_followup')) return 'explain_followup';
 	if (normalized.includes('reformat_followup')) return 'reformat_followup';
 	return 'independent_message';
+}
+
+function isLikelyApprovedTaskReference(userMessage: string): boolean {
+	const text = normalizeRouteText(userMessage);
+	return hasAnyPattern(text, [
+		/\b(?:это|этот|эту|этой|данн(?:ый|ую|ой)|предыдущ(?:ий|ую|ей)|решени[ея]|схем[уы]|задач[уы]|механизм[а]?|конструкци[ию])\b/u,
+		/\b(?:this|that|previous|above|same)\s+(?:task|solution|scheme|mechanism|structure|problem)\b/u
+	]);
 }
 
 export async function routeApprovedFollowup(
@@ -712,21 +1037,30 @@ export async function routeApprovedFollowup(
 	},
 	forcedModel?: string | null
 ): Promise<{ intent: ApprovedFollowupIntent; model: string; tokens: number }> {
+	const localRoute = routeTaskByRules(params.userMessage);
+	if (localRoute && !localRoute.requiresCodeGen && isLikelyApprovedTaskReference(params.userMessage)) {
+		return { intent: 'noncomputational_followup', model: 'Локальные правила', tokens: 0 };
+	}
+
 	const prompt = `Classify the current user message for a chat that already has a solved approved mechanics task.
 Return only one label:
 - independent_message
 - compute_followup
 - explain_followup
 - reformat_followup
+- noncomputational_followup
 
 Definitions:
 - independent_message: unrelated new request/topic; should not use previous approved task as computation base.
 - compute_followup: asks to compute additional values/variants within the same approved task and schema.
 - explain_followup: asks conceptual clarification, checking steps, or Q&A about the same solved task.
 - reformat_followup: asks to rewrite/restructure/shorten/expand/translate formatting of the same solved solution.
+- noncomputational_followup: asks to describe, summarize, structure, write a report/text, extract information, or otherwise transform the approved task/solution without new computation.
 
 Rules:
 - If message tries to modify task conditions (different loads, lengths, supports) still classify as compute_followup.
+- If message explicitly says not to solve/calculate, never classify as compute_followup.
+- If message asks to write/report/summarize/structure the same task or solution, classify as noncomputational_followup.
 - Prefer independent_message only when relation to previous task is weak or absent.
 - Output exactly one label with no extra text.`;
 
@@ -1017,12 +1351,60 @@ ${languagePolicy(userMessage)}`;
 	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
 }
 
+export async function answerNonComputationalTask(
+	history: GeminiHistory[],
+	params: {
+		userMessage: string;
+		taskKind?: TaskRouteKind;
+		context?: string;
+	},
+	forcedModel?: string | null
+): Promise<{ text: string; model: string; tokens: number }> {
+	const kind = params.taskKind ?? 'general_answer';
+	const modeInstructions: Record<TaskRouteKind, string> = {
+		solve_computation:
+			'Mode: text answer. The request was routed away from computation; do not solve or produce exact computed anchors.',
+		schema_description:
+			'Mode: scheme description. Describe visible/known elements, joints, constraints, loads and relationships. Do not solve, calculate, or invent numeric results.',
+		document_transform:
+			'Mode: document transformation. Use attached document context to produce the requested report, table, outline, extraction, or structured text.',
+		summary:
+			'Mode: summary. Extract key points, structure them clearly, and preserve important facts from the source.',
+		writing:
+			'Mode: writing. Produce the requested natural-language text in a polished academic style and follow the requested genre.',
+		general_answer:
+			'Mode: general answer. Answer clearly and academically without code execution or exact computed anchors.'
+	};
+	const prompt = `You are Koworker in a non-CodeGen response path.
+
+Hard rules:
+1) Do not generate Python code.
+2) Do not claim that code, sandbox execution, or exactAnswers were used.
+3) Do not solve/calculate engineering or math results unless the user explicitly asks for a solution.
+4) If attached documents are present, treat them as source material for the requested text/document task.
+5) For PDF page images, extract visible text, tables, labels and layout details when useful.
+6) Keep the answer useful for reports, summaries, essays, extraction, structuring and scheme descriptions.
+7) Preserve the user's requested format when they specify one.
+
+${modeInstructions[kind]}
+${languagePolicy(params.userMessage)}`;
+
+	const question = [
+		params.context ? `[CONTEXT]\n${params.context}` : '',
+		`[USER_REQUEST]\n${params.userMessage}`
+	]
+		.filter(Boolean)
+		.join('\n\n');
+	const messages = buildContext(history, prompt, question);
+	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
+}
+
 export async function analyzeImage(
 	history: GeminiHistory[],
 	base64Data: string,
 	mimeType: string,
 	forcedModel?: string | null,
-	options?: { fastMode?: boolean }
+	options?: { fastMode?: boolean; mode?: 'solve' | 'document' }
 ): Promise<{ text: string; model: string; tokens: number }> {
 	return analyzeImages(history, [{ base64: base64Data, mimeType }], forcedModel, options);
 }
@@ -1031,12 +1413,17 @@ export async function analyzeImages(
 	history: GeminiHistory[],
 	images: ChatImage[],
 	forcedModel?: string | null,
-	options?: { fastMode?: boolean }
+	options?: { fastMode?: boolean; mode?: 'solve' | 'document' }
 ): Promise<{ text: string; model: string; tokens: number }> {
+	const mode = options?.mode ?? 'solve';
 	const prompt =
-		images.length > 1
-			? 'Analyze the attached images as one engineering/math task. Extract the task condition and describe the scheme relevant for solving. Return plain text only.'
-			: 'Analyze the attached image. Extract the engineering/math task condition and describe the scheme relevant for solving. Return plain text only.';
+		mode === 'document'
+			? images.length > 1
+				? 'Analyze the attached images as document/source pages. Extract visible text, headings, tables, labels, symbols and layout details useful for a text answer. Do not solve or calculate unless the user explicitly requested it. Return plain text only.'
+				: 'Analyze the attached image as a document/source page. Extract visible text, headings, tables, labels, symbols and layout details useful for a text answer. Do not solve or calculate unless the user explicitly requested it. Return plain text only.'
+			: images.length > 1
+				? 'Analyze the attached images as one engineering/math task. Extract the task condition and describe the scheme relevant for solving. Return plain text only.'
+				: 'Analyze the attached image. Extract the engineering/math task condition and describe the scheme relevant for solving. Return plain text only.';
 	const messages = buildContext(history, prompt, '');
 	for (const image of images) {
 		messages[messages.length - 1].parts.push({ inlineData: { mimeType: image.mimeType, data: image.base64 } });
@@ -1132,6 +1519,7 @@ Rules:
 7) For slider-crank, set the prismatic_pair jointKey to the slider joint (usually B), guideHint="horizontal" unless stated otherwise, and assume its guide line passes through the grounded crank pivot (usually O). If an eccentricity e is given, put it into guideOffsetHint on the prismatic_pair/support; positive means above O.
 8) If a support is attached by memberKey, always provide s in [0,1]. For end supports on a beam, use s=0 or s=1. If exact position is unknown, explicitly set s=0.5 instead of omitting it.
 9) For a distributed load over the whole member/full length, use target { "memberKey": "...", "fromS": 0, "toS": 1 }; do not encode it as midpoint s=0.5.
+10) If several members meet at one physical joint, reuse exactly one joint key for that joint. For a T-shaped connection, split the through member at the intersection: A-B and B-C share joint B, and the branch B-D also uses joint B. Do not create separate coincident joints for the branch.
 ${languagePolicy(userMessage)}`;
 
 	const question = `Task:\n${userMessage}`;
@@ -1251,6 +1639,7 @@ Rules:
 8) For slider-crank, set the prismatic_pair jointKey to the slider joint at the rod end (usually B), set guideHint="horizontal" unless stated otherwise, and assume its guide line passes through the grounded crank pivot (usually O). If an eccentricity e is given, put it into guideOffsetHint; positive means above O.
 9) If a support is attached by memberKey, always provide s in [0,1]. For end supports on a beam, use s=0 or s=1. If exact position is unknown, explicitly set s=0.5 instead of omitting it.
 10) For a distributed load over the whole member/full length, use target { "memberKey": "...", "fromS": 0, "toS": 1 }; do not encode it as midpoint s=0.5.
+11) If several members meet at one physical joint, reuse exactly one joint key for that joint. For a T-shaped connection, split the through member at the intersection: A-B and B-C share joint B, and the branch B-D also uses joint B. Do not create separate coincident joints for the branch.
 ${languagePolicy(userMessage)}`;
 
 	if (useFastMode) {
@@ -1471,6 +1860,7 @@ Do NOT place epure into schemaData.objects; epure must be in schemaData.results 
 Every object MUST contain non-empty id, type, geometry object.
 Use nodeRefs to reference node ids from nodes array.
 Topology-first policy: your primary responsibility is structure and constraints, not final absolute coordinates.
+Shared-joint topology is mandatory: if two or more members meet at one physical joint, all incident members must reference the same node id. For a T-shaped connection, split the through member at the intersection into two members (A-B and B-C) and make the branch member (B-D) use the same B node. Do not model a T-joint as a branch attached to the middle of an unsplit member, and do not create separate coincident/near-coincident nodes for the same physical joint.
 Coordinates are only a coarse scaffold and may be overridden by deterministic backend layout.
 Physical dimensions belong in geometry.length/labels/dimensions, not in raw node-coordinate scale.
 For linear members (bar/cable/spring/damper/axis/ground), include geometry.length and geometry.angleDeg or geometry.constraints.
@@ -1562,7 +1952,8 @@ Fill canonical geometry per type:
 - epure (if present): put into results with baseLine + values + fillHatch + showSigns
 - beam epure: include kind + axisOrigin (+ compressedFiberSide for kind "M")
 - frame epure: include component (N|Vy|Vz|T|My|Mz) + axisOrigin="member_start"
-- if textual description names points/members/components/pairs, preserve matching labels in nodes/objects`;
+- if textual description names points/members/components/pairs, preserve matching labels in nodes/objects
+- T-shaped/shared joints: keep one shared nodeRef at the physical intersection for every incident member`;
 	const stageBQuestion = `Task context:\n${contextMessage}\n\nStage A schema JSON:\n${stageASchemaJson}\n\nNow return finalized schemaData v2.`;
 	const stageB = await generateSchemaStage(history, stageBPrompt, stageBQuestion, params?.forcedModel);
 	usedModels.push(formatTokenAttribution(stageB.model, 'SchemaGen-B', stageB.tokens));
@@ -1575,7 +1966,8 @@ Self-check rules:
 2) object ids must be unique and non-empty
 3) no unsupported type names
 4) avoid coordinate collapse unless explicitly requested
-5) keep physical meaning from task and keep prior valid details`;
+5) keep physical meaning from task and keep prior valid details
+6) for T-shaped/shared joints, incident members must share the actual node id; split a through member at the joint instead of using coincident nodes or member attach`;
 	const stageCQuestion = `Task context:\n${contextMessage}\n\nCandidate schema JSON:\n${stageBSchemaJson}\n\nReturn corrected final schemaData v2.`;
 	const stageC = await generateSchemaStage(history, stageCPrompt, stageCQuestion, params?.forcedModel);
 	usedModels.push(formatTokenAttribution(stageC.model, 'SchemaGen-C', stageC.tokens));
@@ -1625,6 +2017,7 @@ Physical dimensions belong in geometry.length/labels/dimensions, not in raw node
 Prefer coordinates in range [-10, 10] and preserve consistent relative lengths.
 For linear members include geometry.length and geometry.angleDeg or geometry.constraints.
 Use geometry.constraints (collinearWith, parallelTo, perpendicularTo, mirrorOf) when relation is known.
+For T-shaped/shared joints, all incident members must share one actual nodeRef at the physical joint. Split through members at the intersection instead of using coincident nodes or geometry.attach for the branch.
 Use geometry.attach for member-relative placement when loads/supports should be attached by parameter s.
 For fixed_wall side semantics use geometry.wallSide=left|right|top|bottom.
 For supports/loads always attach to member nodes (nodeRefs) instead of origin defaults.
@@ -1655,6 +2048,7 @@ ${languagePolicy(languageSeed)}`;
 Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 Keep same physical meaning and ids where valid.
 Fix only structural issues: invalid/missing nodeRefs, wrong type names, empty ids, malformed geometry.
+For T-shaped/shared joints, preserve or restore one shared nodeRef at the physical intersection for every incident member.
 ${languagePolicy(languageSeed)}`;
 	const stage2Question = `Original task:\n${params.originalPrompt}\n\nRevision notes:\n${params.revisionNotes}\n\nCandidate revised schema:\n${JSON.stringify(parsedRevision.schemaData, null, 2)}`;
 	const stage2 = await generateSchemaStage(history, stage2Prompt, stage2Question, params.forcedModel, {
@@ -1697,6 +2091,7 @@ Focus on topology and constraints:
 - force/distributed/velocity/acceleration must keep explicit direction fields
 - fixed_wall may use geometry.wallSide
 - keep meta.structureKind and coordinateSystem.modelSpace consistent with the task type
+- T-shaped/shared joints must use one shared nodeRef for all incident members; split a through member at the joint if needed
 - frame epures should preserve geometry.component + geometry.axisOrigin="member_start"
 - beam epures should preserve geometry.kind + geometry.axisOrigin, and for kind "M" geometry.compressedFiberSide
 Keep schemaData.version = "2.0" and finite numbers.

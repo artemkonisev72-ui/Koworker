@@ -8,14 +8,18 @@
  *   Finalizer receives canonical task context + exact answers and writes full narrative solution.
  */
 import {
-	routeQuestion,
+	routeTask,
 	routeApprovedFollowup,
 	generatePythonCode,
 	assembleFinalAnswer,
 	generateResultSchemaPatch,
 	answerGeneralQuestion,
+	answerNonComputationalTask,
 	analyzeImages,
-	type GeminiHistory
+	routeTaskByRules,
+	type GeminiHistory,
+	type TaskRoute,
+	type TaskRouteKind
 } from './gemini.js';
 import { workerPool, SandboxError } from '../sandbox/worker-pool.js';
 import {
@@ -89,7 +93,8 @@ type ApprovedFollowupRoute =
 	| 'independent_message'
 	| 'compute_followup'
 	| 'explain_followup'
-	| 'reformat_followup';
+	| 'reformat_followup'
+	| 'noncomputational_followup';
 
 export interface ApprovedFollowupContext {
 	draftId: string;
@@ -150,13 +155,13 @@ const FINALIZER_GRAPH_SAMPLE_POINTS = readIntEnv('FINALIZER_GRAPH_SAMPLE_POINTS'
 const FOLLOWUP_CHAT_MAX_TURNS = readIntEnv('FOLLOWUP_CHAT_MAX_TURNS', 10, 2, 24);
 const FOLLOWUP_CHAT_MAX_CHARS = readIntEnv('FOLLOWUP_CHAT_MAX_CHARS', 2400, 400, 12000);
 
-const STATUS_ANALYZE_IMAGE = '\u0410\u043d\u0430\u043b\u0438\u0437 \u0438\u0437\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u044f...';
-const STATUS_ANALYZE_TASK = '\u0410\u043d\u0430\u043b\u0438\u0437 \u0437\u0430\u0434\u0430\u0447\u0438...';
-const STATUS_GENERATE_CODE = '\u0413\u0435\u043d\u0435\u0440\u0430\u0446\u0438\u044f \u043a\u043e\u0434\u0430 \u0440\u0435\u0448\u0435\u043d\u0438\u044f...';
-const STATUS_FIX_ERROR = '\u0418\u0441\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u0435 \u043e\u0448\u0438\u0431\u043a\u0438';
-const STATUS_RUN = '\u0412\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435 \u0432\u044b\u0447\u0438\u0441\u043b\u0435\u043d\u0438\u0439...';
-const STATUS_RUN_FIXED = '\u0412\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u0435 \u0438\u0441\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u043d\u043e\u0433\u043e \u043a\u043e\u0434\u0430...';
-const STATUS_FORM_ANSWER = '\u0424\u043e\u0440\u043c\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435 \u043e\u0442\u0432\u0435\u0442\u0430...';
+const STATUS_ANALYZE_IMAGE = 'Анализирую вложения...';
+const STATUS_ANALYZE_TASK = 'Анализирую запрос...';
+const STATUS_GENERATE_CODE = 'Генерирую код решения...';
+const STATUS_FIX_ERROR = 'Исправляю ошибку';
+const STATUS_RUN = 'Выполняю вычисления...';
+const STATUS_RUN_FIXED = 'Выполняю исправленный код...';
+const STATUS_FORM_ANSWER = 'Формирую ответ...';
 
 function readIntEnv(name: string, fallback: number, min: number, max: number): number {
 	const raw = Number(process.env[name]);
@@ -168,6 +173,49 @@ function readIntEnv(name: string, fallback: number, min: number, max: number): n
 function truncateText(value: string, maxChars: number): string {
 	if (value.length <= maxChars) return value;
 	return `${value.slice(0, maxChars)}...`;
+}
+
+function modelUsage(model: string, stage: string, tokens: number): string {
+	return `${model} (${stage}): ${tokens.toLocaleString('ru-RU')} токенов`;
+}
+
+function defaultNonComputationalRoute(kind: TaskRouteKind = 'general_answer'): TaskRoute {
+	return {
+		kind,
+		requiresCodeGen: false,
+		confidence: 0.9,
+		source: 'rules'
+	};
+}
+
+function routeKindFromFollowup(intent: ApprovedFollowupRoute | null): TaskRouteKind {
+	if (intent === 'noncomputational_followup' || intent === 'reformat_followup') return 'document_transform';
+	if (intent === 'explain_followup') return 'general_answer';
+	return 'general_answer';
+}
+
+function buildNonComputationalFollowupContext(input: CanonicalSolveInput): string {
+	const sections: string[] = [];
+	sections.push(`[CURRENT_REQUEST]\n${input.followUpRequest ?? ''}`);
+	sections.push(`[ORIGINAL_TASK]\n${truncateText(input.originalTask, FINALIZER_TASK_MAX_CHARS)}`);
+	if (input.approvedSchemeDescription) {
+		sections.push(`[APPROVED_SCHEME_DESCRIPTION]\n${truncateText(input.approvedSchemeDescription, 3000)}`);
+	}
+	if (input.revisionNotes && input.revisionNotes.length > 0) {
+		sections.push(`[REVISION_NOTES]\n${input.revisionNotes.map((note) => `- ${note}`).join('\n')}`);
+	}
+	if (input.previousSolved?.answerText) {
+		sections.push(`[PREVIOUS_ANSWER_TEXT]\n${truncateText(input.previousSolved.answerText, 4000)}`);
+	}
+	if (Array.isArray(input.previousSolved?.exactAnswers) && input.previousSolved.exactAnswers.length > 0) {
+		sections.push(
+			`[PREVIOUS_EXACT_ANSWERS_AS_CONTEXT]\n${truncateText(
+				JSON.stringify({ exactAnswers: input.previousSolved.exactAnswers }),
+				2400
+			)}`
+		);
+	}
+	return sections.filter((section) => section.trim().length > 0).join('\n\n');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -915,6 +963,8 @@ export async function runPipeline(
 		let followupDraftId: string | undefined;
 		let forceFinalizerOnly = false;
 		let skipImageAnalysis = false;
+		let taskRoute: TaskRoute | null = null;
+		let localRouteLogged = false;
 		let finalizerMode: 'full_solve' | 'compute_followup' | 'explain_followup' | 'reformat_followup' =
 			'full_solve';
 		let followupCanonicalInput: CanonicalSolveInput | null = null;
@@ -957,7 +1007,7 @@ export async function runPipeline(
 			);
 			followupRoute = followupRouting.intent;
 			usedModelsList.push(
-				`${followupRouting.model} (FollowupRouter): ${followupRouting.tokens.toLocaleString('ru-RU')} С‚РѕРєРµРЅРѕРІ`
+				modelUsage(followupRouting.model, 'FollowupRouter', followupRouting.tokens)
 			);
 			if (followupRoute !== 'independent_message') {
 				followupDraftId = approvedFollowup.draftId;
@@ -970,43 +1020,90 @@ export async function runPipeline(
 				skipImageAnalysis = true;
 				finalizerMode = followupRoute;
 			}
+			if (followupRoute === 'reformat_followup' || followupRoute === 'noncomputational_followup') {
+				forceFinalizerOnly = false;
+				skipImageAnalysis = false;
+				taskRoute = defaultNonComputationalRoute(routeKindFromFollowup(followupRoute));
+			}
+		}
+
+		if (!options?.bypassRouting && !taskRoute && followupRoute !== 'compute_followup' && !forceFinalizerOnly) {
+			const ruleRoute = routeTaskByRules(effectiveUserMessage);
+			if (ruleRoute) {
+				taskRoute = ruleRoute;
+				usedModelsList.push(modelUsage('Локальные правила', 'Router', 0));
+				localRouteLogged = true;
+			}
 		}
 
 		if (images.length > 0 && !options?.canonicalSolveInput && !skipImageAnalysis) {
 			console.log('[Pipeline] Analyzing image...');
 			await emitStatus({ type: 'status', message: STATUS_ANALYZE_IMAGE });
-			const { text: visionText, model: visionModel, tokens: visionTokens } = await analyzeImages(
-				history,
-				images,
-				forcedModel
-			);
+			const visionMode = taskRoute && !taskRoute.requiresCodeGen ? 'document' : 'solve';
+			const visionResult =
+				visionMode === 'document'
+					? await analyzeImages(history, images, forcedModel, { mode: 'document' })
+					: await analyzeImages(history, images, forcedModel);
+			const { text: visionText, model: visionModel, tokens: visionTokens } = visionResult;
 			imageDescription = visionText;
-			usedModelsList.push(`${visionModel} (Vision): ${visionTokens.toLocaleString('ru-RU')} токенов`);
+			usedModelsList.push(modelUsage(visionModel, 'Vision', visionTokens));
 			currentContext = `[IMAGE_DESCRIPTION]\n${visionText}\n\n[USER_TASK]\n${effectiveUserMessage}`;
 		}
 
-		let needsComputation = followupRoute === 'compute_followup' ? true : !forceFinalizerOnly;
-		if (!forceFinalizerOnly && followupRoute !== 'compute_followup' && !options?.bypassRouting) {
+		if (!taskRoute && followupRoute === 'compute_followup') {
+			taskRoute = {
+				kind: 'solve_computation',
+				requiresCodeGen: true,
+				confidence: 1,
+				source: 'rules',
+				reason: 'Approved follow-up asks for computation.'
+			};
+		}
+
+		if (!forceFinalizerOnly && followupRoute !== 'compute_followup' && !options?.bypassRouting && !taskRoute) {
 			console.log('[Pipeline] Step 1: routing...');
 			if (!analyzeStatusSent) {
 				await emitStatus({ type: 'status', message: STATUS_ANALYZE_TASK });
 			}
-			const routing = await routeQuestion(history, currentContext, forcedModel);
-			needsComputation = routing.result;
-			usedModelsList.push(`${routing.model} (Router): ${routing.tokens.toLocaleString('ru-RU')} токенов`);
-			console.log('[Pipeline] Step 1 done: needsComputation =', needsComputation);
+			const routing = await routeTask(history, currentContext, forcedModel);
+			taskRoute = routing;
+			usedModelsList.push(modelUsage(routing.model, 'Router', routing.tokens));
+			console.log('[Pipeline] Step 1 done: taskRoute =', taskRoute.kind);
+		} else if (taskRoute && taskRoute.source === 'rules' && !localRouteLogged && !options?.bypassRouting) {
+			usedModelsList.push(modelUsage('Локальные правила', 'Router', 0));
+			localRouteLogged = true;
 		}
 
-		if (!needsComputation && !forceFinalizerOnly) {
-			console.log('[Pipeline] General question — calling answerGeneralQuestion');
+		if (taskRoute && !taskRoute.requiresCodeGen && !forceFinalizerOnly) {
+			console.log('[Pipeline] Non-CodeGen task — calling answerNonComputationalTask');
 			await emitStatus({ type: 'status', message: STATUS_FORM_ANSWER });
-			const { text: answer, model: textModel, tokens: textTokens } = await answerGeneralQuestion(
+			const followupContext =
+				followupRoute && followupRoute !== 'independent_message' && followupCanonicalInput
+					? buildNonComputationalFollowupContext(followupCanonicalInput)
+					: undefined;
+			const { text: answer, model: textModel, tokens: textTokens } = await answerNonComputationalTask(
 				history,
-				currentContext,
+				{
+					userMessage: currentContext,
+					taskKind: taskRoute.kind,
+					context: followupContext
+				},
 				forcedModel
 			);
-			usedModelsList.push(`${textModel} (Text): ${textTokens.toLocaleString('ru-RU')} токенов`);
-			await emitStatus({ type: 'result', content: answer, usedModels: usedModelsList });
+			usedModelsList.push(modelUsage(textModel, 'Text', textTokens));
+			const approvedSchemaResult =
+				followupRoute && followupRoute !== 'independent_message' && followupCanonicalInput
+					? resolveApprovedSchemaResult(followupCanonicalInput)
+					: null;
+			await emitStatus({
+				type: 'result',
+				draftId: followupDraftId,
+				content: answer,
+				schemaData: approvedSchemaResult?.schemaData,
+				schemaDescription: approvedSchemaResult?.schemaDescription,
+				schemaVersion: approvedSchemaResult?.schemaVersion,
+				usedModels: usedModelsList
+			});
 			return;
 		}
 
@@ -1031,7 +1128,7 @@ export async function runPipeline(
 				const { text: fallbackText, model: fallbackModel, tokens: fallbackTokens } =
 					await answerGeneralQuestion(history, currentContext, forcedModel);
 				usedModelsList.push(
-					`${fallbackModel} (Text): ${fallbackTokens.toLocaleString('ru-RU')} С‚РѕРєРµРЅРѕРІ`
+					modelUsage(fallbackModel, 'Text', fallbackTokens)
 				);
 				const approvedSchemaResult = resolveApprovedSchemaResult(canonicalInput);
 				await emitStatus({
@@ -1064,7 +1161,7 @@ export async function runPipeline(
 				forcedModel
 			);
 			usedModelsList.push(
-				`${finalizer.model} (Finalizer): ${finalizer.tokens.toLocaleString('ru-RU')} С‚РѕРєРµРЅРѕРІ`
+				modelUsage(finalizer.model, 'Finalizer', finalizer.tokens)
 			);
 			const approvedSchemaResult = resolveApprovedSchemaResult(canonicalInput);
 			await emitStatus({

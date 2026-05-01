@@ -93,6 +93,80 @@ describe('scheme compiler', () => {
 		expect(first.schemaData).toEqual(second.schemaData);
 	});
 
+	it('preserves T-shaped member topology as one shared joint', () => {
+		const result = compileSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'planar_frame',
+			modelSpace: 'planar',
+			confidence: 'high',
+			source: { hasImage: false, language: 'ru' },
+			joints: [
+				{ key: 'A', label: 'A' },
+				{ key: 'B', label: 'B' },
+				{ key: 'C', label: 'C' },
+				{ key: 'D', label: 'D' }
+			],
+			members: [
+				{ key: 'AB', label: 'AB', kind: 'bar', startJoint: 'A', endJoint: 'B', relation: 'horizontal' },
+				{ key: 'BC', label: 'BC', kind: 'bar', startJoint: 'B', endJoint: 'C', relation: 'horizontal' },
+				{ key: 'BD', label: 'BD', kind: 'bar', startJoint: 'B', endJoint: 'D', relation: 'vertical' }
+			],
+			supports: [],
+			loads: [],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		const b = nodeByIntentKey(result, 'B');
+		const d = nodeByIntentKey(result, 'D');
+		expect(b).toBeTruthy();
+		expect(d).toBeTruthy();
+		const bRefCount = result.schemaData.objects
+			.filter((object) => object.type === 'bar')
+			.flatMap((object) => object.nodeRefs ?? [])
+			.filter((nodeRef) => nodeRef === b?.id).length;
+		expect(bRefCount).toBe(3);
+		expect(d!.x).toBeCloseTo(b!.x, 6);
+		expect(d!.y).toBeGreaterThan(b!.y);
+	});
+
+	it('merges duplicate joint labels before compiling T-shaped topology', () => {
+		const result = compileSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'planar_frame',
+			modelSpace: 'planar',
+			confidence: 'medium',
+			source: { hasImage: false, language: 'ru' },
+			joints: [
+				{ key: 'A', label: 'A' },
+				{ key: 'B_main', label: 'B' },
+				{ key: 'B_branch', label: 'B' },
+				{ key: 'C', label: 'C' },
+				{ key: 'D', label: 'D' }
+			],
+			members: [
+				{ key: 'AB', kind: 'bar', startJoint: 'A', endJoint: 'B_main', relation: 'horizontal' },
+				{ key: 'BC', kind: 'bar', startJoint: 'B_main', endJoint: 'C', relation: 'horizontal' },
+				{ key: 'BD', kind: 'bar', startJoint: 'B_branch', endJoint: 'D', relation: 'vertical' }
+			],
+			supports: [],
+			loads: [],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		const b = result.schemaData.nodes.find((node) => node.label === 'B');
+		expect(result.schemaData.nodes.filter((node) => node.label === 'B')).toHaveLength(1);
+		expect(
+			result.schemaData.objects
+				.filter((object) => object.type === 'bar')
+				.flatMap((object) => object.nodeRefs ?? [])
+				.filter((nodeRef) => nodeRef === b?.id)
+		).toHaveLength(3);
+	});
+
 	it('compiles planar slider-crank mechanism with explicit kinematic pairs', () => {
 		const result = compileSchemeIntent({
 			version: 'intent-1.0',

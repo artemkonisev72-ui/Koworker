@@ -1,17 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
-	routeQuestionMock,
+	routeTaskMock,
+	routeTaskByRulesMock,
 	routeApprovedFollowupMock,
 	answerGeneralQuestionMock,
+	answerNonComputationalTaskMock,
 	analyzeImagesMock,
 	generatePythonCodeMock,
 	assembleFinalAnswerMock,
 	generateResultSchemaPatchMock
 } = vi.hoisted(() => ({
-	routeQuestionMock: vi.fn(),
+	routeTaskMock: vi.fn(),
+	routeTaskByRulesMock: vi.fn(),
 	routeApprovedFollowupMock: vi.fn(),
 	answerGeneralQuestionMock: vi.fn(),
+	answerNonComputationalTaskMock: vi.fn(),
 	analyzeImagesMock: vi.fn(),
 	generatePythonCodeMock: vi.fn(),
 	assembleFinalAnswerMock: vi.fn(),
@@ -19,9 +23,11 @@ const {
 }));
 
 vi.mock('./gemini.ts', () => ({
-	routeQuestion: routeQuestionMock,
+	routeTask: routeTaskMock,
+	routeTaskByRules: routeTaskByRulesMock,
 	routeApprovedFollowup: routeApprovedFollowupMock,
 	answerGeneralQuestion: answerGeneralQuestionMock,
+	answerNonComputationalTask: answerNonComputationalTaskMock,
 	analyzeImages: analyzeImagesMock,
 	generatePythonCode: generatePythonCodeMock,
 	assembleFinalAnswer: assembleFinalAnswerMock,
@@ -92,21 +98,25 @@ function makeSolveStdout() {
 describe('runPipeline status sink', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		routeTaskByRulesMock.mockReturnValue(null);
 	});
 
 	it('awaits async status callbacks before continuing pipeline steps', async () => {
 		let stage = 'initial';
 
-		routeQuestionMock.mockImplementation(async () => {
+		routeTaskMock.mockImplementation(async () => {
 			expect(stage).toBe('route-status-finished');
 			return {
-				result: false,
+				kind: 'general_answer',
+				requiresCodeGen: false,
+				confidence: 0.8,
+				source: 'model',
 				model: 'router-test',
 				tokens: 12
 			};
 		});
 
-		answerGeneralQuestionMock.mockImplementation(async () => {
+		answerNonComputationalTaskMock.mockImplementation(async () => {
 			expect(stage).toBe('final-status-finished');
 			return {
 				text: 'ok',
@@ -116,18 +126,18 @@ describe('runPipeline status sink', () => {
 		});
 
 		await runPipeline('test message', [], async (event) => {
-			if (event.type === 'status' && event.message === 'Анализ задачи...') {
+			if (event.type === 'status' && event.message === 'Анализирую запрос...') {
 				await Promise.resolve();
 				stage = 'route-status-finished';
 			}
-			if (event.type === 'status' && event.message === 'Формирование ответа...') {
+			if (event.type === 'status' && event.message === 'Формирую ответ...') {
 				await Promise.resolve();
 				stage = 'final-status-finished';
 			}
 		});
 
-		expect(routeQuestionMock).toHaveBeenCalledTimes(1);
-		expect(answerGeneralQuestionMock).toHaveBeenCalledTimes(1);
+		expect(routeTaskMock).toHaveBeenCalledTimes(1);
+		expect(answerNonComputationalTaskMock).toHaveBeenCalledTimes(1);
 	});
 
 	it('uses an internal fallback prompt for image-only raw requests', async () => {
@@ -136,12 +146,15 @@ describe('runPipeline status sink', () => {
 			model: 'vision-model',
 			tokens: 21
 		});
-		routeQuestionMock.mockResolvedValue({
-			result: false,
+		routeTaskMock.mockResolvedValue({
+			kind: 'general_answer',
+			requiresCodeGen: false,
+			confidence: 0.8,
+			source: 'model',
 			model: 'router-test',
 			tokens: 12
 		});
-		answerGeneralQuestionMock.mockResolvedValue({
+		answerNonComputationalTaskMock.mockResolvedValue({
 			text: 'answer',
 			model: 'text-test',
 			tokens: 7
@@ -165,9 +178,9 @@ describe('runPipeline status sink', () => {
 			],
 			undefined
 		);
-		expect(routeQuestionMock.mock.calls[0][1]).toContain('прикреплённым изображениям');
-		expect(routeQuestionMock.mock.calls[0][1]).toContain('Image describes a beam task.');
-		expect(answerGeneralQuestionMock).toHaveBeenCalledTimes(1);
+		expect(routeTaskMock.mock.calls[0][1]).toContain('прикреплённым изображениям');
+		expect(routeTaskMock.mock.calls[0][1]).toContain('Image describes a beam task.');
+		expect(answerNonComputationalTaskMock).toHaveBeenCalledTimes(1);
 	});
 
 	it('uses finalizer-only mode for approved explain follow-up', async () => {
@@ -226,12 +239,15 @@ describe('runPipeline status sink', () => {
 			model: 'router-followup',
 			tokens: 8
 		});
-		routeQuestionMock.mockResolvedValue({
-			result: false,
+		routeTaskMock.mockResolvedValue({
+			kind: 'general_answer',
+			requiresCodeGen: false,
+			confidence: 0.8,
+			source: 'model',
 			model: 'router-test',
 			tokens: 7
 		});
-		answerGeneralQuestionMock.mockResolvedValue({
+		answerNonComputationalTaskMock.mockResolvedValue({
 			text: 'general answer',
 			model: 'text-model',
 			tokens: 5
@@ -253,9 +269,113 @@ describe('runPipeline status sink', () => {
 		);
 
 		expect(routeApprovedFollowupMock).toHaveBeenCalledTimes(1);
-		expect(routeQuestionMock).toHaveBeenCalledTimes(1);
-		expect(answerGeneralQuestionMock).toHaveBeenCalledTimes(1);
+		expect(routeTaskMock).toHaveBeenCalledTimes(1);
+		expect(answerNonComputationalTaskMock).toHaveBeenCalledTimes(1);
 		expect(generateResultSchemaPatchMock).not.toHaveBeenCalled();
+	});
+
+	it('uses non-CodeGen path for explicit no-solve schema description requests', async () => {
+		routeTaskByRulesMock.mockReturnValue({
+			kind: 'schema_description',
+			requiresCodeGen: false,
+			confidence: 0.98,
+			source: 'rules'
+		});
+		answerNonComputationalTaskMock.mockResolvedValue({
+			text: 'Описание схемы',
+			model: 'text-model',
+			tokens: 9
+		});
+
+		const events: Array<Record<string, unknown>> = [];
+		await runPipeline('Не решай, только опиши схему', [], async (event) => {
+			events.push(event as unknown as Record<string, unknown>);
+		});
+
+		const result = events.find((event) => event.type === 'result');
+		expect(routeTaskMock).not.toHaveBeenCalled();
+		expect(answerNonComputationalTaskMock).toHaveBeenCalledWith(
+			[],
+			expect.objectContaining({ taskKind: 'schema_description' }),
+			undefined
+		);
+		expect(generatePythonCodeMock).not.toHaveBeenCalled();
+		expect(result?.exactAnswers).toBeUndefined();
+		expect(result?.generatedCode).toBeUndefined();
+	});
+
+	it('uses non-CodeGen path for document report requests even when document text looks mathematical', async () => {
+		routeTaskByRulesMock.mockReturnValue({
+			kind: 'document_transform',
+			requiresCodeGen: false,
+			confidence: 0.95,
+			source: 'rules'
+		});
+		answerNonComputationalTaskMock.mockResolvedValue({
+			text: 'Отчет по лабораторной работе',
+			model: 'text-model',
+			tokens: 14
+		});
+
+		await runPipeline(
+			'Заполни отчет по лабораторной работе из PDF\n\n[ATTACHED_DOCUMENTS]\nФайл: lab.pdf\nТекст документа:\nНайти реакции опор балки.',
+			[],
+			async () => {}
+		);
+
+		expect(answerNonComputationalTaskMock).toHaveBeenCalledTimes(1);
+		expect(generatePythonCodeMock).not.toHaveBeenCalled();
+		expect(assembleFinalAnswerMock).not.toHaveBeenCalled();
+	});
+
+	it('uses non-CodeGen path for approved report follow-up without carrying exact answers into result fields', async () => {
+		routeApprovedFollowupMock.mockResolvedValue({
+			intent: 'noncomputational_followup',
+			model: 'router-followup',
+			tokens: 8
+		});
+		answerNonComputationalTaskMock.mockResolvedValue({
+			text: 'Краткий отчет',
+			model: 'text-model',
+			tokens: 11
+		});
+
+		const events: Array<Record<string, unknown>> = [];
+		await runPipeline(
+			'Оформи это как отчет без решения',
+			[],
+			async (event) => {
+				events.push(event as unknown as Record<string, unknown>);
+			},
+			undefined,
+			null,
+			{
+				approvedFollowupContext: {
+					draftId: 'draft-1',
+					originalTask: 'Original task',
+					approvedSchema: makeApprovedSchema(),
+					previousSolved: {
+						answerText: 'Solved answer',
+						exactAnswers: [
+							{
+								id: 'R_A',
+								label: 'Reaction A',
+								valueText: '10',
+								numericValue: 10
+							}
+						],
+						graphData: []
+					}
+				}
+			}
+		);
+
+		const result = events.find((event) => event.type === 'result');
+		expect(generatePythonCodeMock).not.toHaveBeenCalled();
+		expect(assembleFinalAnswerMock).not.toHaveBeenCalled();
+		expect(result?.draftId).toBe('draft-1');
+		expect(result?.exactAnswers).toBeUndefined();
+		expect(result?.generatedCode).toBeUndefined();
 	});
 
 	it('decorates approved-schema solve with an optional result scheme overlay', async () => {
@@ -431,8 +551,11 @@ describe('runPipeline status sink', () => {
 	});
 
 	it('does not request result scheme overlays for raw-prompt solves', async () => {
-		routeQuestionMock.mockResolvedValue({
-			result: true,
+		routeTaskMock.mockResolvedValue({
+			kind: 'solve_computation',
+			requiresCodeGen: true,
+			confidence: 0.95,
+			source: 'model',
 			model: 'router-model',
 			tokens: 3
 		});

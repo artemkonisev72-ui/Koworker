@@ -14,7 +14,31 @@ vi.mock('@google/genai', () => ({
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore Vitest resolves .js to .ts at runtime; svelte-check may report false positive
-import { analyzeImage, analyzeImages, routeQuestion } from './gemini.ts';
+import { analyzeImage, analyzeImages, routeQuestion, routeTaskByRules } from './gemini.ts';
+
+describe('task routing rules', () => {
+	it('detects explicit non-CodeGen task families', () => {
+		expect(routeTaskByRules('Не решай, только опиши схему')?.kind).toBe('schema_description');
+		expect(routeTaskByRules('Создай описание механизма без вычислений')?.requiresCodeGen).toBe(false);
+		expect(routeTaskByRules('Сделай выжимку из PDF')?.kind).toBe('summary');
+		expect(routeTaskByRules('Заполни отчет по лабораторной работе')?.kind).toBe('document_transform');
+		expect(routeTaskByRules('Напиши сочинение по теме из файла')?.kind).toBe('writing');
+	});
+
+	it('keeps explicit answer-only solve requests eligible for CodeGen', () => {
+		const route = routeTaskByRules('Не нужно подробное решение, только ответ: найди реакции опор');
+		expect(route?.kind).toBe('solve_computation');
+		expect(route?.requiresCodeGen).toBe(true);
+	});
+
+	it('does not let mathematical document text override a summary request', () => {
+		const route = routeTaskByRules(
+			'Сделай выжимку из PDF\n\n[ATTACHED_DOCUMENTS]\nФайл: lab.pdf\nТекст документа:\nНайти реакции опор балки.'
+		);
+		expect(route?.kind).toBe('summary');
+		expect(route?.requiresCodeGen).toBe(false);
+	});
+});
 
 describe('openrouter integration in gemini gateway', () => {
 	beforeEach(() => {
@@ -36,7 +60,13 @@ describe('openrouter integration in gemini gateway', () => {
 			new Response(
 				JSON.stringify({
 					model: 'google/gemini-3.1-pro-preview',
-					choices: [{ message: { content: 'YES' } }],
+					choices: [
+						{
+							message: {
+								content: '{"kind":"solve_computation","confidence":0.95,"reason":"asks to compute"}'
+							}
+						}
+					],
 					usage: { total_tokens: 321 }
 				}),
 				{ status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -150,7 +180,7 @@ describe('openrouter integration in gemini gateway', () => {
 		generateContentMock
 			.mockRejectedValueOnce(new Error('Gemini API request failed (503): model overloaded'))
 			.mockResolvedValueOnce({
-				text: 'YES',
+				text: '{"kind":"solve_computation","confidence":0.95,"reason":"asks to compute"}',
 				usageMetadata: { totalTokenCount: 42 }
 			});
 
