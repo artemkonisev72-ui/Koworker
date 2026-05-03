@@ -11,6 +11,10 @@ export const TYPE_ALIASES_V1_TO_V2: Record<string, SchemaObjectTypeV2> = {
 	beam_segment: 'bar',
 	point_load: 'force',
 	distributed_load: 'distributed',
+	distributed_normal_load: 'distributed_normal',
+	normal_distributed_load: 'distributed_normal',
+	axial_distributed_load: 'distributed_normal',
+	distributed_axial_load: 'distributed_normal',
 	support_fixed: 'fixed_wall',
 	support_pin: 'hinge_fixed',
 	support_roller: 'hinge_roller',
@@ -111,7 +115,12 @@ export const SCHEMA_OBJECT_CATALOG_V2: Record<SchemaObjectTypeV2, ObjectCatalogR
 	distributed: {
 		requiredNodeRefs: 2,
 		requiredGeometryKeys: ['kind'],
-		description: 'Distributed load.'
+		description: 'Distributed transverse load.'
+	},
+	distributed_normal: {
+		requiredNodeRefs: 2,
+		requiredGeometryKeys: ['kind'],
+		description: 'Distributed normal/axial load along a member axis.'
 	},
 	velocity: {
 		requiredNodeRefs: 1,

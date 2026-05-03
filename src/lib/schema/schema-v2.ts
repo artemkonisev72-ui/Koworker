@@ -23,6 +23,7 @@ export const SCHEMA_OBJECT_TYPES_V2 = [
 	'force',
 	'moment',
 	'distributed',
+	'distributed_normal',
 	'velocity',
 	'acceleration',
 	'angular_velocity',

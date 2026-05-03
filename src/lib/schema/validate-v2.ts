@@ -216,16 +216,16 @@ function validateObjectSpecific(object: ObjectV2 | ResultV2, index: number, erro
 		}
 	}
 
-	if (object.type === 'distributed') {
+	if (object.type === 'distributed' || object.type === 'distributed_normal') {
 		const kind = geometry.kind;
 		if (kind !== 'uniform' && kind !== 'linear' && kind !== 'trapezoid') {
-			pushError(errors, `${section}[${index}] distributed.geometry.kind must be "uniform" | "linear" | "trapezoid"`);
+			pushError(errors, `${section}[${index}] ${object.type}.geometry.kind must be "uniform" | "linear" | "trapezoid"`);
 		}
 		const intensity = geometry.intensity;
 		const hasScalar = isFiniteNumber(intensity);
 		const hasRange = isRecord(intensity) && isFiniteNumber(intensity.start) && isFiniteNumber(intensity.end);
 		if (!hasScalar && !hasRange) {
-			pushError(errors, `${section}[${index}] distributed requires intensity number or {start,end}`);
+			pushError(errors, `${section}[${index}] ${object.type} requires intensity number or {start,end}`);
 		}
 	}
 

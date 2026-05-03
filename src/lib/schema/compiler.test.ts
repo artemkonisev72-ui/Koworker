@@ -69,6 +69,36 @@ describe('scheme compiler', () => {
 		expect(distributed?.meta?.toS).toBe(0.9);
 	});
 
+	it('compiles member-local distributed load as normal distributed load', () => {
+		const result = compileSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'beam',
+			modelSpace: 'planar',
+			confidence: 'high',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'A' }, { key: 'B' }],
+			members: [{ key: 'm1', kind: 'bar', startJoint: 'A', endJoint: 'B' }],
+			supports: [],
+			loads: [
+				{
+					key: 'qn',
+					kind: 'distributed',
+					target: { memberKey: 'm1', fromS: 0, toS: 1 },
+					directionHint: 'member_local_negative',
+					magnitudeHint: 3
+				}
+			],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		const load = objectByIntentKey(result, 'qn');
+		expect(load?.type).toBe('distributed_normal');
+		expect(load?.geometry.direction).toBe('member_local_negative');
+		expect(load?.geometry.intensity).toBe(3);
+	});
+
 	it('is deterministic for identical input intent', () => {
 		const intent = {
 			version: 'intent-1.0',

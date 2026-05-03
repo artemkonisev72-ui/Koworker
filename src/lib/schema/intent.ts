@@ -387,7 +387,34 @@ function normalizeLoadKind(value: unknown): IntentLoadKind | null {
 	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
 	if (normalized === 'point_load') return 'force';
 	if (normalized === 'distributed_load') return 'distributed';
+	if (
+		normalized === 'distributed_normal' ||
+		normalized === 'distributed_normal_load' ||
+		normalized === 'normal_distributed' ||
+		normalized === 'normal_distributed_load' ||
+		normalized === 'axial_distributed' ||
+		normalized === 'axial_distributed_load' ||
+		normalized === 'distributed_axial' ||
+		normalized === 'distributed_axial_load'
+	) {
+		return 'distributed';
+	}
 	return LOAD_KINDS.has(normalized as IntentLoadKind) ? (normalized as IntentLoadKind) : null;
+}
+
+function isNormalDistributedLoadAlias(value: unknown): boolean {
+	if (typeof value !== 'string') return false;
+	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+	return (
+		normalized === 'distributed_normal' ||
+		normalized === 'distributed_normal_load' ||
+		normalized === 'normal_distributed' ||
+		normalized === 'normal_distributed_load' ||
+		normalized === 'axial_distributed' ||
+		normalized === 'axial_distributed_load' ||
+		normalized === 'distributed_axial' ||
+		normalized === 'distributed_axial_load'
+	);
 }
 
 function normalizeDirectionHint(value: unknown): IntentLoadDirectionHint | undefined {
@@ -757,7 +784,11 @@ function normalizeLoadCandidate(raw: unknown, index: number): IntentLoad | null 
 	const label = typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim() : undefined;
 
 	const load: IntentLoad = { key, kind, target: normalizedTarget };
-	if (directionHint) load.directionHint = directionHint;
+	if (directionHint) {
+		load.directionHint = directionHint;
+	} else if (isNormalDistributedLoadAlias(raw.kind ?? raw.type ?? raw.loadType)) {
+		load.directionHint = 'member_local_positive';
+	}
 	if (magnitudeHint !== undefined) load.magnitudeHint = magnitudeHint;
 	if (distributionKind) load.distributionKind = distributionKind;
 	if (label) load.label = label;

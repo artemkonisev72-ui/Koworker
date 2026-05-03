@@ -50,7 +50,8 @@ export interface SolverLoad {
 	direction?:
 		| { angleDeg: number }
 		| { vector: { x: number; y: number } }
-		| { rotation: 'cw' | 'ccw' };
+		| { rotation: 'cw' | 'ccw' }
+		| { localAxis: 'positive' | 'negative' };
 	magnitude?: unknown;
 }
 
@@ -114,6 +115,10 @@ const MEMBER_TYPES = new Set(['bar', 'cable', 'spring', 'damper']);
 const SUPPORT_TYPES = new Set(['fixed_wall', 'hinge_fixed', 'hinge_roller', 'internal_hinge', 'slider']);
 const COMPONENT_ORDER: SolverResultComponent[] = ['N', 'Vy', 'Vz', 'T', 'My', 'Mz'];
 const SUPPORTS_AT_CANTILEVER_END = new Set(['fixed_wall', 'hinge_fixed', 'hinge_roller']);
+
+function isDistributedLoadType(type: string): boolean {
+	return type === 'distributed' || type === 'distributed_normal';
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -324,6 +329,8 @@ function directionFromGeometry(geometry: Record<string, unknown>, kind: SolverLo
 
 	const angle = toFiniteNumber(geometry.directionAngle);
 	if (angle !== null) return { angleDeg: angle };
+	if (geometry.direction === 'member_local_positive') return { localAxis: 'positive' };
+	if (geometry.direction === 'member_local_negative') return { localAxis: 'negative' };
 	if (isRecord(geometry.direction)) {
 		const x = toFiniteNumber(geometry.direction.x);
 		const y = toFiniteNumber(geometry.direction.y);
@@ -432,10 +439,11 @@ export function buildSolverModelFromSchema(input: SchemaAny | unknown): BuildSol
 
 	const loads: SolverLoad[] = [];
 	for (const object of schema.objects) {
-		if (object.type !== 'force' && object.type !== 'moment' && object.type !== 'distributed') continue;
+		if (object.type !== 'force' && object.type !== 'moment' && !isDistributedLoadType(object.type)) continue;
 		const geometry = isRecord(object.geometry) ? object.geometry : {};
 		const attach = extractAttach(geometry);
-		const kind = object.type;
+		const kind: SolverLoad['kind'] =
+			object.type === 'force' ? 'force' : object.type === 'moment' ? 'moment' : 'distributed';
 		const nodeId =
 			Array.isArray(object.nodeRefs) && typeof object.nodeRefs[0] === 'string'
 				? object.nodeRefs[0]
@@ -449,6 +457,7 @@ export function buildSolverModelFromSchema(input: SchemaAny | unknown): BuildSol
 				? geometry.intensity ?? geometry.magnitude
 				: geometry.magnitude;
 
+		const direction = directionFromGeometry(geometry, kind);
 		loads.push({
 			id: object.id,
 			kind,
@@ -456,7 +465,7 @@ export function buildSolverModelFromSchema(input: SchemaAny | unknown): BuildSol
 			...(nodeIds && nodeIds.length > 0 ? { nodeIds } : {}),
 			...(attach?.memberId ? { memberId: attach.memberId } : {}),
 			...(typeof attach?.s === 'number' ? { s: attach.s } : {}),
-			...(directionFromGeometry(geometry, kind) ? { direction: directionFromGeometry(geometry, kind) } : {}),
+			...(direction ? { direction } : {}),
 			...(magnitude !== undefined ? { magnitude } : {})
 		});
 	}

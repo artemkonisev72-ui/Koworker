@@ -933,19 +933,25 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 			const startNodeId = ensureMemberAttachmentNode(memberKey, fromS, `D${index + 1}a`);
 			const endNodeId = ensureMemberAttachmentNode(memberKey, toS, `D${index + 1}b`);
 			const intensity = extractLoadIntensity(load);
+			const isNormalDistributed =
+				load.directionHint === 'member_local_positive' || load.directionHint === 'member_local_negative';
 			const geometry: Record<string, unknown> = {
 				kind: load.distributionKind ?? 'uniform',
-				intensity,
-				directionAngle: mapDirectionToAngle(
+				intensity
+			};
+			if (isNormalDistributed) {
+				geometry.direction = load.directionHint;
+			} else {
+				geometry.directionAngle = mapDirectionToAngle(
 					load.directionHint,
 					warnings,
 					`loads[${index}]`
-				)
-			};
+				);
+			}
 
 			objects.push({
 				id: objectId,
-				type: 'distributed',
+				type: isNormalDistributed ? 'distributed_normal' : 'distributed',
 				nodeRefs: [startNodeId, endNodeId],
 				geometry,
 				...(load.label ? { label: load.label } : {}),

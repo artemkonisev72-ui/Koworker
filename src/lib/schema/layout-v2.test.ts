@@ -404,6 +404,57 @@ describe('layout-v2', () => {
 		);
 	});
 
+	it('anchors normal distributed load endpoints to member interval', () => {
+		const schema: SchemaDataV2 = {
+			version: '2.0',
+			nodes: [
+				{ id: 'A', x: 0, y: 0 },
+				{ id: 'B', x: 5, y: 0 },
+				{ id: 'Q1', x: -1, y: 1 },
+				{ id: 'Q2', x: 1, y: 1 }
+			],
+			objects: [
+				{
+					id: 'bar_1',
+					type: 'bar',
+					nodeRefs: ['A', 'B'],
+					geometry: { length: 5, angleDeg: 0 }
+				},
+				{
+					id: 'load_1',
+					type: 'distributed_normal',
+					nodeRefs: ['Q1', 'Q2'],
+					geometry: { kind: 'uniform', intensity: 2, direction: 'member_local_positive' },
+					meta: { memberId: 'bar_1', fromS: 0.25, toS: 0.75 }
+				}
+			],
+			results: [],
+			annotations: [],
+			assumptions: [],
+			ambiguities: []
+		};
+
+		const stabilized = stabilizeSchemaLayoutV2(schema);
+		const nodeById = new Map(stabilized.schema.nodes.map((node) => [node.id, node]));
+		const a = nodeById.get('A');
+		const b = nodeById.get('B');
+		const q1 = nodeById.get('Q1');
+		const q2 = nodeById.get('Q2');
+		expect(a && b && q1 && q2).toBeTruthy();
+		if (!a || !b || !q1 || !q2) return;
+
+		const abx = b.x - a.x;
+		const aby = b.y - a.y;
+		const ab2 = abx * abx + aby * aby;
+		const s1 = ((q1.x - a.x) * abx + (q1.y - a.y) * aby) / ab2;
+		const s2 = ((q2.x - a.x) * abx + (q2.y - a.y) * aby) / ab2;
+		expect(s1).toBeCloseTo(0.25, 6);
+		expect(s2).toBeCloseTo(0.75, 6);
+		expect(stabilized.corrections).toEqual(
+			expect.arrayContaining([expect.stringContaining('distributed_interval:load_1')])
+		);
+	});
+
 	it('does not collapse distributed interval endpoints to midpoint attach', () => {
 		const schema: SchemaDataV2 = {
 			version: '2.0',

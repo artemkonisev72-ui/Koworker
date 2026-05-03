@@ -41,6 +41,7 @@ function normalizeTypeV1ToV2(value: unknown): SchemaObjectTypeV2 {
 		case 'force':
 		case 'moment':
 		case 'distributed':
+		case 'distributed_normal':
 		case 'velocity':
 		case 'acceleration':
 		case 'angular_velocity':
@@ -92,7 +93,7 @@ export function adaptSchemaV1ToV2(schema: SchemaData): SchemaDataV2 {
 		const from = toPoint(geometry.from);
 		const to = toPoint(geometry.to);
 
-		if (type === 'bar' || type === 'cable' || type === 'spring' || type === 'damper' || type === 'distributed' || type === 'axis' || type === 'dimension') {
+		if (type === 'bar' || type === 'cable' || type === 'spring' || type === 'damper' || type === 'distributed' || type === 'distributed_normal' || type === 'axis' || type === 'dimension') {
 			const s = start ?? from ?? point ?? { x: index, y: 0 };
 			const e = end ?? to ?? { x: s.x + 1, y: s.y };
 			nodeRefs.push(registerPoint(s, 'N'), registerPoint(e, 'N'));
@@ -110,7 +111,7 @@ export function adaptSchemaV1ToV2(schema: SchemaData): SchemaDataV2 {
 			nodeRefs.push(registerPoint(p, 'N'));
 		}
 
-		if (type === 'distributed') {
+		if (type === 'distributed' || type === 'distributed_normal') {
 			const intensity = geometry.intensity;
 			const intensityStart = geometry.intensityStart;
 			const intensityEnd = geometry.intensityEnd;

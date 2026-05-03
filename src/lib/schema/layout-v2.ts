@@ -77,7 +77,7 @@ const LAYOUT_EDGE_TYPES = new Set([
 	'ground'
 ]);
 const SUPPORT_TYPES = new Set(['fixed_wall', 'hinge_fixed', 'hinge_roller', 'internal_hinge']);
-const LOAD_TYPES = new Set(['force', 'moment', 'distributed', 'velocity', 'acceleration']);
+const LOAD_TYPES = new Set(['force', 'moment', 'distributed', 'distributed_normal', 'velocity', 'acceleration']);
 const DEFAULT_DISPLAY_EDGE_LENGTH = 2.4;
 const MIN_DISPLAY_EDGE_LENGTH = 1.35;
 const MAX_DISPLAY_EDGE_LENGTH = 4.8;
@@ -96,6 +96,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isFiniteNumber(value: unknown): value is number {
 	return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isDistributedLoadType(type: string): boolean {
+	return type === 'distributed' || type === 'distributed_normal';
 }
 
 function toFiniteNumber(value: unknown): number | null {
@@ -343,7 +347,7 @@ function nodeRefsBelongToMember(
 		}
 	}
 	const refs = object.nodeRefs ?? [];
-	if (object.type === 'distributed') {
+	if (isDistributedLoadType(object.type)) {
 		if (refs.length < 2) return false;
 		return memberNodes.has(refs[0]) && memberNodes.has(refs[1]);
 	}
@@ -721,7 +725,7 @@ function distributedIntervalFromRecord(record: Record<string, unknown>): Distrib
 }
 
 function parseDistributedInterval(object: ObjectV2): DistributedIntervalSpec | null {
-	if (object.type !== 'distributed') return null;
+	if (!isDistributedLoadType(object.type)) return null;
 	if (isRecord(object.meta)) {
 		const fromMeta = distributedIntervalFromRecord(object.meta);
 		if (fromMeta) return fromMeta;
@@ -747,7 +751,7 @@ function applyDistributedLoadIntervals(
 	const segmentById = new Map(segments.map((segment) => [segment.objectId, segment]));
 
 	for (const object of schema.objects) {
-		if (object.type !== 'distributed') continue;
+		if (!isDistributedLoadType(object.type)) continue;
 		const refs = object.nodeRefs ?? [];
 		if (refs.length < 2) continue;
 		const interval = parseDistributedInterval(object);
@@ -1018,7 +1022,7 @@ function anchorSupportsAndLoadsToMembers(
 	for (const object of schema.objects) {
 		if (!SUPPORT_TYPES.has(object.type) && !LOAD_TYPES.has(object.type)) continue;
 		const refs = object.nodeRefs ?? [];
-		const targets = object.type === 'distributed' ? refs.slice(0, 2) : refs.slice(0, 1);
+		const targets = isDistributedLoadType(object.type) ? refs.slice(0, 2) : refs.slice(0, 1);
 		for (const nodeRef of targets) {
 			const point = nodePositions.get(nodeRef);
 			if (!point) continue;
@@ -1053,7 +1057,7 @@ function applyAttachSpecs(
 	const segmentById = new Map(segments.map((segment) => [segment.objectId, segment]));
 
 	for (const object of schema.objects) {
-		if (object.type === 'distributed') continue;
+		if (isDistributedLoadType(object.type)) continue;
 		const attach = parseAttachSpec(object);
 		if (!attach) continue;
 		const targetNodeRef = object.nodeRefs?.[0];

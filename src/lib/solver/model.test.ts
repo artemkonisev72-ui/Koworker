@@ -114,4 +114,35 @@ describe('solver model builder', () => {
 		expect(built.solverModel.members).toHaveLength(1);
 		expect(built.solverModel.members[0].length).toBe(5);
 	});
+
+	it('maps normal distributed load to solver distributed load with local axis direction', () => {
+		const built = buildSolverModelFromSchema({
+			version: '2.0',
+			meta: { structureKind: 'beam' },
+			coordinateSystem: { modelSpace: 'planar' },
+			nodes: [
+				{ id: 'A', x: 0, y: 0 },
+				{ id: 'B', x: 4, y: 0 }
+			],
+			objects: [
+				{ id: 'bar_1', type: 'bar', nodeRefs: ['A', 'B'], geometry: { length: 4, angleDeg: 0 } },
+				{
+					id: 'qn_1',
+					type: 'distributed_normal',
+					nodeRefs: ['A', 'B'],
+					geometry: { kind: 'uniform', intensity: 2, direction: 'member_local_negative' }
+				}
+			],
+			results: []
+		});
+
+		expect(built.solverModel.loads).toHaveLength(1);
+		expect(built.solverModel.loads[0]).toMatchObject({
+			id: 'qn_1',
+			kind: 'distributed',
+			nodeIds: ['A', 'B'],
+			direction: { localAxis: 'negative' },
+			magnitude: 2
+		});
+	});
 });

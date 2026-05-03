@@ -1110,18 +1110,80 @@ function computeBoardSize(): { width: number; height: number } | null {
 			{ strokeColor: COLOR.load, strokeWidth: 1.2, dash: 1 }
 		);
 
-		const intensity = object.geometry.intensity;
-		let label = labelText(object, 'q');
-		if (isFiniteNumber(intensity)) label = `q=${intensity}`;
-		if (isRecord(intensity) && isFiniteNumber(intensity.start) && isFiniteNumber(intensity.end)) {
-			label = `q=[${intensity.start}; ${intensity.end}]`;
-		}
+		const label = distributedLoadLabel(object);
 		drawText(
 			{
 				x: (start.x + end.x) / 2 - direction.x * (length + 0.2),
 				y: (start.y + end.y) / 2 - direction.y * (length + 0.2)
 			},
 			label,
+			{ anchorX: 'middle' }
+		);
+	}
+
+	function distributedLoadLabel(object: ObjectV2): string {
+		const intensity = object.geometry.intensity;
+		let label = labelText(object, 'q');
+		if (isFiniteNumber(intensity)) label = `q=${intensity}`;
+		if (isRecord(intensity) && isFiniteNumber(intensity.start) && isFiniteNumber(intensity.end)) {
+			label = `q=[${intensity.start}; ${intensity.end}]`;
+		}
+		return label;
+	}
+
+	function drawDistributedNormal(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
+		const pair = getPair(nodeMap, object.nodeRefs);
+		if (!pair) return;
+		const [start, end] = pair;
+		const span = Math.hypot(end.x - start.x, end.y - start.y);
+		if (span <= 1e-6) return;
+
+		const tangent = { x: (end.x - start.x) / span, y: (end.y - start.y) / span };
+		const normal = { x: -tangent.y, y: tangent.x };
+		let sign = 1;
+		if (object.geometry.direction === 'member_local_negative') {
+			sign = -1;
+		} else if (
+			object.geometry.direction !== 'member_local_positive' &&
+			(isFiniteNumber(object.geometry.directionAngle) ||
+				isPoint(object.geometry.direction) ||
+				Array.isArray(object.geometry.direction) ||
+				typeof object.geometry.direction === 'string')
+		) {
+			const projectedDirection = normalizeDirection(object.geometry, 0);
+			const dot = projectedDirection.x * tangent.x + projectedDirection.y * tangent.y;
+			if (dot < -0.01) sign = -1;
+		}
+
+		const direction = { x: tangent.x * sign, y: tangent.y * sign };
+		const offset = isFiniteNumber(object.geometry.offset) ? object.geometry.offset : 0.16;
+		const visualMetrics = resolveDistributedLoadVisualMetrics(span, object.geometry.arrowCount);
+		const count = visualMetrics.arrowCount;
+		const spacing = span / Math.max(count, 1);
+		const length = Math.min(visualMetrics.arrowLength, Math.max(0.18, spacing * 0.58));
+
+		const guideStart = { x: start.x + normal.x * offset, y: start.y + normal.y * offset };
+		const guideEnd = { x: end.x + normal.x * offset, y: end.y + normal.y * offset };
+		drawSegment(guideStart, guideEnd, { strokeColor: COLOR.load, strokeWidth: 1, dash: 2 });
+
+		for (let i = 0; i < count; i++) {
+			const t = (i + 0.5) / count;
+			const base = {
+				x: start.x + (end.x - start.x) * t + normal.x * offset,
+				y: start.y + (end.y - start.y) * t + normal.y * offset
+			};
+			const from = { x: base.x - direction.x * length * 0.5, y: base.y - direction.y * length * 0.5 };
+			const to = { x: base.x + direction.x * length * 0.5, y: base.y + direction.y * length * 0.5 };
+			drawArrow(from, to, { strokeColor: COLOR.load, strokeWidth: 1.4 });
+		}
+
+		const labelSide = offset < 0 ? -1 : 1;
+		drawText(
+			{
+				x: (start.x + end.x) / 2 + normal.x * (offset + labelSide * 0.24),
+				y: (start.y + end.y) / 2 + normal.y * (offset + labelSide * 0.24)
+			},
+			distributedLoadLabel(object),
 			{ anchorX: 'middle' }
 		);
 	}
@@ -1384,6 +1446,7 @@ function computeBoardSize(): { width: number; height: number } | null {
 		force: (o, m) => drawVectorLike(o, m, COLOR.load, 'F'),
 		moment: (o, m) => drawMomentLike(o, m, COLOR.load, 'M'),
 		distributed: drawDistributed,
+		distributed_normal: drawDistributedNormal,
 		velocity: (o, m) => drawVectorLike(o, m, COLOR.kinematic, 'v'),
 		acceleration: (o, m) => drawVectorLike(o, m, COLOR.kinematic, 'a'),
 		angular_velocity: (o, m) => drawMomentLike(o, m, COLOR.kinematic, '?'),

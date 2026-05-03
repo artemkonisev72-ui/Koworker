@@ -146,6 +146,36 @@ describe('normalize-v2 direction normalization', () => {
 		expect(distributed).toBeTruthy();
 		expect(distributed?.geometry.directionAngle).toBe(180);
 	});
+
+	it('normalizes distributed normal load defaults to member-local direction', () => {
+		const validation = validateSchemaDataV2({
+			version: '2.0',
+			nodes: [
+				{ id: 'A', x: 0, y: 0 },
+				{ id: 'B', x: 3, y: 0 }
+			],
+			objects: [
+				{
+					id: 'dist_normal_1',
+					type: 'distributed_normal',
+					nodeRefs: ['A', 'B'],
+					geometry: {
+						kind: 'uniform',
+						intensity: 5
+					}
+				}
+			],
+			results: []
+		});
+
+		expect(validation.ok).toBe(true);
+		expect(validation.value).toBeTruthy();
+		if (!validation.value) return;
+
+		const distributed = validation.value.objects.find((object) => object.id === 'dist_normal_1');
+		expect(distributed?.type).toBe('distributed_normal');
+		expect(distributed?.geometry.direction).toBe('member_local_positive');
+	});
 });
 
 describe('normalize-v2 epure visuals', () => {

@@ -662,7 +662,7 @@ function normalizeObjectGeometry(
 		}
 	}
 
-	if (type === 'distributed') {
+	if (type === 'distributed' || type === 'distributed_normal') {
 		normalizeDirectionGeometry(geometry);
 		const kind = typeof geometry.kind === 'string' ? geometry.kind.trim().toLowerCase() : '';
 		geometry.kind = kind === 'linear' || kind === 'trapezoid' ? kind : 'uniform';
@@ -697,14 +697,19 @@ function normalizeObjectGeometry(
 		}
 		if (geometry.intensity === undefined) {
 			geometry.intensity = 1;
-			warnings.push(`${context} distributed intensity was missing and defaulted to 1`);
+			warnings.push(`${context} ${type} intensity was missing and defaulted to 1`);
 		}
 		const hasDirectionVector =
 			isRecord(geometry.direction) &&
 			isFiniteNumber(geometry.direction.x) &&
 			isFiniteNumber(geometry.direction.y);
 		const hasDirectionAngle = isFiniteNumber(geometry.directionAngle);
-		if (!hasDirectionVector && !hasDirectionAngle) {
+		const hasMemberLocalDirection =
+			typeof geometry.direction === 'string' &&
+			(geometry.direction === 'member_local_positive' || geometry.direction === 'member_local_negative');
+		if (type === 'distributed_normal' && !hasMemberLocalDirection && !hasDirectionVector && !hasDirectionAngle) {
+			geometry.direction = 'member_local_positive';
+		} else if (!hasDirectionVector && !hasDirectionAngle && !hasMemberLocalDirection) {
 			geometry.directionAngle = -90;
 		} else if (hasDirectionAngle) {
 			geometry.directionAngle = toFiniteNumber(geometry.directionAngle);
@@ -981,6 +986,7 @@ const PAIR_TYPES = new Set<SchemaObjectTypeV2>([
 	'spring',
 	'damper',
 	'distributed',
+	'distributed_normal',
 	'cam_contact',
 	'gear_pair',
 	'belt_pair',
