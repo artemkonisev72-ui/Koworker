@@ -4414,6 +4414,9 @@
 			padding: calc(0.42rem + env(safe-area-inset-top)) calc(0.76rem + env(safe-area-inset-right)) 0.42rem
 				calc(0.76rem + env(safe-area-inset-left));
 			min-height: calc(52px + env(safe-area-inset-top));
+			position: relative;
+			top: auto;
+			z-index: 20;
 		}
 
 		.header-title h1 {
@@ -4558,12 +4561,14 @@
 
 	@media (display-mode: standalone) and (max-width: 768px) {
 		.chat-header {
-			min-height: calc(54px + env(safe-area-inset-top));
+			padding-top: calc(0.82rem + env(safe-area-inset-top));
+			min-height: calc(62px + env(safe-area-inset-top));
 		}
 	}
 
 	@media (max-width: 480px) {
 		.chat-header {
+			min-height: calc(54px + env(safe-area-inset-top));
 			padding-right: calc(0.58rem + env(safe-area-inset-right));
 			padding-left: calc(0.58rem + env(safe-area-inset-left));
 		}
@@ -4587,6 +4592,13 @@
 
 		.share-menu {
 			right: -0.15rem;
+		}
+	}
+
+	@media (display-mode: standalone) and (max-width: 480px) {
+		.chat-header {
+			padding-top: calc(0.82rem + env(safe-area-inset-top));
+			min-height: calc(62px + env(safe-area-inset-top));
 		}
 	}
 

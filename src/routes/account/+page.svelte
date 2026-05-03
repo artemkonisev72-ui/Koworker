@@ -158,6 +158,9 @@
 	.profile-avatar {
 		width: 64px;
 		height: 64px;
+		min-width: 64px;
+		flex: 0 0 64px;
+		aspect-ratio: 1;
 		background: var(--accent-primary);
 		color: var(--bg-base);
 		border-radius: 50%;
@@ -169,16 +172,22 @@
 		text-transform: uppercase;
 	}
 
+	.profile-info {
+		min-width: 0;
+	}
+
 	.profile-info h2 {
 		font-size: 1.25rem;
 		font-weight: 600;
 		color: var(--text-primary);
 		margin-bottom: 0.25rem;
+		overflow-wrap: anywhere;
 	}
 
 	.profile-info p {
 		color: var(--text-secondary);
 		font-size: 0.95rem;
+		overflow-wrap: anywhere;
 	}
 
 	.account-details {
@@ -189,8 +198,10 @@
 	}
 
 	.detail-item {
-		display: flex;
-		justify-content: space-between;
+		display: grid;
+		grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+		align-items: start;
+		gap: 1rem;
 		padding: 0.75rem 0;
 		border-bottom: 1px dashed var(--border-subtle);
 	}
@@ -201,9 +212,13 @@
 	}
 
 	.detail-item .value {
+		min-width: 0;
 		font-size: 0.85rem;
 		font-weight: 600;
 		color: var(--text-primary);
+		text-align: right;
+		overflow-wrap: anywhere;
+		word-break: break-word;
 	}
 
 	.status-active {
@@ -322,5 +337,116 @@
 	@keyframes fadeInUp {
 		from { opacity: 0; transform: translateY(10px); }
 		to { opacity: 1; transform: translateY(0); }
+	}
+
+	@media (max-width: 640px) {
+		.account-container {
+			align-items: stretch;
+			padding:
+				calc(0.75rem + env(safe-area-inset-top))
+				calc(0.75rem + env(safe-area-inset-right))
+				calc(0.75rem + env(safe-area-inset-bottom))
+				calc(0.75rem + env(safe-area-inset-left));
+		}
+
+		.account-card {
+			max-width: none;
+			max-height: calc(100dvh - 1.5rem - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+			padding: 1.35rem;
+			border-radius: var(--radius-xl);
+		}
+
+		.account-header {
+			margin-bottom: 1.65rem;
+		}
+
+		.back-link {
+			margin-bottom: 1rem;
+			font-size: 0.86rem;
+		}
+
+		.account-header h1 {
+			font-size: clamp(1.55rem, 9vw, 2.35rem);
+			line-height: 1.05;
+		}
+
+		.profile-section {
+			gap: 0.9rem;
+			padding-bottom: 1.45rem;
+			margin-bottom: 1.45rem;
+		}
+
+		.profile-avatar {
+			width: 56px;
+			height: 56px;
+			min-width: 56px;
+			flex-basis: 56px;
+			font-size: 1.28rem;
+		}
+
+		.profile-info h2 {
+			font-size: 1.15rem;
+			line-height: 1.18;
+		}
+
+		.profile-info p {
+			font-size: 0.9rem;
+			line-height: 1.35;
+		}
+
+		.account-details {
+			gap: 0;
+			margin-bottom: 2rem;
+		}
+
+		.detail-item {
+			grid-template-columns: 1fr;
+			gap: 0.28rem;
+			padding: 0.78rem 0;
+		}
+
+		.detail-item .label,
+		.detail-item .value {
+			font-size: 0.88rem;
+			line-height: 1.35;
+		}
+
+		.detail-item .value {
+			text-align: left;
+		}
+
+		.account-form {
+			gap: 0.78rem;
+			padding-bottom: 1.45rem;
+			margin-bottom: 1.45rem;
+		}
+
+		.account-form h2 {
+			font-size: 1rem;
+		}
+
+		.form-group input,
+		.secondary-btn,
+		.logout-btn {
+			min-height: 48px;
+		}
+	}
+
+	@media (max-width: 380px) {
+		.account-card {
+			padding: 1.1rem;
+		}
+
+		.profile-section {
+			align-items: flex-start;
+		}
+
+		.profile-avatar {
+			width: 48px;
+			height: 48px;
+			min-width: 48px;
+			flex-basis: 48px;
+			font-size: 1.08rem;
+		}
 	}
 </style>
