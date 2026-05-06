@@ -92,6 +92,10 @@
 		{
 			value: 'openrouter:google/gemini-3.1-pro-preview',
 			label: 'Gemini 3.1 Pro (openrouter)'
+		},
+		{
+			value: 'openrouter:google/gemma-4-31b-it:free',
+			label: 'Gemma 4 31B IT (openrouter)'
 		}
 	] as const;
 

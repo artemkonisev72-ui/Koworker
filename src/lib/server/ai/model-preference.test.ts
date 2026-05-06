@@ -14,6 +14,7 @@ describe('model preference normalization', () => {
 		expect(isModelPreference('gemini-3.1-pro-preview')).toBe(true);
 		expect(isModelPreference('openrouter:google/gemini-3.1-flash-lite-preview')).toBe(true);
 		expect(isModelPreference('openrouter:google/gemini-3.1-pro-preview')).toBe(true);
+		expect(isModelPreference('openrouter:google/gemma-4-31b-it:free')).toBe(true);
 	});
 
 	it('normalizes unsupported and legacy values to default model', () => {
@@ -33,6 +34,9 @@ describe('model preference normalization', () => {
 		);
 		expect(toForcedModel('openrouter:google/gemini-3.1-pro-preview')).toBe(
 			'openrouter:google/gemini-3.1-pro-preview'
+		);
+		expect(toForcedModel('openrouter:google/gemma-4-31b-it:free')).toBe(
+			'openrouter:google/gemma-4-31b-it:free'
 		);
 		expect(toForcedModel('unsupported')).toBe(DEFAULT_MODEL_PREFERENCE);
 	});

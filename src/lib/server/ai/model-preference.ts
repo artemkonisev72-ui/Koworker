@@ -4,7 +4,8 @@ export const MODEL_PREFERENCE_OPTIONS = [
 	'gemini-3.1-flash-lite-preview',
 	'gemini-3.1-pro-preview',
 	'openrouter:google/gemini-3.1-flash-lite-preview',
-	'openrouter:google/gemini-3.1-pro-preview'
+	'openrouter:google/gemini-3.1-pro-preview',
+	'openrouter:google/gemma-4-31b-it:free'
 ] as const;
 
 export type ModelPreference = (typeof MODEL_PREFERENCE_OPTIONS)[number];

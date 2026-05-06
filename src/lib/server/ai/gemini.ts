@@ -27,18 +27,21 @@ export type GeminiModel =
 
 export type OpenRouterModelPreference =
 	| 'openrouter:google/gemini-3.1-flash-lite-preview'
-	| 'openrouter:google/gemini-3.1-pro-preview';
+	| 'openrouter:google/gemini-3.1-pro-preview'
+	| 'openrouter:google/gemma-4-31b-it:free';
 
 type ModelForGeneration = GeminiModel | OpenRouterModelPreference;
 
 const OPENROUTER_MODEL_BY_PREFERENCE: Record<OpenRouterModelPreference, string> = {
 	'openrouter:google/gemini-3.1-flash-lite-preview': 'google/gemini-3.1-flash-lite-preview',
-	'openrouter:google/gemini-3.1-pro-preview': 'google/gemini-3.1-pro-preview'
+	'openrouter:google/gemini-3.1-pro-preview': 'google/gemini-3.1-pro-preview',
+	'openrouter:google/gemma-4-31b-it:free': 'google/gemma-4-31b-it:free'
 };
 
 const OPENROUTER_MODEL_PREFERENCE_SET = new Set<OpenRouterModelPreference>([
 	'openrouter:google/gemini-3.1-flash-lite-preview',
-	'openrouter:google/gemini-3.1-pro-preview'
+	'openrouter:google/gemini-3.1-pro-preview',
+	'openrouter:google/gemma-4-31b-it:free'
 ]);
 
 function isOpenRouterModelPreference(value: string): value is OpenRouterModelPreference {
