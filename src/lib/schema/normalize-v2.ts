@@ -27,6 +27,10 @@ interface Point {
 	y: number;
 }
 
+interface DirectionVector extends Point {
+	z?: number;
+}
+
 interface NodeRefBounds {
 	min: number;
 	max: number | null;
@@ -428,7 +432,7 @@ function normalizeNode(raw: Record<string, unknown>, index: number): NodeV2 {
 	return { id, x, y, z, label, visible, meta };
 }
 
-function cardinalDirectionToVector(value: string): Point | null {
+function cardinalDirectionToVector(value: string): DirectionVector | null {
 	const normalized = value.trim().toLowerCase().replace(/[\s_-]+/g, '');
 	if (!normalized) return null;
 
@@ -463,6 +467,12 @@ function cardinalDirectionToVector(value: string): Point | null {
 		normalized === '+x'
 	) {
 		return { x: 1, y: 0 };
+	}
+	if (normalized === '+z' || normalized === 'z' || normalized === 'upz' || normalized === 'globalz') {
+		return { x: 0, y: 0, z: 1 };
+	}
+	if (normalized === '-z' || normalized === 'downz') {
+		return { x: 0, y: 0, z: -1 };
 	}
 	if (normalized === 'upright' || normalized === 'northeast' || normalized === '+x+y') {
 		return { x: 1, y: 1 };
@@ -499,15 +509,17 @@ function normalizeDirectionGeometry(geometry: Record<string, unknown>): void {
 	if (isRecord(rawDirection)) {
 		const x = toFiniteNumber(rawDirection.x) ?? toFiniteNumber(rawDirection.dx);
 		const y = toFiniteNumber(rawDirection.y) ?? toFiniteNumber(rawDirection.dy);
+		const z = toFiniteNumber(rawDirection.z) ?? toFiniteNumber(rawDirection.dz);
 		if (x !== null && y !== null) {
-			geometry.direction = { x, y };
+			geometry.direction = z !== null ? { x, y, z } : { x, y };
 		}
 	}
 	if (Array.isArray(rawDirection) && rawDirection.length >= 2) {
 		const x = toFiniteNumber(rawDirection[0]);
 		const y = toFiniteNumber(rawDirection[1]);
+		const z = rawDirection.length >= 3 ? toFiniteNumber(rawDirection[2]) : null;
 		if (x !== null && y !== null) {
-			geometry.direction = { x, y };
+			geometry.direction = z !== null ? { x, y, z } : { x, y };
 		}
 	}
 	if (typeof rawDirection === 'string') {
@@ -524,8 +536,9 @@ function normalizeDirectionGeometry(geometry: Record<string, unknown>): void {
 
 	const dirX = toFiniteNumber(geometry.dx) ?? toFiniteNumber(geometry.x);
 	const dirY = toFiniteNumber(geometry.dy) ?? toFiniteNumber(geometry.y);
+	const dirZ = toFiniteNumber(geometry.dz) ?? toFiniteNumber(geometry.z);
 	if (dirX !== null && dirY !== null) {
-		geometry.direction = { x: dirX, y: dirY };
+		geometry.direction = dirZ !== null ? { x: dirX, y: dirY, z: dirZ } : { x: dirX, y: dirY };
 	}
 
 	const cardinalCandidates = [
@@ -1859,6 +1872,14 @@ export function normalizeSchemaDataV2(input: unknown): SchemaNormalizeResultV2 {
 			warnings.push(`layout:${correction}`);
 		}
 	}
+	const stabilizedNodeById = new Map(stabilized.schema.nodes.map((node) => [node.id, node]));
+	deriveMemberLocalFrames(
+		stabilized.schema.objects,
+		stabilizedNodeById,
+		structureKind,
+		stabilized.schema.coordinateSystem ?? coordinateSystem,
+		warnings
+	);
 
 	const mergedMeta = {
 		...(isRecord(stabilized.schema.meta) ? stabilized.schema.meta : {}),

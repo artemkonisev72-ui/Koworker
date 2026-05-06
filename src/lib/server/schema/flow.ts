@@ -213,6 +213,20 @@ export function getSchemaRepairIssues(schema: unknown): string[] {
 		);
 	}
 
+	const structureKind =
+		typeof typed.meta?.structureKind === 'string'
+			? typed.meta.structureKind.trim().toLowerCase().replace(/[\s-]+/g, '_')
+			: '';
+	if (structureKind === 'spatial_frame' || structureKind === 'spatial_mechanism') {
+		const allNodesAreFlat = typed.nodes.every((node) => Math.abs(node.z ?? 0) <= 1e-9);
+		const explicitXyProjection = typed.coordinateSystem?.projectionPreset === 'xy';
+		if (allNodesAreFlat && !explicitXyProjection) {
+			issues.push(
+				'Spatial schema has all node z coordinates equal to 0. Restore depth with +z/-z member directions or add an ambiguity if depth is unknown.'
+			);
+		}
+	}
+
 	const constraintTypes = new Set(['bar', 'cable', 'spring', 'damper']);
 	let missingConstraintCount = 0;
 	for (const object of typed.objects) {

@@ -126,11 +126,40 @@ function directionFromRelation(
 	previousDirection: Vec3
 ): Vec3 {
 	const isPlanarKind = structureKind === 'planar_frame' || structureKind === 'planar_mechanism';
+	const isSpatialKind = structureKind === 'spatial_frame' || structureKind === 'spatial_mechanism';
 	if (structureKind === 'beam') return { x: 1, y: 0, z: 0 };
 
 	if (member.relation === 'collinear_with_prev') {
 		const normalized = normalizeVec(previousDirection);
 		if (normalized) return normalized;
+	}
+
+	if (isSpatialKind) {
+		if (member.directionHint === '+x') return { x: 1, y: 0, z: 0 };
+		if (member.directionHint === '-x') return { x: -1, y: 0, z: 0 };
+		if (member.directionHint === '+y') return { x: 0, y: 1, z: 0 };
+		if (member.directionHint === '-y') return { x: 0, y: -1, z: 0 };
+		if (member.directionHint === '+z') return { x: 0, y: 0, z: 1 };
+		if (member.directionHint === '-z') return { x: 0, y: 0, z: -1 };
+		if (member.directionHint === 'member_local') {
+			const normalized = normalizeVec(previousDirection);
+			if (normalized) return normalized;
+		}
+
+		const planeHint = member.planeHint ?? (
+			member.directionHint === 'xy' || member.directionHint === 'xz' || member.directionHint === 'yz'
+				? member.directionHint
+				: undefined
+		);
+		if (member.relation === 'vertical') return { x: 0, y: 0, z: 1 };
+		if (member.relation === 'inclined' || planeHint) {
+			const angleRad = ((member.angleHintDeg ?? 35) * Math.PI) / 180;
+			if (planeHint === 'xz') return { x: Math.cos(angleRad), y: 0, z: Math.sin(angleRad) };
+			if (planeHint === 'yz') return { x: 0, y: Math.cos(angleRad), z: Math.sin(angleRad) };
+			return { x: Math.cos(angleRad), y: Math.sin(angleRad), z: 0 };
+		}
+
+		return { x: 1, y: 0, z: 0 };
 	}
 
 	if (isPlanarKind) {
@@ -142,11 +171,6 @@ function directionFromRelation(
 		return { x: 1, y: 0, z: 0 };
 	}
 
-	if (member.relation === 'vertical') return { x: 0, y: 0, z: 1 };
-	if (member.relation === 'inclined') {
-		const angleRad = ((member.angleHintDeg ?? 35) * Math.PI) / 180;
-		return { x: Math.cos(angleRad), y: Math.sin(angleRad), z: 0 };
-	}
 	return { x: 1, y: 0, z: 0 };
 }
 
@@ -428,11 +452,42 @@ function mapDirectionToAngle(
 	if (hint === 'right' || hint === '+x') return 0;
 	if (hint === 'member_local_positive') return 90;
 	if (hint === 'member_local_negative') return -90;
+	if (hint === '+z' || hint === '-z') {
+		warnings.push(`${context} used 3D direction for 2D angle; defaulted to -90deg`);
+		return -90;
+	}
 	if (hint === 'cw' || hint === 'ccw') {
-		warnings.push(`${context} used rotational direction for non-moment load; defaulted to -90°`);
+		warnings.push(`${context} used rotational direction for non-moment load; defaulted to -90deg`);
 		return -90;
 	}
 	return -90;
+}
+
+function mapDirectionToVector3(hint: IntentLoadDirectionHint | undefined): Vec3 | null {
+	if (!hint) return null;
+	if (hint === 'right' || hint === '+x') return { x: 1, y: 0, z: 0 };
+	if (hint === 'left' || hint === '-x') return { x: -1, y: 0, z: 0 };
+	if (hint === 'up' || hint === '+y') return { x: 0, y: 1, z: 0 };
+	if (hint === 'down' || hint === '-y') return { x: 0, y: -1, z: 0 };
+	if (hint === '+z') return { x: 0, y: 0, z: 1 };
+	if (hint === '-z') return { x: 0, y: 0, z: -1 };
+	return null;
+}
+
+function applyLoadDirectionGeometry(
+	geometry: Record<string, unknown>,
+	hint: IntentLoadDirectionHint | undefined,
+	structureKind: IntentStructureKind,
+	warnings: string[],
+	context: string
+): void {
+	const vector = mapDirectionToVector3(hint);
+	const isSpatialKind = structureKind === 'spatial_frame' || structureKind === 'spatial_mechanism';
+	if (vector && (isSpatialKind || vector.z !== 0)) {
+		geometry.direction = vector;
+		return;
+	}
+	geometry.directionAngle = mapDirectionToAngle(hint, warnings, context);
 }
 
 function normalizeMagnitudeAsNumber(value: unknown): number | null {
@@ -552,6 +607,8 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 			length,
 			angleDeg
 		};
+		if (member.directionHint) geometry.directionHint = member.directionHint;
+		if (member.planeHint) geometry.planeHint = member.planeHint;
 
 		if (member.relation === 'collinear_with_prev' && index > 0) {
 			const previousId = `${intent.members[index - 1].kind}_${index}`;
@@ -942,8 +999,10 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 			if (isNormalDistributed) {
 				geometry.direction = load.directionHint;
 			} else {
-				geometry.directionAngle = mapDirectionToAngle(
+				applyLoadDirectionGeometry(
+					geometry,
 					load.directionHint,
+					intent.structureKind,
 					warnings,
 					`loads[${index}]`
 				);
@@ -1029,9 +1088,15 @@ export function compileSchemeIntent(input: unknown): CompileSchemaIntentResult {
 
 		const magnitude = normalizeMagnitudeAsNumber(load.magnitudeHint);
 		const geometry: Record<string, unknown> = {
-			directionAngle: mapDirectionToAngle(load.directionHint, warnings, `loads[${index}]`),
 			...(magnitude !== null ? { magnitude } : {})
 		};
+		applyLoadDirectionGeometry(
+			geometry,
+			load.directionHint,
+			intent.structureKind,
+			warnings,
+			`loads[${index}]`
+		);
 		if (attachMemberId && attachS !== null) {
 			geometry.attach = {
 				memberId: attachMemberId,

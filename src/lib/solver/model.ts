@@ -49,7 +49,7 @@ export interface SolverLoad {
 	s?: number;
 	direction?:
 		| { angleDeg: number }
-		| { vector: { x: number; y: number } }
+		| { vector: { x: number; y: number; z?: number } }
 		| { rotation: 'cw' | 'ccw' }
 		| { localAxis: 'positive' | 'negative' };
 	magnitude?: unknown;
@@ -334,7 +334,10 @@ function directionFromGeometry(geometry: Record<string, unknown>, kind: SolverLo
 	if (isRecord(geometry.direction)) {
 		const x = toFiniteNumber(geometry.direction.x);
 		const y = toFiniteNumber(geometry.direction.y);
-		if (x !== null && y !== null) return { vector: { x, y } };
+		const z = toFiniteNumber(geometry.direction.z);
+		if (x !== null && y !== null) {
+			return { vector: z !== null ? { x, y, z } : { x, y } };
+		}
 	}
 	return undefined;
 }

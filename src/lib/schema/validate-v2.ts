@@ -123,7 +123,7 @@ function validateRequiredGeometryKeys(object: ObjectV2 | ResultV2, index: number
 
 function hasDirection(geometry: Record<string, unknown>): boolean {
 	if (isRecord(geometry.direction) && isFiniteNumber(geometry.direction.x) && isFiniteNumber(geometry.direction.y)) {
-		return true;
+		return geometry.direction.z === undefined || isFiniteNumber(geometry.direction.z);
 	}
 	return typeof geometry.directionAngle === 'number' || typeof geometry.cardinal === 'string';
 }

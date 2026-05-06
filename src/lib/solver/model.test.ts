@@ -145,4 +145,33 @@ describe('solver model builder', () => {
 			magnitude: 2
 		});
 	});
+
+	it('preserves spatial load direction vector z component', () => {
+		const built = buildSolverModelFromSchema({
+			version: '2.0',
+			meta: { structureKind: 'spatial_frame' },
+			coordinateSystem: { modelSpace: 'spatial' },
+			nodes: [
+				{ id: 'A', x: 0, y: 0, z: 0 },
+				{ id: 'B', x: 3, y: 1, z: 2 }
+			],
+			objects: [
+				{ id: 'bar_1', type: 'bar', nodeRefs: ['A', 'B'], geometry: { length: 3.74, angleDeg: 0 } },
+				{
+					id: 'force_1',
+					type: 'force',
+					nodeRefs: ['B'],
+					geometry: { direction: { x: 0, y: 0, z: -1 }, magnitude: 7 }
+				}
+			],
+			results: []
+		});
+
+		expect(built.solverModel.loads).toHaveLength(1);
+		expect(built.solverModel.loads[0]).toMatchObject({
+			id: 'force_1',
+			kind: 'force',
+			direction: { vector: { x: 0, y: 0, z: -1 } }
+		});
+	});
 });

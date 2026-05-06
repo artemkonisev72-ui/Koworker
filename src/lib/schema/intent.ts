@@ -18,6 +18,18 @@ export type IntentJointRole =
 	| 'generic';
 export type IntentMemberKind = 'bar' | 'cable' | 'spring' | 'damper';
 export type IntentMemberRelation = 'horizontal' | 'vertical' | 'inclined' | 'collinear_with_prev';
+export type IntentMemberDirectionHint =
+	| '+x'
+	| '-x'
+	| '+y'
+	| '-y'
+	| '+z'
+	| '-z'
+	| 'xy'
+	| 'xz'
+	| 'yz'
+	| 'member_local';
+export type IntentMemberPlaneHint = 'xy' | 'xz' | 'yz';
 export type IntentSupportKind =
 	| 'fixed_wall'
 	| 'hinge_fixed'
@@ -47,6 +59,8 @@ export type IntentLoadDirectionHint =
 	| '-x'
 	| '+y'
 	| '-y'
+	| '+z'
+	| '-z'
 	| 'cw'
 	| 'ccw'
 	| 'member_local_positive'
@@ -66,6 +80,8 @@ export interface IntentMember {
 	startJoint: string;
 	endJoint: string;
 	relation?: IntentMemberRelation;
+	directionHint?: IntentMemberDirectionHint;
+	planeHint?: IntentMemberPlaneHint;
 	lengthHint?: number | string;
 	angleHintDeg?: number;
 	groupHint?: string;
@@ -188,6 +204,19 @@ const MEMBER_RELATIONS = new Set<IntentMemberRelation>([
 	'inclined',
 	'collinear_with_prev'
 ]);
+const MEMBER_DIRECTION_HINTS = new Set<IntentMemberDirectionHint>([
+	'+x',
+	'-x',
+	'+y',
+	'-y',
+	'+z',
+	'-z',
+	'xy',
+	'xz',
+	'yz',
+	'member_local'
+]);
+const MEMBER_PLANE_HINTS = new Set<IntentMemberPlaneHint>(['xy', 'xz', 'yz']);
 const SUPPORT_KINDS = new Set<IntentSupportKind>([
 	'fixed_wall',
 	'hinge_fixed',
@@ -219,6 +248,8 @@ const LOAD_DIRECTION_HINTS = new Set<IntentLoadDirectionHint>([
 	'-x',
 	'+y',
 	'-y',
+	'+z',
+	'-z',
 	'cw',
 	'ccw',
 	'member_local_positive',
@@ -312,6 +343,24 @@ function normalizeMemberRelation(value: unknown): IntentMemberRelation | undefin
 	if (typeof value !== 'string') return undefined;
 	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_') as IntentMemberRelation;
 	return MEMBER_RELATIONS.has(normalized) ? normalized : undefined;
+}
+
+function normalizeMemberDirectionHint(value: unknown): IntentMemberDirectionHint | undefined {
+	if (typeof value !== 'string') return undefined;
+	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+	if (normalized === 'x' || normalized === 'global_x' || normalized === 'axis_x') return '+x';
+	if (normalized === 'y' || normalized === 'global_y' || normalized === 'axis_y') return '+y';
+	if (normalized === 'z' || normalized === 'global_z' || normalized === 'axis_z' || normalized === 'vertical') return '+z';
+	if (normalized === 'local' || normalized === 'member_axis') return 'member_local';
+	return MEMBER_DIRECTION_HINTS.has(normalized as IntentMemberDirectionHint)
+		? (normalized as IntentMemberDirectionHint)
+		: undefined;
+}
+
+function normalizeMemberPlaneHint(value: unknown): IntentMemberPlaneHint | undefined {
+	if (typeof value !== 'string') return undefined;
+	const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_') as IntentMemberPlaneHint;
+	return MEMBER_PLANE_HINTS.has(normalized) ? normalized : undefined;
 }
 
 function normalizeSupportKind(value: unknown): IntentSupportKind | null {
@@ -419,7 +468,9 @@ function isNormalDistributedLoadAlias(value: unknown): boolean {
 
 function normalizeDirectionHint(value: unknown): IntentLoadDirectionHint | undefined {
 	if (typeof value !== 'string') return undefined;
-	const normalized = value.trim().toLowerCase().replace(/\s+/g, '_') as IntentLoadDirectionHint;
+	const normalizedRaw = value.trim().toLowerCase().replace(/\s+/g, '_');
+	if (normalizedRaw === 'z' || normalizedRaw === 'global_z' || normalizedRaw === 'axis_z') return '+z';
+	const normalized = normalizedRaw as IntentLoadDirectionHint;
 	return LOAD_DIRECTION_HINTS.has(normalized) ? normalized : undefined;
 }
 
@@ -485,6 +536,14 @@ function normalizeMemberCandidate(raw: unknown, index: number): IntentMember | n
 	if (!startJoint || !endJoint) return null;
 	const key = normalizeKey(raw.key ?? raw.id ?? raw.name, `m${index + 1}`);
 	const relation = normalizeMemberRelation(raw.relation ?? raw.orientation);
+	const directionHint = normalizeMemberDirectionHint(
+		raw.directionHint ?? raw.direction ?? raw.axisHint ?? raw.axis
+	);
+	const planeHint =
+		normalizeMemberPlaneHint(raw.planeHint ?? raw.plane) ??
+		(directionHint === 'xy' || directionHint === 'xz' || directionHint === 'yz'
+			? directionHint
+			: undefined);
 	const lengthHintNumber = toFiniteNumber(raw.lengthHint ?? raw.length ?? raw.span);
 	const lengthHintString =
 		typeof raw.lengthHint === 'string' && raw.lengthHint.trim() ? raw.lengthHint.trim() : undefined;
@@ -499,6 +558,8 @@ function normalizeMemberCandidate(raw: unknown, index: number): IntentMember | n
 		startJoint,
 		endJoint,
 		...(relation ? { relation } : {}),
+		...(directionHint ? { directionHint } : {}),
+		...(planeHint ? { planeHint } : {}),
 		...(lengthHintNumber !== null ? { lengthHint: lengthHintNumber } : lengthHintString ? { lengthHint: lengthHintString } : {}),
 		...(angleHintDeg !== undefined ? { angleHintDeg } : {}),
 		...(groupHint ? { groupHint } : {}),

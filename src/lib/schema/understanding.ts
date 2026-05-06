@@ -301,6 +301,8 @@ function describeTarget(load: IntentLoad): string {
 function describeMember(member: IntentMember): string {
 	const parts: string[] = [`${member.key}: ${member.startJoint} -> ${member.endJoint}`, member.kind];
 	if (member.relation) parts.push(`relation=${member.relation}`);
+	if (member.directionHint) parts.push(`dir=${member.directionHint}`);
+	if (member.planeHint) parts.push(`plane=${member.planeHint}`);
 	if (member.lengthHint !== undefined) parts.push(`L~${member.lengthHint}`);
 	if (typeof member.angleHintDeg === 'number' && Number.isFinite(member.angleHintDeg)) {
 		parts.push(`angle~${member.angleHintDeg}deg`);

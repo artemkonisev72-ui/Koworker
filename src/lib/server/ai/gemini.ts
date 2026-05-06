@@ -1500,11 +1500,11 @@ understanding contract:
   "confidence": "high|medium|low",
   "source": { "hasImage": boolean, "language": "ru|en" },
   "joints": [{ "key": "...", "role": "start|end|corner|free_end|fixed_end|generic", "label": "..." }],
-  "members": [{ "key": "...", "kind": "bar|cable|spring|damper", "startJoint": "...", "endJoint": "...", "relation": "horizontal|vertical|inclined|collinear_with_prev", "lengthHint": 3.5, "angleHintDeg": 30 }],
+  "members": [{ "key": "...", "kind": "bar|cable|spring|damper", "startJoint": "...", "endJoint": "...", "relation": "horizontal|vertical|inclined|collinear_with_prev", "directionHint": "+x|-x|+y|-y|+z|-z|xy|xz|yz|member_local", "planeHint": "xy|xz|yz", "lengthHint": 3.5, "angleHintDeg": 30 }],
   "components": [{ "key": "...", "kind": "rigid_disk|cam", "centerJoint": "...", "radiusHint": 1.0, "profileHint": "...", "label": "..." }],
   "kinematicPairs": [{ "key": "...", "kind": "revolute_pair|prismatic_pair|slot_pair|cam_contact|gear_pair|belt_pair", "jointKey": "...", "memberKeys": ["..."], "componentKeys": ["..."], "guideHint": "horizontal|vertical|member_local", "guideOffsetHint": 0.1, "meshType": "external|internal", "beltKind": "belt|chain", "crossed": false, "followerType": "knife|roller|flat", "label": "..." }],
   "supports": [{ "key": "...", "kind": "fixed_wall|hinge_fixed|hinge_roller|internal_hinge|slider", "jointKey": "...", "memberKey": "...", "s": 0.5, "sideHint": "left|right|top|bottom", "guideHint": "horizontal|vertical|member_local", "guideOffsetHint": 0.1 }],
-  "loads": [{ "key": "...", "kind": "force|moment|distributed", "target": {"jointKey":"..."} | {"memberKey":"...","s":0.5} | {"memberKey":"...","fromS":0.2,"toS":0.8}, "directionHint": "up|down|left|right|+x|-x|+y|-y|cw|ccw|member_local_positive|member_local_negative", "magnitudeHint": 10, "distributionKind": "uniform|linear|trapezoid" }],
+  "loads": [{ "key": "...", "kind": "force|moment|distributed", "target": {"jointKey":"..."} | {"memberKey":"...","s":0.5} | {"memberKey":"...","fromS":0.2,"toS":0.8}, "directionHint": "up|down|left|right|+x|-x|+y|-y|+z|-z|cw|ccw|member_local_positive|member_local_negative", "magnitudeHint": 10, "distributionKind": "uniform|linear|trapezoid" }],
   "requestedResults": [{ "targetMemberKey": "...", "kind": "N|Q|M|Vy|Vz|T|My|Mz" }],
   "assumptions": [],
   "ambiguities": []
@@ -1520,7 +1520,9 @@ Rules:
 8) If a support is attached by memberKey, always provide s in [0,1]. For end supports on a beam, use s=0 or s=1. If exact position is unknown, explicitly set s=0.5 instead of omitting it.
 9) For a distributed load over the whole member/full length, use target { "memberKey": "...", "fromS": 0, "toS": 1 }; do not encode it as midpoint s=0.5.
 10) For a distributed normal/axial load along a member, keep kind="distributed", use interval target, and set directionHint="member_local_positive" or "member_local_negative"; do not encode it as an ordinary up/down transverse load.
-11) If several members meet at one physical joint, reuse exactly one joint key for that joint. For a T-shaped connection, split the through member at the intersection: A-B and B-C share joint B, and the branch B-D also uses joint B. Do not create separate coincident joints for the branch.
+11) For spatial_frame/spatial_mechanism, describe orthogonal member directions with member.directionHint (+x/-x/+y/-y/+z/-z). In spatial schemes, vertical means global +z, not screen up.
+12) For spatial inclined members, use planeHint="xy"|"xz"|"yz" plus angleHintDeg. If depth is ambiguous, add an ambiguity instead of flattening the scheme.
+13) If several members meet at one physical joint, reuse exactly one joint key for that joint. For a T-shaped connection, split the through member at the intersection: A-B and B-C share joint B, and the branch B-D also uses joint B. Do not create separate coincident joints for the branch.
 ${languagePolicy(userMessage)}`;
 
 	const question = `Task:\n${userMessage}`;
@@ -1620,11 +1622,11 @@ intent contract:
   "confidence": "high|medium|low",
   "source": { "hasImage": boolean, "language": "ru|en" },
   "joints": [{ "key": "...", "role": "start|end|corner|free_end|fixed_end|generic", "label": "..." }],
-  "members": [{ "key": "...", "kind": "bar|cable|spring|damper", "startJoint": "...", "endJoint": "...", "relation": "horizontal|vertical|inclined|collinear_with_prev", "lengthHint": 3.5, "angleHintDeg": 30 }],
+  "members": [{ "key": "...", "kind": "bar|cable|spring|damper", "startJoint": "...", "endJoint": "...", "relation": "horizontal|vertical|inclined|collinear_with_prev", "directionHint": "+x|-x|+y|-y|+z|-z|xy|xz|yz|member_local", "planeHint": "xy|xz|yz", "lengthHint": 3.5, "angleHintDeg": 30 }],
   "components": [{ "key": "...", "kind": "rigid_disk|cam", "centerJoint": "...", "radiusHint": 1.0, "profileHint": "...", "label": "..." }],
   "kinematicPairs": [{ "key": "...", "kind": "revolute_pair|prismatic_pair|slot_pair|cam_contact|gear_pair|belt_pair", "jointKey": "...", "memberKeys": ["..."], "componentKeys": ["..."], "guideHint": "horizontal|vertical|member_local", "guideOffsetHint": 0.1, "meshType": "external|internal", "beltKind": "belt|chain", "crossed": false, "followerType": "knife|roller|flat", "label": "..." }],
   "supports": [{ "key": "...", "kind": "fixed_wall|hinge_fixed|hinge_roller|internal_hinge|slider", "jointKey": "...", "memberKey": "...", "s": 0.5, "sideHint": "left|right|top|bottom", "guideHint": "horizontal|vertical|member_local", "guideOffsetHint": 0.1 }],
-  "loads": [{ "key": "...", "kind": "force|moment|distributed", "target": {"jointKey":"..."} | {"memberKey":"...","s":0.5} | {"memberKey":"...","fromS":0.2,"toS":0.8}, "directionHint": "up|down|left|right|+x|-x|+y|-y|cw|ccw|member_local_positive|member_local_negative", "magnitudeHint": 10, "distributionKind": "uniform|linear|trapezoid" }],
+  "loads": [{ "key": "...", "kind": "force|moment|distributed", "target": {"jointKey":"..."} | {"memberKey":"...","s":0.5} | {"memberKey":"...","fromS":0.2,"toS":0.8}, "directionHint": "up|down|left|right|+x|-x|+y|-y|+z|-z|cw|ccw|member_local_positive|member_local_negative", "magnitudeHint": 10, "distributionKind": "uniform|linear|trapezoid" }],
   "requestedResults": [{ "targetMemberKey": "...", "kind": "N|Q|M|Vy|Vz|T|My|Mz" }],
   "assumptions": [],
   "ambiguities": []
@@ -1641,7 +1643,9 @@ Rules:
 9) If a support is attached by memberKey, always provide s in [0,1]. For end supports on a beam, use s=0 or s=1. If exact position is unknown, explicitly set s=0.5 instead of omitting it.
 10) For a distributed load over the whole member/full length, use target { "memberKey": "...", "fromS": 0, "toS": 1 }; do not encode it as midpoint s=0.5.
 11) For a distributed normal/axial load along a member, keep kind="distributed", use interval target, and set directionHint="member_local_positive" or "member_local_negative"; do not encode it as an ordinary up/down transverse load.
-12) If several members meet at one physical joint, reuse exactly one joint key for that joint. For a T-shaped connection, split the through member at the intersection: A-B and B-C share joint B, and the branch B-D also uses joint B. Do not create separate coincident joints for the branch.
+12) For spatial_frame/spatial_mechanism, describe orthogonal member directions with member.directionHint (+x/-x/+y/-y/+z/-z). In spatial schemes, vertical means global +z, not screen up.
+13) For spatial inclined members, use planeHint="xy"|"xz"|"yz" plus angleHintDeg. If depth is ambiguous, add an ambiguity instead of flattening the scheme.
+14) If several members meet at one physical joint, reuse exactly one joint key for that joint. For a T-shaped connection, split the through member at the intersection: A-B and B-C share joint B, and the branch B-D also uses joint B. Do not create separate coincident joints for the branch.
 ${languagePolicy(userMessage)}`;
 
 	if (useFastMode) {
@@ -1879,7 +1883,7 @@ For mechanism kinematic pairs, use canonical objects: revolute_pair, prismatic_p
 For slider-crank schemes, put the prismatic_pair on the slider joint at the rod end; if eccentricity e is given, set prismatic_pair.geometry.guideOffset (or guideOffsetHint/eccentricity) to e and keep helper guide points hidden/unlabeled if you create them.
 For force/distributed/distributed_normal/velocity/acceleration ALWAYS provide explicit direction:
 - prefer geometry.directionAngle in degrees
-- or geometry.direction vector {x,y}
+- or geometry.direction vector {x,y}; for spatial schemes use {x,y,z} when direction has a z component
 - or geometry.cardinal (up/down/left/right)
 Never omit load direction fields.
 For support/load/moment placement on members, prefer geometry.attach: {memberId, s, side, offset}.
@@ -1887,6 +1891,7 @@ For fixed_wall use geometry.wallSide = left|right|top|bottom when side semantics
 If exact dimensions are unknown, keep consistent relative lengths and positions.
 For distributed, include geometry.kind and geometry.intensity. If it spans a whole member, bind it to that member interval rather than hand-positioning arrow coordinates.
 For a distributed normal/axial load along a member, use type="distributed_normal", nodeRefs [start,end], geometry.kind, geometry.intensity, and geometry.direction="member_local_positive" or "member_local_negative".
+For spatial schemes, preserve meaningful z coordinates; do not flatten to z=0 unless the task explicitly says the structure is in the XY plane.
 For moment/angular types, geometry.direction MUST be exactly "cw" or "ccw".
 For epure results, include geometry.fillHatch=true and geometry.showSigns=true.
 Beam epures: include geometry.kind and geometry.axisOrigin when the reference end is known.
@@ -1948,7 +1953,7 @@ Fill canonical geometry per type:
 - prismatic_pair/slot_pair: nodeRefs [node, guideStart, guideEnd]
 - rigid_disk/cam: nodeRefs [center] + radius
 - cam_contact/gear_pair/belt_pair: nodeRefs [firstRefNode, secondRefNode]
-- force/velocity/acceleration: nodeRefs [node] + direction (+ attach for member-relative placement)
+- force/velocity/acceleration: nodeRefs [node] + direction (+ attach for member-relative placement); spatial directions may use vector {x,y,z}
 - moment: nodeRefs [node] + direction cw|ccw (+ optional magnitude or label)
 - distributed: nodeRefs [start,end] + kind + intensity + direction; for whole-member loads preserve member interval metadata fromS=0,toS=1 when available
 - distributed_normal: nodeRefs [start,end] + kind + intensity + direction="member_local_positive"|"member_local_negative" for normal/axial distributed loads along the member
@@ -2015,7 +2020,7 @@ For spatial_frame include coordinateSystem.referenceUp (and secondaryReference f
 For frame epures, use geometry.component (N|Vy|Vz|T|My|Mz) and geometry.axisOrigin="member_start".
 For moment epure kind "M", ALWAYS include geometry.compressedFiberSide as "+n" or "-n".
 For a simple cantilever beam with one fixed_wall at one bar end, keep epure geometry.axisOrigin="free_end" and orient the epure from the free end toward the fixed support.
-For force/distributed/distributed_normal/velocity/acceleration include explicit direction (directionAngle or direction vector or cardinal).
+For force/distributed/distributed_normal/velocity/acceleration include explicit direction (directionAngle or direction vector or cardinal; use vector {x,y,z} for spatial z directions).
 Keep physically meaningful scale/proportions; avoid coordinate collapse and avoid decorative coordinates.
 Physical dimensions belong in geometry.length/labels/dimensions, not in raw node-coordinate scale.
 Prefer coordinates in range [-10, 10] and preserve consistent relative lengths.
@@ -2027,6 +2032,7 @@ For fixed_wall side semantics use geometry.wallSide=left|right|top|bottom.
 For supports/loads always attach to member nodes (nodeRefs) instead of origin defaults.
 For distributed include kind + intensity + direction. Whole-length distributed loads should be represented as member interval fromS=0,toS=1, not as a midpoint load.
 For distributed_normal use kind + intensity + direction="member_local_positive"|"member_local_negative"; this is the normal/axial load distributed along the member.
+For spatial revisions, preserve non-zero z coordinates and avoid flattening the scheme unless revision notes explicitly request an XY-plane model.
 For moment/angular include direction "cw" | "ccw".
 Preserve existing coordinates unless revision notes explicitly request moving elements.
 Do NOT collapse supports/loads/moments to (0,0) unless the user explicitly requests coincidence at the origin.
@@ -2093,9 +2099,10 @@ Do not solve the task. Do not rewrite the schema from scratch.
 Focus on topology and constraints:
 - linear members should have geometry.length and geometry.angleDeg or geometry.constraints
 - supports/loads should be attached via nodeRefs and, when needed, geometry.attach
-- force/distributed/distributed_normal/velocity/acceleration must keep explicit direction fields
+- force/distributed/distributed_normal/velocity/acceleration must keep explicit direction fields; spatial z directions use vector {x,y,z}
 - fixed_wall may use geometry.wallSide
 - keep meta.structureKind and coordinateSystem.modelSpace consistent with the task type
+- for spatial_frame/spatial_mechanism, preserve meaningful non-zero z coordinates and do not flatten to XY unless explicitly requested
 - T-shaped/shared joints must use one shared nodeRef for all incident members; split a through member at the joint if needed
 - frame epures should preserve geometry.component + geometry.axisOrigin="member_start"
 - beam epures should preserve geometry.kind + geometry.axisOrigin, and for kind "M" geometry.compressedFiberSide

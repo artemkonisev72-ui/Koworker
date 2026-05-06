@@ -455,6 +455,64 @@ describe('layout-v2', () => {
 		);
 	});
 
+	it('keeps spatial z coordinates and anchors intervals without 2D topology rebuild', () => {
+		const schema: SchemaDataV2 = {
+			version: '2.0',
+			meta: { structureKind: 'spatial_frame' },
+			coordinateSystem: { modelSpace: 'spatial' },
+			nodes: [
+				{ id: 'A', x: 0, y: 0, z: 0 },
+				{ id: 'B', x: 4, y: 1, z: 3 },
+				{ id: 'Q1', x: -2, y: 0, z: -1 },
+				{ id: 'Q2', x: -1, y: 0, z: -1 }
+			],
+			objects: [
+				{ id: 'bar_1', type: 'bar', nodeRefs: ['A', 'B'], geometry: { length: 5.1 } },
+				{
+					id: 'load_1',
+					type: 'distributed',
+					nodeRefs: ['Q1', 'Q2'],
+					geometry: { kind: 'uniform', intensity: 2, direction: { x: 0, y: 0, z: -1 } },
+					meta: { memberId: 'bar_1', fromS: 0.25, toS: 0.75 }
+				}
+			],
+			results: [],
+			annotations: [],
+			assumptions: [],
+			ambiguities: []
+		};
+
+		const stabilized = stabilizeSchemaLayoutV2(schema);
+		const nodeById = new Map(stabilized.schema.nodes.map((node) => [node.id, node]));
+		const a = nodeById.get('A');
+		const b = nodeById.get('B');
+		const q1 = nodeById.get('Q1');
+		const q2 = nodeById.get('Q2');
+		expect(a && b && q1 && q2).toBeTruthy();
+		if (!a || !b || !q1 || !q2) return;
+
+		const ab = { x: b.x - a.x, y: b.y - a.y, z: (b.z ?? 0) - (a.z ?? 0) };
+		const ab2 = ab.x * ab.x + ab.y * ab.y + ab.z * ab.z;
+		expect(ab2).toBeGreaterThan(0);
+		expect(Math.abs(ab.z)).toBeGreaterThan(0.1);
+
+		const s1 =
+			((q1.x - a.x) * ab.x + (q1.y - a.y) * ab.y + ((q1.z ?? 0) - (a.z ?? 0)) * ab.z) /
+			ab2;
+		const s2 =
+			((q2.x - a.x) * ab.x + (q2.y - a.y) * ab.y + ((q2.z ?? 0) - (a.z ?? 0)) * ab.z) /
+			ab2;
+		expect(s1).toBeCloseTo(0.25, 6);
+		expect(s2).toBeCloseTo(0.75, 6);
+		expect(stabilized.corrections).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining('spatial_distributed_interval:load_1'),
+				expect.stringContaining('spatial_fit_to_view')
+			])
+		);
+		expect(stabilized.corrections.some((correction) => correction.includes('rebuild_layout_topology'))).toBe(false);
+	});
+
 	it('does not collapse distributed interval endpoints to midpoint attach', () => {
 		const schema: SchemaDataV2 = {
 			version: '2.0',

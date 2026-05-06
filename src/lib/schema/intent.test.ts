@@ -76,6 +76,37 @@ describe('scheme intent parser', () => {
 		expect(parsed.assumptions).toContain('revision assumption');
 		expect(parsed.warnings.some((warning) => warning.includes('merged with base intent'))).toBe(true);
 	});
+
+	it('normalizes spatial member axis hints and z load directions', () => {
+		const normalized = normalizeSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'spatial_frame',
+			modelSpace: 'spatial',
+			confidence: 'high',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'A' }, { key: 'B' }],
+			members: [
+				{
+					key: 'm1',
+					kind: 'bar',
+					startJoint: 'A',
+					endJoint: 'B',
+					axis: 'global_z',
+					plane: 'xz',
+					angleHintDeg: 30
+				}
+			],
+			supports: [],
+			loads: [{ key: 'f1', kind: 'force', target: { jointKey: 'B' }, directionHint: '-z' }],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		expect(normalized.value.members[0]?.directionHint).toBe('+z');
+		expect(normalized.value.members[0]?.planeHint).toBe('xz');
+		expect(normalized.value.loads[0]?.directionHint).toBe('-z');
+	});
 });
 
 describe('scheme intent validation', () => {

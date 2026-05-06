@@ -99,6 +99,102 @@ describe('scheme compiler', () => {
 		expect(load?.geometry.intensity).toBe(3);
 	});
 
+	it('compiles spatial member direction hints into orthogonal 3D geometry', () => {
+		const result = compileSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'spatial_frame',
+			modelSpace: 'spatial',
+			confidence: 'high',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'O' }, { key: 'X' }, { key: 'Y' }, { key: 'Z' }],
+			members: [
+				{ key: 'OX', kind: 'bar', startJoint: 'O', endJoint: 'X', directionHint: '+x', lengthHint: 2 },
+				{ key: 'OY', kind: 'bar', startJoint: 'O', endJoint: 'Y', directionHint: '+y', lengthHint: 3 },
+				{ key: 'OZ', kind: 'bar', startJoint: 'O', endJoint: 'Z', directionHint: '+z', lengthHint: 4 }
+			],
+			supports: [],
+			loads: [],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		const o = nodeByIntentKey(result, 'O');
+		const x = nodeByIntentKey(result, 'X');
+		const y = nodeByIntentKey(result, 'Y');
+		const z = nodeByIntentKey(result, 'Z');
+		expect(o && x && y && z).toBeTruthy();
+		if (!o || !x || !y || !z) return;
+
+		expect(x.x - o.x).toBeGreaterThan(0);
+		expect(Math.abs(x.y - o.y)).toBeLessThan(1e-6);
+		expect(Math.abs((x.z ?? 0) - (o.z ?? 0))).toBeLessThan(1e-6);
+		expect(y.y - o.y).toBeGreaterThan(0);
+		expect(Math.abs(y.x - o.x)).toBeLessThan(1e-6);
+		expect(Math.abs((y.z ?? 0) - (o.z ?? 0))).toBeLessThan(1e-6);
+		expect((z.z ?? 0) - (o.z ?? 0)).toBeGreaterThan(0);
+		expect(Math.abs(z.x - o.x)).toBeLessThan(1e-6);
+		expect(Math.abs(z.y - o.y)).toBeLessThan(1e-6);
+	});
+
+	it('compiles spatial inclined member in requested plane', () => {
+		const result = compileSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'spatial_frame',
+			modelSpace: 'spatial',
+			confidence: 'high',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'A' }, { key: 'B' }],
+			members: [
+				{
+					key: 'AB',
+					kind: 'bar',
+					startJoint: 'A',
+					endJoint: 'B',
+					relation: 'inclined',
+					planeHint: 'xz',
+					angleHintDeg: 30,
+					lengthHint: 4
+				}
+			],
+			supports: [],
+			loads: [],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		const a = nodeByIntentKey(result, 'A');
+		const b = nodeByIntentKey(result, 'B');
+		expect(a && b).toBeTruthy();
+		if (!a || !b) return;
+
+		expect(b.x - a.x).toBeGreaterThan(0);
+		expect((b.z ?? 0) - (a.z ?? 0)).toBeGreaterThan(0);
+		expect(Math.abs(b.y - a.y)).toBeLessThan(1e-6);
+	});
+
+	it('compiles spatial z load as 3D direction vector', () => {
+		const result = compileSchemeIntent({
+			version: 'intent-1.0',
+			taskDomain: 'mechanics',
+			structureKind: 'spatial_frame',
+			modelSpace: 'spatial',
+			confidence: 'high',
+			source: { hasImage: false, language: 'ru' },
+			joints: [{ key: 'A' }, { key: 'B' }],
+			members: [{ key: 'AB', kind: 'bar', startJoint: 'A', endJoint: 'B', directionHint: '+x' }],
+			supports: [],
+			loads: [{ key: 'Fz', kind: 'force', target: { jointKey: 'B' }, directionHint: '-z', magnitudeHint: 5 }],
+			assumptions: [],
+			ambiguities: []
+		});
+
+		const load = objectByIntentKey(result, 'Fz');
+		expect(load?.type).toBe('force');
+		expect(load?.geometry.direction).toEqual({ x: 0, y: 0, z: -1 });
+	});
+
 	it('is deterministic for identical input intent', () => {
 		const intent = {
 			version: 'intent-1.0',

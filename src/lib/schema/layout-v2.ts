@@ -5,6 +5,10 @@ interface Point {
 	y: number;
 }
 
+interface Point3D extends Point {
+	z: number;
+}
+
 interface BBox {
 	minX: number;
 	maxX: number;
@@ -12,6 +16,12 @@ interface BBox {
 	maxY: number;
 	width: number;
 	height: number;
+}
+
+interface BBox3D extends BBox {
+	minZ: number;
+	maxZ: number;
+	depth: number;
 }
 
 interface LayoutEdge {
@@ -193,6 +203,10 @@ function distance(a: Point, b: Point): number {
 	return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+function distance3D(a: Point3D, b: Point3D): number {
+	return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
 function normalizeVector(vector: Point | null, fallback: Point): Point {
 	if (!vector) return fallback;
 	const length = Math.hypot(vector.x, vector.y);
@@ -236,8 +250,54 @@ function bboxFromPoints(points: Point[]): BBox {
 	};
 }
 
+function bboxFromPoints3D(points: Point3D[]): BBox3D {
+	if (points.length === 0) {
+		return {
+			minX: -1,
+			maxX: 1,
+			minY: -1,
+			maxY: 1,
+			minZ: -1,
+			maxZ: 1,
+			width: 2,
+			height: 2,
+			depth: 2
+		};
+	}
+
+	let minX = points[0].x;
+	let maxX = points[0].x;
+	let minY = points[0].y;
+	let maxY = points[0].y;
+	let minZ = points[0].z;
+	let maxZ = points[0].z;
+	for (const point of points) {
+		minX = Math.min(minX, point.x);
+		maxX = Math.max(maxX, point.x);
+		minY = Math.min(minY, point.y);
+		maxY = Math.max(maxY, point.y);
+		minZ = Math.min(minZ, point.z);
+		maxZ = Math.max(maxZ, point.z);
+	}
+	return {
+		minX,
+		maxX,
+		minY,
+		maxY,
+		minZ,
+		maxZ,
+		width: maxX - minX,
+		height: maxY - minY,
+		depth: maxZ - minZ
+	};
+}
+
 function getNodeMap(nodes: NodeV2[]): Map<string, Point> {
 	return new Map(nodes.map((node) => [node.id, { x: node.x, y: node.y }]));
+}
+
+function getNodeMap3D(nodes: NodeV2[]): Map<string, Point3D> {
+	return new Map(nodes.map((node) => [node.id, { x: node.x, y: node.y, z: node.z ?? 0 }]));
 }
 
 function getObjectEdgeVector(object: ObjectV2): Point | null {
@@ -665,6 +725,16 @@ interface MemberSegment {
 	physicalLength: number;
 }
 
+interface MemberSegment3D {
+	objectId: string;
+	startRef: string;
+	endRef: string;
+	start: Point3D;
+	end: Point3D;
+	length: number;
+	physicalLength: number;
+}
+
 interface DistributedIntervalSpec {
 	memberId: string;
 	fromS: number;
@@ -694,6 +764,29 @@ function getMemberSegments(schema: SchemaDataV2, nodePositions: Map<string, Poin
 		.filter((segment): segment is MemberSegment => Boolean(segment && segment.length > EPS));
 }
 
+function getMemberSegments3D(schema: SchemaDataV2, nodePositions: Map<string, Point3D>): MemberSegment3D[] {
+	return schema.objects
+		.filter((object) => MEMBER_TYPES.has(object.type) && (object.nodeRefs?.length ?? 0) >= 2)
+		.map((object) => {
+			const refs = object.nodeRefs as string[];
+			const startRef = refs[0];
+			const endRef = refs[1];
+			const start = nodePositions.get(startRef);
+			const end = nodePositions.get(endRef);
+			if (!start || !end) return null;
+			return {
+				objectId: object.id,
+				startRef,
+				endRef,
+				start,
+				end,
+				length: distance3D(start, end),
+				physicalLength: toFiniteNumber(object.geometry.length) ?? distance3D(start, end)
+			};
+		})
+		.filter((segment): segment is MemberSegment3D => Boolean(segment && segment.length > EPS));
+}
+
 function clamp01(value: number): number {
 	return Math.max(0, Math.min(1, value));
 }
@@ -703,6 +796,15 @@ function pointOnSegment(segment: MemberSegment, sRaw: number): Point {
 	return {
 		x: segment.start.x + (segment.end.x - segment.start.x) * s,
 		y: segment.start.y + (segment.end.y - segment.start.y) * s
+	};
+}
+
+function pointOnSegment3D(segment: MemberSegment3D, sRaw: number): Point3D {
+	const s = clamp01(sRaw);
+	return {
+		x: segment.start.x + (segment.end.x - segment.start.x) * s,
+		y: segment.start.y + (segment.end.y - segment.start.y) * s,
+		z: segment.start.z + (segment.end.z - segment.start.z) * s
 	};
 }
 
@@ -1286,10 +1388,200 @@ function withNodePositions(schema: SchemaDataV2, nodePositions: Map<string, Poin
 	return { ...schema, nodes };
 }
 
+function withNodePositions3D(schema: SchemaDataV2, nodePositions: Map<string, Point3D>): SchemaDataV2 {
+	const nodes = schema.nodes.map((node) => {
+		const point = nodePositions.get(node.id);
+		if (!point) return node;
+		return { ...node, x: point.x, y: point.y, z: point.z };
+	});
+	return { ...schema, nodes };
+}
+
+function normalizeVector3D(vector: Point3D | null, fallback: Point3D): Point3D {
+	if (!vector) return fallback;
+	const length = Math.hypot(vector.x, vector.y, vector.z);
+	if (length < EPS) return fallback;
+	return { x: vector.x / length, y: vector.y / length, z: vector.z / length };
+}
+
+function cross3D(a: Point3D, b: Point3D): Point3D {
+	return {
+		x: a.y * b.z - a.z * b.y,
+		y: a.z * b.x - a.x * b.z,
+		z: a.x * b.y - a.y * b.x
+	};
+}
+
+function applySpatialDistributedLoadIntervals(
+	schema: SchemaDataV2,
+	nodePositions: Map<string, Point3D>,
+	corrections: string[]
+): void {
+	const segments = getMemberSegments3D(schema, nodePositions);
+	if (segments.length === 0) return;
+	const segmentById = new Map(segments.map((segment) => [segment.objectId, segment]));
+
+	for (const object of schema.objects) {
+		if (!isDistributedLoadType(object.type)) continue;
+		const refs = object.nodeRefs ?? [];
+		if (refs.length < 2) continue;
+		const interval = parseDistributedInterval(object);
+		if (!interval) continue;
+		const segment = segmentById.get(interval.memberId);
+		if (!segment) continue;
+		nodePositions.set(refs[0], pointOnSegment3D(segment, interval.fromS));
+		nodePositions.set(refs[1], pointOnSegment3D(segment, interval.toS));
+		corrections.push(
+			`spatial_distributed_interval:${object.id}@${interval.memberId}:${interval.fromS.toFixed(2)}-${interval.toS.toFixed(2)}`
+		);
+	}
+}
+
+function applySpatialAttachSpecs(
+	schema: SchemaDataV2,
+	nodePositions: Map<string, Point3D>,
+	corrections: string[]
+): void {
+	const segments = getMemberSegments3D(schema, nodePositions);
+	if (segments.length === 0) return;
+	const segmentById = new Map(segments.map((segment) => [segment.objectId, segment]));
+
+	for (const object of schema.objects) {
+		if (isDistributedLoadType(object.type)) continue;
+		const attach = parseAttachSpec(object);
+		if (!attach) continue;
+		const targetNodeRef = object.nodeRefs?.[0];
+		if (!targetNodeRef) continue;
+		const segment = segmentById.get(attach.memberId);
+		if (!segment) continue;
+
+		const base = pointOnSegment3D(segment, attach.s);
+		const tangent = normalizeVector3D(
+			{
+				x: segment.end.x - segment.start.x,
+				y: segment.end.y - segment.start.y,
+				z: segment.end.z - segment.start.z
+			},
+			{ x: 1, y: 0, z: 0 }
+		);
+		let offsetVector: Point3D = { x: 0, y: 0, z: 0 };
+		if (attach.side === '+t') offsetVector = tangent;
+		if (attach.side === '-t') offsetVector = { x: -tangent.x, y: -tangent.y, z: -tangent.z };
+		if (attach.side === '+n' || attach.side === '-n') {
+			const reference = Math.abs(tangent.z) < 0.9 ? { x: 0, y: 0, z: 1 } : { x: 0, y: 1, z: 0 };
+			const normal = normalizeVector3D(cross3D(tangent, reference), { x: 0, y: 1, z: 0 });
+			offsetVector = attach.side === '+n' ? normal : { x: -normal.x, y: -normal.y, z: -normal.z };
+		}
+
+		nodePositions.set(targetNodeRef, {
+			x: base.x + offsetVector.x * attach.offset,
+			y: base.y + offsetVector.y * attach.offset,
+			z: base.z + offsetVector.z * attach.offset
+		});
+		corrections.push(`spatial_attach:${object.id}:${targetNodeRef}@${attach.memberId}:${attach.s.toFixed(2)}`);
+	}
+}
+
+function fitSpatialToView(nodePositions: Map<string, Point3D>, targetHalfSize: number): boolean {
+	if (nodePositions.size === 0) return false;
+	const before = Array.from(nodePositions.values());
+	const bbox = bboxFromPoints3D(before);
+	const center = {
+		x: (bbox.minX + bbox.maxX) / 2,
+		y: (bbox.minY + bbox.maxY) / 2,
+		z: (bbox.minZ + bbox.maxZ) / 2
+	};
+	const bboxSpan = Math.max(bbox.width, bbox.height, bbox.depth, EPS);
+	const maxAbs = before.reduce(
+		(acc, point) =>
+			Math.max(acc, Math.abs(point.x - center.x), Math.abs(point.y - center.y), Math.abs(point.z - center.z)),
+		0
+	);
+	const currentSpan = Math.max(maxAbs * 2, EPS);
+	const targetSpan = Math.max(targetHalfSize * 2, EPS);
+	const minReadableSpan = Math.min(targetSpan * 0.45, 5.4);
+	let scale = 1;
+	if (bboxSpan < minReadableSpan) {
+		scale = minReadableSpan / bboxSpan;
+	} else if (currentSpan > targetSpan) {
+		scale = targetSpan / currentSpan;
+	}
+
+	let moved = false;
+	for (const [nodeId, point] of nodePositions.entries()) {
+		const next = {
+			x: (point.x - center.x) * scale,
+			y: (point.y - center.y) * scale,
+			z: (point.z - center.z) * scale
+		};
+		if (
+			Math.abs(next.x - point.x) > 1e-5 ||
+			Math.abs(next.y - point.y) > 1e-5 ||
+			Math.abs(next.z - point.z) > 1e-5
+		) {
+			moved = true;
+		}
+		nodePositions.set(nodeId, next);
+	}
+	return moved;
+}
+
+function isSpatialSchema(schema: SchemaDataV2): boolean {
+	const structureKind =
+		typeof schema.meta?.structureKind === 'string'
+			? schema.meta.structureKind.trim().toLowerCase().replace(/[\s-]+/g, '_')
+			: '';
+	return (
+		schema.coordinateSystem?.modelSpace === 'spatial' ||
+		structureKind === 'spatial_frame' ||
+		structureKind === 'spatial_mechanism'
+	);
+}
+
+function stabilizeSpatialSchemaLayoutV2(
+	schema: SchemaDataV2,
+	options: StabilizeLayoutOptionsV2 = {}
+): LayoutStabilizeResultV2 {
+	const corrections: string[] = [];
+	const metricsBefore = analyzeSchemaLayoutV2(schema);
+	const nodePositions = getNodeMap3D(schema.nodes);
+
+	applySpatialDistributedLoadIntervals(schema, nodePositions, corrections);
+	applySpatialAttachSpecs(schema, nodePositions, corrections);
+	if (fitSpatialToView(nodePositions, options.targetHalfSize ?? 6)) {
+		corrections.push('spatial_fit_to_view');
+	}
+
+	const stabilizedSchema = withNodePositions3D(
+		{
+			...schema,
+			coordinateSystem: {
+				...(schema.coordinateSystem ?? {}),
+				origin: { x: 0, y: 0 },
+				originPolicy: 'auto'
+			}
+		},
+		nodePositions
+	);
+	const metricsAfter = analyzeSchemaLayoutV2(stabilizedSchema);
+
+	return {
+		schema: stabilizedSchema,
+		corrected: corrections.length > 0,
+		corrections,
+		metricsBefore,
+		metricsAfter
+	};
+}
+
 export function stabilizeSchemaLayoutV2(
 	schema: SchemaDataV2,
 	options: StabilizeLayoutOptionsV2 = {}
 ): LayoutStabilizeResultV2 {
+	if (isSpatialSchema(schema)) {
+		return stabilizeSpatialSchemaLayoutV2(schema, options);
+	}
+
 	const corrections: string[] = [];
 	const metricsBefore = analyzeSchemaLayoutV2(schema);
 	let nodePositions = getNodeMap(schema.nodes);

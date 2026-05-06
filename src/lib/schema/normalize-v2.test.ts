@@ -116,6 +116,38 @@ describe('normalize-v2 direction normalization', () => {
 		expect(force?.geometry.direction).toEqual({ x: -1, y: 0 });
 	});
 
+	it('preserves spatial z direction vectors', () => {
+		const validation = validateSchemaDataV2({
+			version: '2.0',
+			meta: { structureKind: 'spatial_frame' },
+			coordinateSystem: { modelSpace: 'spatial' },
+			nodes: [
+				{ id: 'A', x: 0, y: 0, z: 0 },
+				{ id: 'B', x: 2, y: 0, z: 1 }
+			],
+			objects: [
+				{ id: 'bar_1', type: 'bar', nodeRefs: ['A', 'B'], geometry: { length: 2.24, angleDeg: 0 } },
+				{
+					id: 'force_1',
+					type: 'force',
+					nodeRefs: ['B'],
+					geometry: {
+						direction: { x: 0, y: 0, z: -1 },
+						magnitude: 12
+					}
+				}
+			],
+			results: []
+		});
+
+		expect(validation.ok).toBe(true);
+		expect(validation.value).toBeTruthy();
+		if (!validation.value) return;
+
+		const force = validation.value.objects.find((object) => object.id === 'force_1');
+		expect(force?.geometry.direction).toEqual({ x: 0, y: 0, z: -1 });
+	});
+
 	it('normalizes distributed direction angle aliases', () => {
 		const validation = validateSchemaDataV2({
 			version: '2.0',
@@ -442,6 +474,52 @@ describe('normalize-v2 frame local frame derivation', () => {
 		expect(first.ok).toBe(true);
 		expect(second.ok).toBe(true);
 		expect(first.value?.objects[0]?.meta?.localFrame).toEqual(second.value?.objects[0]?.meta?.localFrame);
+	});
+
+	it('keeps spatial localFrame aligned with final node coordinates', () => {
+		const validation = validateSchemaDataV2({
+			version: '2.0',
+			meta: { structureKind: 'spatial_frame' },
+			coordinateSystem: {
+				modelSpace: 'spatial',
+				referenceUp: { x: 0, y: 0, z: 1 },
+				secondaryReference: { x: 1, y: 0, z: 0 }
+			},
+			nodes: [
+				{ id: 'A', x: 4, y: 2, z: 0 },
+				{ id: 'B', x: 6, y: 2, z: 3 }
+			],
+			objects: [
+				{
+					id: 'bar_1',
+					type: 'bar',
+					nodeRefs: ['A', 'B'],
+					geometry: { length: 3.606, angleDeg: 0 }
+				}
+			],
+			results: []
+		});
+
+		expect(validation.ok).toBe(true);
+		expect(validation.value).toBeTruthy();
+		if (!validation.value) return;
+
+		const nodes = new Map(validation.value.nodes.map((node) => [node.id, node]));
+		const a = nodes.get('A');
+		const b = nodes.get('B');
+		const bar = validation.value.objects.find((object) => object.id === 'bar_1');
+		const localFrame = (bar?.meta?.localFrame as LocalFrameLike | undefined) ?? null;
+		expect(a && b && localFrame).toBeTruthy();
+		if (!a || !b || !localFrame?.x) return;
+
+		const dx = b.x - a.x;
+		const dy = b.y - a.y;
+		const dz = (b.z ?? 0) - (a.z ?? 0);
+		const length = Math.hypot(dx, dy, dz);
+		expect(length).toBeGreaterThan(0);
+		expect(localFrame.x.x).toBeCloseTo(dx / length, 6);
+		expect(localFrame.x.y).toBeCloseTo(dy / length, 6);
+		expect(localFrame.x.z).toBeCloseTo(dz / length, 6);
 	});
 });
 

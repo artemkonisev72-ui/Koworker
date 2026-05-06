@@ -17,6 +17,10 @@ import { resolveDistributedLoadVisualMetrics } from '$lib/schema/distributed-loa
 
 type RenderMode = 'chat' | 'print';
 
+interface DirectionPoint extends SchemaPoint {
+	z?: number;
+}
+
 let {
 	schemaData,
 	title = 'Проверенная схема',
@@ -306,7 +310,7 @@ function computeBoardSize(): { width: number; height: number } | null {
 		return { x: Math.cos(rad), y: Math.sin(rad) };
 	}
 
-	function directionFromKeyword(value: string): SchemaPoint | null {
+	function directionFromKeyword(value: string): DirectionPoint | null {
 		const normalized = value
 			.trim()
 			.toLowerCase()
@@ -334,24 +338,48 @@ function computeBoardSize(): { width: number; height: number } | null {
 		if (normalized === 'upleft' || normalized === 'northwest') return { x: -1, y: 1 };
 		if (normalized === 'downright' || normalized === 'southeast') return { x: 1, y: -1 };
 		if (normalized === 'downleft' || normalized === 'southwest') return { x: -1, y: -1 };
+		if (normalized === '+z' || normalized === 'z' || normalized === 'globalz') return { x: 0, y: 0, z: 1 };
+		if (normalized === '-z') return { x: 0, y: 0, z: -1 };
 		return null;
 	}
 
-	function normalizeDirection(geometry: Record<string, unknown>, fallbackAngle = -90): SchemaPoint {
+	function projectSpatialVector(schema: SchemaDataV2 | null | undefined, vector: DirectionPoint): SchemaPoint {
+		if (schema?.coordinateSystem?.modelSpace !== 'spatial' || !isFiniteNumber(vector.z)) {
+			return { x: vector.x, y: vector.y };
+		}
+		const preset = normalizeProjectionPreset(schema.coordinateSystem?.projectionPreset);
+		const origin = projectSpatialPoint({ x: 0, y: 0, z: 0 }, preset);
+		const projected = projectSpatialPoint({ x: vector.x, y: vector.y, z: vector.z }, preset);
+		return { x: projected.x - origin.x, y: projected.y - origin.y };
+	}
+
+	function normalizeDirection(
+		geometry: Record<string, unknown>,
+		fallbackAngle = -90,
+		schema?: SchemaDataV2
+	): SchemaPoint {
 		const dir = geometry.direction;
 		if (isPoint(dir)) {
-			const len = Math.hypot(dir.x, dir.y) || 1;
-			return { x: dir.x / len, y: dir.y / len };
+			const z = isFiniteNumber((dir as DirectionPoint).z) ? (dir as DirectionPoint).z : undefined;
+			const projected = projectSpatialVector(schema, { x: dir.x, y: dir.y, ...(z !== undefined ? { z } : {}) });
+			const len = Math.hypot(projected.x, projected.y) || 1;
+			return { x: projected.x / len, y: projected.y / len };
 		}
 		if (Array.isArray(dir) && dir.length >= 2 && isFiniteNumber(dir[0]) && isFiniteNumber(dir[1])) {
-			const len = Math.hypot(dir[0], dir[1]) || 1;
-			return { x: dir[0] / len, y: dir[1] / len };
+			const projected = projectSpatialVector(schema, {
+				x: dir[0],
+				y: dir[1],
+				...(isFiniteNumber(dir[2]) ? { z: dir[2] } : {})
+			});
+			const len = Math.hypot(projected.x, projected.y) || 1;
+			return { x: projected.x / len, y: projected.y / len };
 		}
 		if (typeof dir === 'string') {
 			const fromKeyword = directionFromKeyword(dir);
 			if (fromKeyword) {
-				const len = Math.hypot(fromKeyword.x, fromKeyword.y) || 1;
-				return { x: fromKeyword.x / len, y: fromKeyword.y / len };
+				const projected = projectSpatialVector(schema, fromKeyword);
+				const len = Math.hypot(projected.x, projected.y) || 1;
+				return { x: projected.x / len, y: projected.y / len };
 			}
 			const angleFromString = Number.parseFloat(dir.replace(',', '.'));
 			if (Number.isFinite(angleFromString)) return vectorFromAngleDegrees(angleFromString);
@@ -375,8 +403,9 @@ function computeBoardSize(): { width: number; height: number } | null {
 			if (typeof candidate !== 'string') continue;
 			const fromKeyword = directionFromKeyword(candidate);
 			if (fromKeyword) {
-				const len = Math.hypot(fromKeyword.x, fromKeyword.y) || 1;
-				return { x: fromKeyword.x / len, y: fromKeyword.y / len };
+				const projected = projectSpatialVector(schema, fromKeyword);
+				const len = Math.hypot(projected.x, projected.y) || 1;
+				return { x: projected.x / len, y: projected.y / len };
 			}
 		}
 
@@ -1030,11 +1059,12 @@ function computeBoardSize(): { width: number; height: number } | null {
 		object: ObjectV2,
 		nodeMap: Map<string, NodeV2>,
 		color: string,
-		prefix: string
+		prefix: string,
+		schema?: SchemaDataV2
 	): void {
 		const node = getNode(nodeMap, object.nodeRefs?.[0]);
 		if (!node) return;
-		const direction = normalizeDirection(object.geometry);
+		const direction = normalizeDirection(object.geometry, -90, schema);
 		const magnitude = isFiniteNumber(object.geometry.magnitude)
 			? Math.max(0.35, Math.min(1.4, Math.abs(object.geometry.magnitude) / 8))
 			: 0.9;
@@ -1084,13 +1114,14 @@ function computeBoardSize(): { width: number; height: number } | null {
 		});
 	}
 
-	function drawDistributed(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
+	function drawDistributed(object: ObjectV2, nodeMap: Map<string, NodeV2>, schema?: SchemaDataV2): void {
 		const pair = getPair(nodeMap, object.nodeRefs);
 		if (!pair) return;
 		const [start, end] = pair;
 		const direction = normalizeDirection(
 			object.geometry,
-			isFiniteNumber(object.geometry.directionAngle) ? object.geometry.directionAngle : -90
+			isFiniteNumber(object.geometry.directionAngle) ? object.geometry.directionAngle : -90,
+			schema
 		);
 		const span = Math.hypot(end.x - start.x, end.y - start.y);
 		const visualMetrics = resolveDistributedLoadVisualMetrics(span, object.geometry.arrowCount);
@@ -1131,7 +1162,7 @@ function computeBoardSize(): { width: number; height: number } | null {
 		return label;
 	}
 
-	function drawDistributedNormal(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
+	function drawDistributedNormal(object: ObjectV2, nodeMap: Map<string, NodeV2>, schema?: SchemaDataV2): void {
 		const pair = getPair(nodeMap, object.nodeRefs);
 		if (!pair) return;
 		const [start, end] = pair;
@@ -1150,7 +1181,7 @@ function computeBoardSize(): { width: number; height: number } | null {
 				Array.isArray(object.geometry.direction) ||
 				typeof object.geometry.direction === 'string')
 		) {
-			const projectedDirection = normalizeDirection(object.geometry, 0);
+			const projectedDirection = normalizeDirection(object.geometry, 0, schema);
 			const dot = projectedDirection.x * tangent.x + projectedDirection.y * tangent.y;
 			if (dot < -0.01) sign = -1;
 		}
@@ -1233,6 +1264,36 @@ function computeBoardSize(): { width: number; height: number } | null {
 		drawText({ x: pair[1].x, y: pair[1].y }, labelText(object, 'axis'), {
 			strokeColor: COLOR.muted
 		});
+	}
+
+	function drawSpatialAxes(schema: SchemaDataV2): void {
+		if (schema.coordinateSystem?.modelSpace !== 'spatial' || !labelBoardBox) return;
+		const width = labelBoardBox.maxX - labelBoardBox.minX;
+		const height = labelBoardBox.maxY - labelBoardBox.minY;
+		const axisLength = Math.max(0.45, Math.min(0.9, Math.min(width, height) * 0.12));
+		const origin = {
+			x: labelBoardBox.minX + Math.max(0.35, width * 0.06),
+			y: labelBoardBox.minY + Math.max(0.35, height * 0.08)
+		};
+		const axes = [
+			{ label: 'X', vector: projectSpatialVector(schema, { x: 1, y: 0, z: 0 }) },
+			{ label: 'Y', vector: projectSpatialVector(schema, { x: 0, y: 1, z: 0 }) },
+			{ label: 'Z', vector: projectSpatialVector(schema, { x: 0, y: 0, z: 1 }) }
+		];
+		for (const axis of axes) {
+			const len = Math.hypot(axis.vector.x, axis.vector.y) || 1;
+			const unit = { x: axis.vector.x / len, y: axis.vector.y / len };
+			const end = {
+				x: origin.x + unit.x * axisLength,
+				y: origin.y + unit.y * axisLength
+			};
+			drawArrow(origin, end, { strokeColor: COLOR.muted, strokeWidth: 1.1 });
+			drawText(
+				{ x: end.x + unit.x * 0.08, y: end.y + unit.y * 0.08 },
+				axis.label,
+				{ strokeColor: COLOR.muted, fontSize: 10, avoidOverlap: false }
+			);
+		}
 	}
 
 	function drawGround(object: ObjectV2 | ResultV2, nodeMap: Map<string, NodeV2>): void {
@@ -1424,7 +1485,7 @@ function computeBoardSize(): { width: number; height: number } | null {
 		}
 	}
 
-	type DrawFn = (object: ObjectV2, nodeMap: Map<string, NodeV2>) => void;
+	type DrawFn = (object: ObjectV2, nodeMap: Map<string, NodeV2>, schema: SchemaDataV2) => void;
 	const objectRenderers: Record<string, DrawFn> = {
 		bar: drawBar,
 		cable: drawCable,
@@ -1443,12 +1504,12 @@ function computeBoardSize(): { width: number; height: number } | null {
 		cam_contact: drawCamContact,
 		gear_pair: drawGearPair,
 		belt_pair: drawBeltPair,
-		force: (o, m) => drawVectorLike(o, m, COLOR.load, 'F'),
+		force: (o, m, s) => drawVectorLike(o, m, COLOR.load, 'F', s),
 		moment: (o, m) => drawMomentLike(o, m, COLOR.load, 'M'),
 		distributed: drawDistributed,
 		distributed_normal: drawDistributedNormal,
-		velocity: (o, m) => drawVectorLike(o, m, COLOR.kinematic, 'v'),
-		acceleration: (o, m) => drawVectorLike(o, m, COLOR.kinematic, 'a'),
+		velocity: (o, m, s) => drawVectorLike(o, m, COLOR.kinematic, 'v', s),
+		acceleration: (o, m, s) => drawVectorLike(o, m, COLOR.kinematic, 'a', s),
 		angular_velocity: (o, m) => drawMomentLike(o, m, COLOR.kinematic, '?'),
 		angular_acceleration: (o, m) => drawMomentLike(o, m, COLOR.kinematic, '?'),
 		trajectory: (o) => drawTrajectory(o),
@@ -1461,10 +1522,10 @@ function computeBoardSize(): { width: number; height: number } | null {
 		}
 	};
 
-	function renderObject(object: ObjectV2, nodeMap: Map<string, NodeV2>): void {
+	function renderObject(object: ObjectV2, nodeMap: Map<string, NodeV2>, schema: SchemaDataV2): void {
 		const renderer = objectRenderers[object.type];
 		if (!renderer) return;
-		renderer(object, nodeMap);
+		renderer(object, nodeMap, schema);
 	}
 
 	function renderResult(
@@ -1625,9 +1686,10 @@ async function initializeBoard() {
 		};
 
 		const nodeMap = createNodeMap(schema);
+		drawSpatialAxes(schema);
 		for (const object of schema.objects) {
 			try {
-				renderObject(object, nodeMap);
+				renderObject(object, nodeMap, schema);
 			} catch (err) {
 				console.warn('[SchemeView] Failed to render object:', object.id, err);
 			}
