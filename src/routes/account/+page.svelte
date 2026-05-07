@@ -5,14 +5,10 @@
 	let billingBusy = $state(false);
 	let billingMessage = $state('');
 
-	function formatUsd(value: unknown) {
+	function formatCuFromUsd(value: unknown) {
 		const numeric = Number(value ?? 0);
-		return `$${(Number.isFinite(numeric) ? numeric : 0).toFixed(2)}`;
-	}
-
-	function formatRub(value: unknown) {
-		const numeric = Number(value ?? 0);
-		return `${(Number.isFinite(numeric) ? numeric : 0).toLocaleString('ru-RU')} ₽`;
+		const cu = Math.max(0, Math.round((Number.isFinite(numeric) ? numeric : 0) * 100));
+		return `${cu.toLocaleString('ru-RU')} CU`;
 	}
 
 	function formatDate(value: unknown) {
@@ -26,33 +22,6 @@
 		const res = await fetch('/api/auth/logout', { method: 'POST' });
 		if (res.ok) {
 			window.location.href = '/login';
-		}
-	}
-
-	async function checkout(planCode: string) {
-		billingBusy = true;
-		billingMessage = '';
-		try {
-			const res = await fetch('/api/billing/checkout', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					planCode,
-					returnUrl: `${window.location.origin}/account?billing=return`
-				})
-			});
-			const payload = await res.json().catch(() => ({}));
-			if (!res.ok) {
-				billingMessage = payload?.message || 'Не удалось создать платеж.';
-				return;
-			}
-			if (payload.confirmationUrl) {
-				window.location.href = payload.confirmationUrl;
-				return;
-			}
-			billingMessage = 'Платеж создан.';
-		} finally {
-			billingBusy = false;
 		}
 	}
 
@@ -136,14 +105,14 @@
 				<div>
 					<span>AI-бюджет</span>
 					<strong
-						>{formatUsd(data.billing?.usage?.usedUsd)} / {formatUsd(
+						>{formatCuFromUsd(data.billing?.usage?.usedUsd)} / {formatCuFromUsd(
 							data.billing?.usage?.includedUsd
 						)}</strong
 					>
 				</div>
 				<div>
 					<span>Остаток</span>
-					<strong>{formatUsd(data.billing?.usage?.remainingUsd)}</strong>
+					<strong>{formatCuFromUsd(data.billing?.usage?.remainingUsd)}</strong>
 				</div>
 			</div>
 
@@ -151,31 +120,7 @@
 				<div class="form-message error">{billingMessage}</div>
 			{/if}
 
-			<div class="plan-list">
-				{#each data.plans ?? [] as plan}
-					<div class="plan-row">
-						<div>
-							<strong>{plan.name}</strong>
-							<span
-								>{formatRub(plan.priceRub)} / месяц · AI-бюджет 60%:
-								{formatUsd(plan.includedUsd)}</span
-							>
-						</div>
-						{#if plan.code === data.billing?.subscription?.plan?.code}
-							<span class="current-plan">Текущий</span>
-						{:else if Number(plan.priceRubKopecks) > 0}
-							<button
-								class="compact-btn"
-								type="button"
-								disabled={billingBusy}
-								onclick={() => checkout(plan.code)}
-							>
-								Подключить
-							</button>
-						{/if}
-					</div>
-				{/each}
-			</div>
+			<a class="pricing-link" href={resolve('/pricing')}>Выбрать или изменить тариф</a>
 
 			{#if data.billing?.subscription?.plan?.code !== 'free'}
 				<button
@@ -371,8 +316,7 @@
 		font-weight: 700;
 	}
 
-	.billing-plan,
-	.current-plan {
+	.billing-plan {
 		color: var(--accent-primary);
 		font-size: 0.84rem;
 		font-weight: 800;
@@ -392,54 +336,36 @@
 		border-bottom: 1px dashed var(--border-subtle);
 	}
 
-	.usage-grid span,
-	.plan-row span {
+	.usage-grid span {
 		color: var(--text-secondary);
 		font-size: 0.82rem;
 		line-height: 1.35;
 	}
 
-	.usage-grid strong,
-	.plan-row strong {
+	.usage-grid strong {
 		color: var(--text-primary);
 		font-size: 0.9rem;
 	}
 
-	.plan-list {
-		display: flex;
-		flex-direction: column;
-		gap: 0.75rem;
-	}
-
-	.plan-row {
+	.pricing-link {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		gap: 1rem;
-		padding: 0.8rem 0;
-		border-bottom: 1px dashed var(--border-subtle);
-	}
-
-	.plan-row div {
-		display: flex;
-		min-width: 0;
-		flex-direction: column;
-		gap: 0.25rem;
-	}
-
-	.compact-btn {
-		flex: 0 0 auto;
-		padding: 0.55rem 0.8rem;
+		justify-content: center;
+		min-height: 46px;
+		padding: 0.75rem 1rem;
+		border-radius: var(--radius-md);
 		background: var(--accent-primary);
 		color: var(--bg-base);
-		border: none;
-		border-radius: var(--radius-md);
-		font-size: 0.82rem;
+		text-decoration: none;
+		font-size: 0.9rem;
 		font-weight: 800;
-		cursor: pointer;
+		transition: opacity var(--transition-fast);
 	}
 
-	.compact-btn:disabled,
+	.pricing-link:hover {
+		opacity: 0.9;
+	}
+
 	.billing-cancel:disabled {
 		cursor: not-allowed;
 		opacity: 0.6;
@@ -659,16 +585,6 @@
 		.usage-grid {
 			grid-template-columns: 1fr;
 			gap: 0;
-		}
-
-		.plan-row {
-			align-items: flex-start;
-			flex-direction: column;
-		}
-
-		.compact-btn {
-			width: 100%;
-			min-height: 44px;
 		}
 
 		.detail-item {

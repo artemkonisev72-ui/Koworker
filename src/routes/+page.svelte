@@ -142,20 +142,20 @@
 	});
 	let hasFilteredChats = $derived(filteredPinnedChats.length + filteredOtherChats.length > 0);
 	let activeChat = $derived(chats.find((c) => c.id === activeChatId));
-	let messages = $derived(activeChatId ? messagesByChatId[activeChatId] ?? [] : []);
-	let activeDraft = $derived(activeChatId ? draftsByChatId[activeChatId] ?? null : null);
+	let messages = $derived(activeChatId ? (messagesByChatId[activeChatId] ?? []) : []);
+	let activeDraft = $derived(activeChatId ? (draftsByChatId[activeChatId] ?? null) : null);
 	let isChatEmpty = $derived(messages.length === 0);
 	let activeDraftReviewKey = $derived(
 		activeDraft ? `${activeDraft.draftId}:${activeDraft.revisionIndex}` : null
 	);
 	let activeChatProcessing = $derived(
 		activeChatId
-			? processingByChatId[activeChatId] ?? {
+			? (processingByChatId[activeChatId] ?? {
 					isBusy: false,
 					kind: null,
 					statusMessage: '',
 					placeholderId: null
-				}
+				})
 			: {
 					isBusy: false,
 					kind: null,
@@ -177,9 +177,7 @@
 			activeChatProcessing.kind !== 'chat'
 	);
 	let statusMessage = $derived(activeChatProcessing.statusMessage);
-	let canCancelActiveGeneration = $derived(
-		Boolean(activeChatId && abortableChatIds[activeChatId])
-	);
+	let canCancelActiveGeneration = $derived(Boolean(activeChatId && abortableChatIds[activeChatId]));
 	let selectedImages = $state<ChatImage[]>([]);
 	let selectedDocuments = $state<SelectedDocument[]>([]);
 	let imagePreviewOpen = $state(false);
@@ -403,7 +401,9 @@
 	}
 
 	function syncProcessingStateFromChats(previousChats: Chat[], nextChats: Chat[]) {
-		const previousBusyByChatId = new Map(previousChats.map((chat) => [chat.id, Boolean(chat.isProcessing)]));
+		const previousBusyByChatId = new Map(
+			previousChats.map((chat) => [chat.id, Boolean(chat.isProcessing)])
+		);
 
 		for (const chat of nextChats) {
 			const serverProcessing = Boolean(chat.isProcessing);
@@ -977,7 +977,9 @@
 			return Promise.resolve(null);
 		}
 		if (file.size > MAX_IMAGE_SIZE_BYTES) {
-			alert(`Изображение "${file.name}" слишком большое. Максимум ${formatFileSize(MAX_IMAGE_SIZE_BYTES)}.`);
+			alert(
+				`Изображение "${file.name}" слишком большое. Максимум ${formatFileSize(MAX_IMAGE_SIZE_BYTES)}.`
+			);
 			return Promise.resolve(null);
 		}
 
@@ -1062,7 +1064,10 @@
 		return null;
 	}
 
-	async function readPdfDocument(file: File, kind: AttachmentKind): Promise<SelectedDocument | null> {
+	async function readPdfDocument(
+		file: File,
+		kind: AttachmentKind
+	): Promise<SelectedDocument | null> {
 		const buffer = await readFileAsArrayBuffer(file);
 		const pdfjs = await import('pdfjs-dist');
 		pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -1113,7 +1118,10 @@
 		};
 	}
 
-	async function readDocxDocument(file: File, kind: AttachmentKind): Promise<SelectedDocument | null> {
+	async function readDocxDocument(
+		file: File,
+		kind: AttachmentKind
+	): Promise<SelectedDocument | null> {
 		const buffer = await readFileAsArrayBuffer(file);
 		return {
 			id: generateSafeId(),
@@ -1132,7 +1140,9 @@
 			return null;
 		}
 		if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
-			alert(`Файл "${file.name}" слишком большой. Максимум ${formatFileSize(MAX_ATTACHMENT_SIZE_BYTES)}.`);
+			alert(
+				`Файл "${file.name}" слишком большой. Максимум ${formatFileSize(MAX_ATTACHMENT_SIZE_BYTES)}.`
+			);
 			return null;
 		}
 		if (selectedDocuments.length >= MAX_CHAT_DOCUMENTS) {
@@ -1140,12 +1150,16 @@
 			return null;
 		}
 		if (documentTotalSize() + file.size > MAX_TOTAL_ATTACHMENT_SIZE_BYTES) {
-			alert(`Суммарный размер документов не должен превышать ${formatFileSize(MAX_TOTAL_ATTACHMENT_SIZE_BYTES)}.`);
+			alert(
+				`Суммарный размер документов не должен превышать ${formatFileSize(MAX_TOTAL_ATTACHMENT_SIZE_BYTES)}.`
+			);
 			return null;
 		}
 
 		try {
-			return kind === 'PDF' ? await readPdfDocument(file, kind) : await readDocxDocument(file, kind);
+			return kind === 'PDF'
+				? await readPdfDocument(file, kind)
+				: await readDocxDocument(file, kind);
 		} catch (error) {
 			console.error('Failed to read document', error);
 			alert(`Не удалось прочитать файл "${file.name}".`);
@@ -1183,10 +1197,16 @@
 			return;
 		}
 		if (documentFiles.length > availableSlots) {
-			alert(`Будут добавлены только первые ${availableSlots} документов из ${documentFiles.length}.`);
+			alert(
+				`Будут добавлены только первые ${availableSlots} документов из ${documentFiles.length}.`
+			);
 		}
-		const nextDocuments = await Promise.all(documentFiles.slice(0, availableSlots).map(readDocumentFile));
-		const validDocuments = nextDocuments.filter((document): document is SelectedDocument => document !== null);
+		const nextDocuments = await Promise.all(
+			documentFiles.slice(0, availableSlots).map(readDocumentFile)
+		);
+		const validDocuments = nextDocuments.filter(
+			(document): document is SelectedDocument => document !== null
+		);
 		if (validDocuments.length > 0) {
 			selectedDocuments = [...selectedDocuments, ...validDocuments];
 		}
@@ -1389,7 +1409,8 @@
 			status: payload.status,
 			revisionIndex: payload.revisionIndex,
 			schema: payload.schema,
-			schemeDescription: typeof payload.schemeDescription === 'string' ? payload.schemeDescription : '',
+			schemeDescription:
+				typeof payload.schemeDescription === 'string' ? payload.schemeDescription : '',
 			assumptions: Array.isArray(payload.assumptions) ? payload.assumptions : [],
 			ambiguities: Array.isArray(payload.ambiguities) ? payload.ambiguities : []
 		});
@@ -1478,7 +1499,10 @@
 			);
 			patchMessageById(chatId, resolvedUserId, { isOptimistic: false });
 			patchMessageById(chatId, resolvedAssistantId, {
-				content: typeof payload.assistantMessage?.content === 'string' ? payload.assistantMessage.content : '',
+				content:
+					typeof payload.assistantMessage?.content === 'string'
+						? payload.assistantMessage.content
+						: '',
 				schemaData: payload.schema ?? null,
 				schemaDescription:
 					typeof payload.schemeDescription === 'string' ? payload.schemeDescription : null,
@@ -1531,7 +1555,8 @@
 	}
 
 	async function confirmDraftAndSolve() {
-		if (!activeDraft || !activeChatId || isSchemaActionLoading || isLoading || hasAnyProcessing) return;
+		if (!activeDraft || !activeChatId || isSchemaActionLoading || isLoading || hasAnyProcessing)
+			return;
 		setProcessingActive(activeChatId, {
 			kind: 'schema_confirm',
 			statusMessage: 'Solving using approved scheme...'
@@ -1682,7 +1707,12 @@
 		if (fileInputEl) fileInputEl.value = '';
 		inputValue = '';
 
-		const optimisticExchange = appendOptimisticExchange(originChatId, text, images, attachmentPreviews);
+		const optimisticExchange = appendOptimisticExchange(
+			originChatId,
+			text,
+			images,
+			attachmentPreviews
+		);
 		await scrollToBottom();
 
 		if (schemaCheckEnabled) {
@@ -2044,7 +2074,9 @@
 				{/if}
 
 				{#if filteredOtherChats.length > 0}
-					<div class="chat-section-label">{filteredPinnedChats.length > 0 ? 'Все чаты' : 'Чаты'}</div>
+					<div class="chat-section-label">
+						{filteredPinnedChats.length > 0 ? 'Все чаты' : 'Чаты'}
+					</div>
 					<div class="chat-list">
 						{#each filteredOtherChats as chat (chat.id)}
 							{@render chatItem(chat)}
@@ -2080,7 +2112,10 @@
 					{:else}
 						<span class="chat-title">{chat.title}</span>
 						{#if chat.isProcessing}
-							<span class="chat-processing-marker" title={chat.processingStatus ?? 'Идет обработка'}>
+							<span
+								class="chat-processing-marker"
+								title={chat.processingStatus ?? 'Идет обработка'}
+							>
 								<span></span><span></span><span></span>
 							</span>
 						{/if}
@@ -2137,6 +2172,13 @@
 
 		<div class="sidebar-footer">
 			{#if data.user}
+				<a href="/pricing" class="sidebar-pricing-link">
+					<span class="sidebar-pricing-icon">CU</span>
+					<span>
+						<strong>Тариф и CU</strong>
+						<small>Управлять подпиской</small>
+					</span>
+				</a>
 				<div class="user-info">
 					<a href="/account" class="user-details-link">
 						<div class="user-details">
@@ -2289,7 +2331,7 @@
 											<div class="document-chip-meta">
 												{formatFileSize(document.sizeBytes)}
 												{#if document.kind === 'PDF' && document.pageCount}
-													 · страниц: {document.usedPageCount ?? 0}/{document.pageCount}
+													· страниц: {document.usedPageCount ?? 0}/{document.pageCount}
 												{/if}
 											</div>
 											{#if document.warning}
@@ -2302,8 +2344,8 @@
 											type="button"
 											class="remove-doc-btn"
 											onclick={() => removeDocument(index)}
-											aria-label="Убрать документ"
-										>×</button>
+											aria-label="Убрать документ">×</button
+										>
 									</div>
 								{/each}
 							</div>
@@ -2327,8 +2369,8 @@
 											type="button"
 											class="remove-img-btn"
 											onclick={() => removeImage(index)}
-											aria-label="Убрать изображение"
-										>×</button>
+											aria-label="Убрать изображение">×</button
+										>
 									</div>
 								{/each}
 							</div>
@@ -2348,14 +2390,20 @@
 					</div>
 
 					{#if canCancelActiveGeneration}
-						<button class="send-btn stop-btn" onclick={cancelGeneration} title="Остановить генерацию">
+						<button
+							class="send-btn stop-btn"
+							onclick={cancelGeneration}
+							title="Остановить генерацию"
+						>
 							<span class="stop-icon"></span>
 						</button>
 					{:else}
 						<button
 							class="send-btn"
 							onclick={sendMessage}
-							disabled={(!inputValue.trim() && selectedImages.length === 0 && selectedDocuments.length === 0) ||
+							disabled={(!inputValue.trim() &&
+								selectedImages.length === 0 &&
+								selectedDocuments.length === 0) ||
 								hasAnyProcessing ||
 								(!!activeDraft && activeDraft.status === 'AWAITING_REVIEW')}
 							title="Отправить"
@@ -2515,6 +2563,10 @@
 				{/if}
 			</div>
 			<div class="model-selector">
+				<a href="/pricing" class="pricing-header-link" title="Тарифы и CU">
+					<span>Тариф</span>
+					<strong>CU</strong>
+				</a>
 				<button
 					class="icon-btn theme-toggle-btn"
 					onclick={toggleTheme}
@@ -2678,7 +2730,7 @@
 														<div class="document-chip-meta">
 															{formatFileSize(attachment.sizeBytes)}
 															{#if attachment.kind === 'PDF' && attachment.pageCount}
-																 · страниц: {attachment.usedPageCount ?? 0}/{attachment.pageCount}
+																· страниц: {attachment.usedPageCount ?? 0}/{attachment.pageCount}
 															{/if}
 														</div>
 													</div>
@@ -3204,6 +3256,60 @@
 		background: transparent;
 	}
 
+	.sidebar-pricing-link {
+		display: flex;
+		align-items: center;
+		gap: 0.7rem;
+		padding: 0.78rem;
+		margin-bottom: 0.7rem;
+		border-radius: var(--radius-md);
+		border: 1px solid color-mix(in srgb, var(--accent-primary) 38%, var(--border-subtle));
+		background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-card));
+		color: var(--text-primary);
+		text-decoration: none;
+		transition:
+			transform var(--transition-fast),
+			border-color var(--transition-fast),
+			background var(--transition-fast);
+	}
+
+	.sidebar-pricing-link:hover {
+		transform: translateY(-1px);
+		border-color: color-mix(in srgb, var(--accent-primary) 62%, var(--border-subtle));
+		background: color-mix(in srgb, var(--accent-primary) 18%, var(--bg-card));
+	}
+
+	.sidebar-pricing-icon {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 2.35rem;
+		height: 2.35rem;
+		border-radius: 50%;
+		background: var(--accent-primary);
+		color: var(--bg-base);
+		font-size: 0.78rem;
+		font-weight: 900;
+	}
+
+	.sidebar-pricing-link span:last-child {
+		display: flex;
+		min-width: 0;
+		flex-direction: column;
+		gap: 0.14rem;
+	}
+
+	.sidebar-pricing-link strong {
+		font-size: 0.84rem;
+		line-height: 1.1;
+	}
+
+	.sidebar-pricing-link small {
+		color: var(--text-secondary);
+		font-size: 0.72rem;
+		line-height: 1.2;
+	}
+
 	.user-info {
 		display: flex;
 		align-items: center;
@@ -3335,6 +3441,43 @@
 		align-items: center;
 		gap: 0.45rem;
 		min-width: 0;
+	}
+
+	.pricing-header-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		min-height: 36px;
+		padding: 0.46rem 0.7rem;
+		border-radius: var(--radius-md);
+		border: 1px solid color-mix(in srgb, var(--accent-primary) 45%, var(--border-subtle));
+		background: color-mix(in srgb, var(--accent-primary) 12%, var(--bg-card));
+		color: var(--text-primary);
+		text-decoration: none;
+		font-size: 0.82rem;
+		font-weight: 800;
+		transition:
+			transform var(--transition-fast),
+			background var(--transition-fast);
+	}
+
+	.pricing-header-link strong {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 2rem;
+		height: 1.45rem;
+		padding: 0 0.38rem;
+		border-radius: 999px;
+		background: var(--accent-primary);
+		color: var(--bg-base);
+		font-size: 0.72rem;
+		font-weight: 900;
+	}
+
+	.pricing-header-link:hover {
+		transform: translateY(-1px);
+		background: color-mix(in srgb, var(--accent-primary) 18%, var(--bg-card));
 	}
 
 	.theme-toggle-btn,
@@ -3478,7 +3621,8 @@
 		overflow-y: auto;
 		padding: clamp(1.15rem, 2.2vw, 2rem)
 			calc(clamp(1.15rem, 2.2vw, 2rem) + env(safe-area-inset-right))
-			calc(1.4rem + env(safe-area-inset-bottom)) calc(clamp(1.15rem, 2.2vw, 2rem) + env(safe-area-inset-left));
+			calc(1.4rem + env(safe-area-inset-bottom))
+			calc(clamp(1.15rem, 2.2vw, 2rem) + env(safe-area-inset-left));
 		scroll-behavior: smooth;
 	}
 
@@ -4415,8 +4559,8 @@
 		}
 
 		.chat-header {
-			padding: calc(0.42rem + env(safe-area-inset-top)) calc(0.76rem + env(safe-area-inset-right)) 0.42rem
-				calc(0.76rem + env(safe-area-inset-left));
+			padding: calc(0.42rem + env(safe-area-inset-top)) calc(0.76rem + env(safe-area-inset-right))
+				0.42rem calc(0.76rem + env(safe-area-inset-left));
 			min-height: calc(52px + env(safe-area-inset-top));
 			position: relative;
 			top: auto;

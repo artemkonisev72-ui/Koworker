@@ -4,19 +4,16 @@ import { issuePasswordResetToken, normalizeEmail, sanitizeDisplayName } from '$l
 import { sendPasswordResetEmail } from '$lib/server/auth-email';
 import { enforceAuthRateLimit } from '$lib/server/auth-throttle';
 import { prisma } from '$lib/server/db';
-import { getActivePlans, getBillingSummary } from '$lib/server/billing/subscriptions';
+import { getBillingSummary } from '$lib/server/billing/subscriptions';
 
 export const load: PageServerLoad = async ({ locals }) => {
 	if (!locals.user) {
 		throw redirect(302, '/login');
 	}
 
-	const [billing, plans] = await Promise.all([getBillingSummary(locals.user.id), getActivePlans()]);
-
 	return {
 		user: locals.user,
-		billing,
-		plans
+		billing: await getBillingSummary(locals.user.id)
 	};
 };
 
