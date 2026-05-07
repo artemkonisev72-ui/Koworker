@@ -18,6 +18,13 @@
 		return date.toLocaleDateString('ru-RU');
 	}
 
+	function formatSubscriptionPeriod() {
+		if (data.billing?.subscription?.plan?.code === 'free') return '∞';
+		return `${formatDate(data.billing?.subscription?.currentPeriodStart)} – ${formatDate(
+			data.billing?.subscription?.currentPeriodEnd
+		)}`;
+	}
+
 	async function logout() {
 		const res = await fetch('/api/auth/logout', { method: 'POST' });
 		if (res.ok) {
@@ -96,11 +103,7 @@
 			<div class="usage-grid">
 				<div>
 					<span>Период</span>
-					<strong
-						>{formatDate(data.billing?.subscription?.currentPeriodStart)} – {formatDate(
-							data.billing?.subscription?.currentPeriodEnd
-						)}</strong
-					>
+					<strong>{formatSubscriptionPeriod()}</strong>
 				</div>
 				<div>
 					<span>AI-бюджет</span>

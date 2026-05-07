@@ -31,8 +31,8 @@
 			badge: 'Популярный выбор',
 			features: [
 				'Доступ ко всем моделям',
-				'CU-бюджет равен 60% стоимости тарифа',
-				'Автопродление через ЮKassa'
+				'Сотни простых запросов',
+				'До нескольких десятков сложных задач'
 			],
 			button: 'Выбрать Pro'
 		},
@@ -68,6 +68,11 @@
 		const date = new Date(String(value));
 		if (Number.isNaN(date.getTime())) return '—';
 		return date.toLocaleDateString('ru-RU');
+	}
+
+	function formatPeriodEnd() {
+		if (data.billing?.subscription?.plan?.code === 'free') return '∞';
+		return formatDate(data.billing?.subscription?.currentPeriodEnd);
 	}
 
 	async function checkout(planCode: string) {
@@ -136,9 +141,6 @@
 		<div>
 			<p class="eyebrow">Подписка Koworker</p>
 			<h1>Выберите тариф</h1>
-			<p class="header-copy">
-				CU — внутренняя единица AI-бюджета; все остатки и списания отображаются в CU.
-			</p>
 		</div>
 	</header>
 
@@ -157,7 +159,7 @@
 		</div>
 		<div>
 			<span>Период до</span>
-			<strong>{formatDate(data.billing?.subscription?.currentPeriodEnd)}</strong>
+			<strong>{formatPeriodEnd()}</strong>
 		</div>
 	</section>
 
@@ -258,11 +260,23 @@
 
 <style>
 	.pricing-page {
+		height: 100dvh;
 		min-height: 100dvh;
+		overflow-x: hidden;
+		overflow-y: auto;
+		overscroll-behavior-y: contain;
+		-webkit-overflow-scrolling: touch;
+		touch-action: pan-y;
 		background: var(--bg-base);
 		color: var(--text-primary);
 		padding: calc(2rem + env(safe-area-inset-top)) max(1.2rem, env(safe-area-inset-right))
 			calc(2rem + env(safe-area-inset-bottom)) max(1.2rem, env(safe-area-inset-left));
+	}
+
+	@supports (height: 100svh) {
+		.pricing-page {
+			min-height: 100svh;
+		}
 	}
 
 	.pricing-header {
@@ -306,14 +320,6 @@
 		color: var(--text-primary);
 		font-size: clamp(2.2rem, 6vw, 4.6rem);
 		line-height: 0.95;
-	}
-
-	.header-copy {
-		max-width: 36rem;
-		margin: 0.9rem 0 0 auto;
-		color: var(--text-secondary);
-		font-size: 1rem;
-		line-height: 1.5;
 	}
 
 	.current-strip {
@@ -565,10 +571,6 @@
 
 		.pricing-header > div {
 			text-align: left;
-		}
-
-		.header-copy {
-			margin-left: 0;
 		}
 
 		.current-strip {
