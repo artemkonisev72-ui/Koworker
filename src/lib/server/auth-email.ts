@@ -11,7 +11,6 @@ type SendVerificationEmailInput = {
 type SendPasswordResetEmailInput = SendVerificationEmailInput;
 
 let cachedTransporter: Transporter | null | undefined;
-const SPAM_REMINDER = 'Письмо может прийти в папку "Спам".';
 const BRAND_NAME = 'Koworker';
 
 type TransactionalEmailInput = {
@@ -22,7 +21,7 @@ type TransactionalEmailInput = {
 	body: string;
 	ctaLabel: string;
 	actionUrl: string;
-	fallbackLabel: string;
+	fallbackLabel?: string | null;
 	securityNote: string;
 };
 
@@ -90,9 +89,13 @@ function renderTransactionalEmail({
 	const bodyHtml = escapeHtml(body);
 	const ctaLabelHtml = escapeHtml(ctaLabel);
 	const actionUrlHtml = escapeHtml(actionUrl);
-	const fallbackLabelHtml = escapeHtml(fallbackLabel);
+	const fallbackHtml = fallbackLabel
+		? [
+				`<p style="margin:0 0 8px;font-size:13px;line-height:1.55;color:#78716c;">${escapeHtml(fallbackLabel)}:</p>`,
+				`<p style="margin:0 0 24px;font-size:13px;line-height:1.55;color:#455e4e;word-break:break-all;"><a href="${actionUrlHtml}" target="_blank" rel="noopener noreferrer" style="color:#455e4e;text-decoration:underline;text-underline-offset:2px;">${actionUrlHtml}</a></p>`
+			]
+		: [];
 	const securityNoteHtml = escapeHtml(securityNote);
-	const spamReminderHtml = escapeHtml(SPAM_REMINDER);
 
 	return [
 		'<!doctype html>',
@@ -121,14 +124,12 @@ function renderTransactionalEmail({
 		`<p style="margin:0 0 14px;font-size:15px;line-height:1.65;color:#4e4844;">${greetingHtml}</p>`,
 		`<h1 style="margin:0 0 14px;font-family:Georgia,'Times New Roman',serif;font-size:28px;line-height:1.2;font-weight:500;color:#2d2b2a;letter-spacing:0;">${titleHtml}</h1>`,
 		`<p style="margin:0 0 24px;font-size:16px;line-height:1.65;color:#4e4844;">${bodyHtml}</p>`,
-		'<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;margin:0 0 24px;">',
+		'<table role="presentation" align="center" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;margin:0 auto 28px;">',
 		'<tr>',
-		`<td bgcolor="#455e4e" style="border-radius:14px;background-color:#455e4e;"><a href="${actionUrlHtml}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:13px 22px;font-family:Inter,'Segoe UI',Arial,sans-serif;font-size:15px;line-height:1.2;font-weight:700;color:#f9f8f6;text-decoration:none;border-radius:14px;">${ctaLabelHtml}</a></td>`,
+		`<td align="center" bgcolor="#455e4e" style="border-radius:16px;background-color:#455e4e;"><a href="${actionUrlHtml}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:16px 34px;font-family:Inter,'Segoe UI',Arial,sans-serif;font-size:17px;line-height:1.2;font-weight:800;color:#f9f8f6;text-decoration:none;border-radius:16px;">${ctaLabelHtml}</a></td>`,
 		'</tr>',
 		'</table>',
-		`<div style="margin:0 0 22px;padding:14px 16px;background-color:#f4f2ef;border:1px solid #e7e5e4;border-radius:14px;font-size:14px;line-height:1.55;color:#4e4844;">${spamReminderHtml}</div>`,
-		`<p style="margin:0 0 8px;font-size:13px;line-height:1.55;color:#78716c;">${fallbackLabelHtml}:</p>`,
-		`<p style="margin:0 0 24px;font-size:13px;line-height:1.55;color:#455e4e;word-break:break-all;"><a href="${actionUrlHtml}" target="_blank" rel="noopener noreferrer" style="color:#455e4e;text-decoration:underline;text-underline-offset:2px;">${actionUrlHtml}</a></p>`,
+		...fallbackHtml,
 		`<p style="margin:0;padding-top:18px;border-top:1px solid #e7e5e4;font-size:13px;line-height:1.55;color:#78716c;">${securityNoteHtml}</p>`,
 		'</td>',
 		'</tr>',
@@ -156,8 +157,6 @@ function renderVerificationEmail(
 		'Подтвердите адрес электронной почты, чтобы завершить активацию аккаунта.',
 		'',
 		`Ссылка для подтверждения: ${verificationUrl}`,
-		'',
-		SPAM_REMINDER,
 		'',
 		'Если вы не создавали этот аккаунт, просто проигнорируйте это письмо.'
 	].join('\n');
@@ -188,22 +187,17 @@ function renderPasswordResetEmail(
 		'',
 		'Вы запросили смену пароля для аккаунта Koworker.',
 		'',
-		`Ссылка для смены пароля: ${resetUrl}`,
-		'',
-		SPAM_REMINDER,
-		'',
 		'Если вы не запрашивали смену пароля, просто проигнорируйте это письмо.'
 	].join('\n');
 
 	const html = renderTransactionalEmail({
-		preheader: 'Ссылка для смены пароля Koworker.',
+		preheader: 'Смените пароль Koworker.',
 		logoUrl,
 		greeting,
 		title: 'Смена пароля',
 		body: 'Вы запросили смену пароля для аккаунта Koworker.',
 		ctaLabel: 'Сменить пароль',
 		actionUrl: resetUrl,
-		fallbackLabel: 'Ссылка для смены пароля',
 		securityNote: 'Если вы не запрашивали смену пароля, просто проигнорируйте это письмо.'
 	});
 

@@ -86,9 +86,11 @@ describe('auth email rendering', () => {
 		expect(mail.html).toContain('Ссылка для подтверждения');
 		expect(mail.html).toContain('Здравствуйте, &lt;Анна &amp; Co&gt;!');
 		expect(mail.html).not.toContain('Здравствуйте, <Анна & Co>!');
+		expect(mail.text).not.toContain('Письмо может прийти');
+		expect(mail.html).not.toContain('Письмо может прийти');
 	});
 
-	it('sends a branded password reset email with the shared template and reset URL', async () => {
+	it('sends a branded password reset email with a centered CTA and no fallback reset link', async () => {
 		const { sendPasswordResetEmail } = await import('./auth-email');
 
 		const result = await sendPasswordResetEmail({
@@ -107,12 +109,19 @@ describe('auth email rendering', () => {
 			to: 'user@example.com',
 			subject: 'Смена пароля Koworker'
 		});
-		expect(mail.text).toContain(`Ссылка для смены пароля: ${resetUrl}`);
+		expect(mail.text).not.toContain(`Ссылка для смены пароля: ${resetUrl}`);
+		expect(mail.text).not.toContain(resetUrl);
+		expect(mail.text).not.toContain('Письмо может прийти');
 		expect(mail.html).toContain('src="https://koworker.test/pwa-192x192.png"');
 		expect(mail.html).toContain('Смена пароля');
 		expect(mail.html).toContain('Сменить пароль');
-		expect(mail.html).toContain('Ссылка для смены пароля');
+		expect(mail.html).toContain('align="center" cellspacing="0" cellpadding="0" border="0"');
+		expect(mail.html).toContain('padding:16px 34px');
+		expect(mail.html).not.toContain('Ссылка для смены пароля:');
+		expect(mail.html).not.toContain('Ссылка для смены пароля</p>');
+		expect(mail.html).not.toContain('Письмо может прийти');
 		expect(mail.html).toContain(`href="${resetUrl}"`);
+		expect(mail.html.split(`href="${resetUrl}"`)).toHaveLength(2);
 		expect(mail.html).toContain('Если вы не запрашивали смену пароля');
 	});
 });
