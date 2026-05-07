@@ -19,6 +19,10 @@ model User {
   drafts                  TaskDraft[]
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
+  subscriptions           UserSubscription[]
+  aiUsageEvents           AiUsageEvent[]
+  yooKassaPayments        YooKassaPayment[]
+  billingLedgerEntries    BillingLedgerEntry[]
 }
 
 model Session {
@@ -58,29 +62,29 @@ model PasswordResetToken {
 }
 
 model AuthThrottleBucket {
-  id          String   @id @default(cuid())
-  action      String
+  id           String    @id @default(cuid())
+  action       String
   scopeKeyHash String
-  windowStart DateTime
-  hitCount    Int      @default(0)
+  windowStart  DateTime
+  hitCount     Int       @default(0)
   blockedUntil DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   @@unique([action, scopeKeyHash])
   @@index([updatedAt])
 }
 
 model Chat {
-  id              String     @id @default(cuid())
+  id              String      @id @default(cuid())
   userId          String
-  title           String     @default("Новый чат")
-  modelPreference String     @default("gemini-3.1-flash-lite-preview")
-  isPinned        Boolean    @default(false)
-  isPublic        Boolean    @default(false)
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
-  user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title           String      @default("Новый чат")
+  modelPreference String      @default("gemini-3.1-flash-lite-preview")
+  isPinned        Boolean     @default(false)
+  isPublic        Boolean     @default(false)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages        Message[]
   drafts          TaskDraft[]
 
@@ -106,24 +110,24 @@ enum DraftStatus {
 }
 
 model Message {
-  id            String      @id @default(cuid())
-  chatId        String
-  draftId       String?
-  role          MessageRole
-  content       String      @db.Text
-  generatedCode String?     @db.Text
-  executionLogs String?     @db.Text
-  graphData     Json?
-  exactAnswers  Json?
-  schemaData    Json?
-  schemaDescription String? @db.Text
-  schemaVersion String?     @default("1.0")
-  usedModels    Json?
-  imageData     String?     @db.Text
-  createdAt     DateTime    @default(now())
-  chat          Chat        @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  draft         TaskDraft?  @relation(fields: [draftId], references: [id], onDelete: SetNull)
-  attachments   MessageAttachment[]
+  id                String              @id @default(cuid())
+  chatId            String
+  draftId           String?
+  role              MessageRole
+  content           String              @db.Text
+  generatedCode     String?             @db.Text
+  executionLogs     String?             @db.Text
+  graphData         Json?
+  exactAnswers      Json?
+  schemaData        Json?
+  schemaDescription String?             @db.Text
+  schemaVersion     String?             @default("1.0")
+  usedModels        Json?
+  imageData         String?             @db.Text
+  createdAt         DateTime            @default(now())
+  chat              Chat                @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  draft             TaskDraft?          @relation(fields: [draftId], references: [id], onDelete: SetNull)
+  attachments       MessageAttachment[]
 
   @@index([chatId])
   @@index([draftId])
@@ -153,50 +157,222 @@ model MessageAttachment {
 }
 
 model TaskDraft {
-  id               String              @id @default(cuid())
-  chatId            String
-  userId            String
-  mode              String              @default("standard")
-  status            DraftStatus         @default(DRAFT)
-  schemaVersion     String              @default("1.0")
-  originalPrompt    String              @db.Text
-  originalImageData String?             @db.Text
-  currentUnderstanding Json?
-  approvedUnderstanding Json?
-  currentIntent     Json?
-  approvedIntent    Json?
-  currentSchema     Json?
-  approvedSchema    Json?
-  currentSchemeDescription  String?    @db.Text
-  approvedSchemeDescription String?    @db.Text
-  solverModel       Json?
-  revisionCount     Int                 @default(0)
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
-  chat              Chat                @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  revisions         TaskDraftRevision[]
-  messages          Message[]
+  id                        String              @id @default(cuid())
+  chatId                    String
+  userId                    String
+  mode                      String              @default("standard")
+  status                    DraftStatus         @default(DRAFT)
+  schemaVersion             String              @default("1.0")
+  originalPrompt            String              @db.Text
+  originalImageData         String?             @db.Text
+  currentUnderstanding      Json?
+  approvedUnderstanding     Json?
+  currentIntent             Json?
+  approvedIntent            Json?
+  currentSchema             Json?
+  approvedSchema            Json?
+  currentSchemeDescription  String?             @db.Text
+  approvedSchemeDescription String?             @db.Text
+  solverModel               Json?
+  revisionCount             Int                 @default(0)
+  createdAt                 DateTime            @default(now())
+  updatedAt                 DateTime            @updatedAt
+  chat                      Chat                @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user                      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  revisions                 TaskDraftRevision[]
+  messages                  Message[]
 
   @@index([chatId])
   @@index([userId, createdAt])
 }
 
 model TaskDraftRevision {
-  id            String    @id @default(cuid())
-  draftId       String
-  revisionIndex Int
-  schemaVersion String    @default("1.0")
-  userNotes     String?   @db.Text
-  understanding Json?
-  intent        Json?
-  schema        Json
-  schemeDescription String? @db.Text
-  assumptions   Json?
-  ambiguities   Json?
-  createdAt     DateTime  @default(now())
-  draft         TaskDraft @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  id                String    @id @default(cuid())
+  draftId           String
+  revisionIndex     Int
+  schemaVersion     String    @default("1.0")
+  userNotes         String?   @db.Text
+  understanding     Json?
+  intent            Json?
+  schema            Json
+  schemeDescription String?   @db.Text
+  assumptions       Json?
+  ambiguities       Json?
+  createdAt         DateTime  @default(now())
+  draft             TaskDraft @relation(fields: [draftId], references: [id], onDelete: Cascade)
 
   @@unique([draftId, revisionIndex])
   @@index([draftId, createdAt])
+}
+
+enum BillingPeriod {
+  MONTH
+}
+
+enum UserSubscriptionStatus {
+  ACTIVE
+  CANCELED
+  PAST_DUE
+  EXPIRED
+}
+
+enum YooKassaPaymentStatus {
+  PENDING
+  WAITING_FOR_CAPTURE
+  SUCCEEDED
+  CANCELED
+  FAILED
+}
+
+enum BillingLedgerEntryType {
+  AI_USAGE
+  SUBSCRIPTION_PAYMENT
+  REFUND
+  ADJUSTMENT
+}
+
+model AiModelPriceSnapshot {
+  id                           String         @id @default(cuid())
+  provider                     String
+  model                        String
+  source                       String
+  inputUsdMicrosPerMillion     BigInt         @default(0)
+  outputUsdMicrosPerMillion    BigInt         @default(0)
+  cachedUsdMicrosPerMillion    BigInt         @default(0)
+  reasoningUsdMicrosPerMillion BigInt         @default(0)
+  effectiveFrom                DateTime       @default(now())
+  effectiveTo                  DateTime?
+  rawPricing                   Json?
+  createdAt                    DateTime       @default(now())
+  usageEvents                  AiUsageEvent[]
+
+  @@index([provider, model, effectiveFrom])
+  @@index([provider, model, effectiveTo])
+}
+
+model AiUsageEvent {
+  id                String                @id @default(cuid())
+  userId            String
+  chatId            String?
+  messageId         String?
+  draftId           String?
+  provider          String
+  model             String
+  stage             String
+  inputTokens       Int                   @default(0)
+  outputTokens      Int                   @default(0)
+  cachedInputTokens Int                   @default(0)
+  reasoningTokens   Int                   @default(0)
+  totalTokens       Int                   @default(0)
+  costUsdMicros     BigInt                @default(0)
+  priceSnapshotId   String?
+  rawUsage          Json?
+  pipelineRunId     String
+  dedupeKey         String                @unique
+  createdAt         DateTime              @default(now())
+  user              User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  priceSnapshot     AiModelPriceSnapshot? @relation(fields: [priceSnapshotId], references: [id], onDelete: SetNull)
+  ledgerEntries     BillingLedgerEntry[]
+
+  @@index([userId, createdAt])
+  @@index([chatId, createdAt])
+  @@index([draftId, createdAt])
+  @@index([pipelineRunId])
+  @@index([provider, model, createdAt])
+}
+
+model SubscriptionPlan {
+  id                  String             @id @default(cuid())
+  code                String             @unique
+  name                String
+  priceRubKopecks     BigInt             @default(0)
+  billingPeriod       BillingPeriod      @default(MONTH)
+  includedUsdMicros   BigInt             @default(0)
+  monthlyRequestLimit Int?
+  modelAllowlist      Json?
+  featureFlags        Json?
+  isActive            Boolean            @default(true)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  subscriptions       UserSubscription[]
+
+  @@index([isActive])
+}
+
+model UserSubscription {
+  id                      String                 @id @default(cuid())
+  userId                  String
+  planId                  String
+  status                  UserSubscriptionStatus @default(ACTIVE)
+  currentPeriodStart      DateTime
+  currentPeriodEnd        DateTime
+  cancelAtPeriodEnd       Boolean                @default(false)
+  yooKassaPaymentMethodId String?
+  nextChargeAt            DateTime?
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
+  user                    User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan                    SubscriptionPlan       @relation(fields: [planId], references: [id], onDelete: Restrict)
+  payments                YooKassaPayment[]
+
+  @@index([userId, status])
+  @@index([nextChargeAt])
+}
+
+model YooKassaPayment {
+  id                String                @id @default(cuid())
+  userId            String
+  subscriptionId    String?
+  planId            String?
+  yooKassaPaymentId String?               @unique
+  idempotenceKey    String                @unique
+  status            YooKassaPaymentStatus @default(PENDING)
+  amountRubKopecks  BigInt
+  confirmationUrl   String?
+  paymentMethodId   String?
+  metadata          Json?
+  rawPayload        Json?
+  paidAt            DateTime?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  user              User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscription      UserSubscription?     @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  ledgerEntries     BillingLedgerEntry[]
+
+  @@index([userId, createdAt])
+  @@index([subscriptionId])
+  @@index([status, createdAt])
+}
+
+model FxRateSnapshot {
+  id            String   @id @default(cuid())
+  baseCurrency  String
+  quoteCurrency String
+  rate          Decimal  @db.Decimal(18, 8)
+  source        String
+  observedAt    DateTime @default(now())
+  rawPayload    Json?
+  createdAt     DateTime @default(now())
+
+  @@index([baseCurrency, quoteCurrency, observedAt])
+}
+
+model BillingLedgerEntry {
+  id               String                 @id @default(cuid())
+  userId           String
+  type             BillingLedgerEntryType
+  amountUsdMicros  BigInt?
+  amountRubKopecks BigInt?
+  usageEventId     String?
+  paymentId        String?
+  metadata         Json?
+  createdAt        DateTime               @default(now())
+  user             User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  usageEvent       AiUsageEvent?          @relation(fields: [usageEventId], references: [id], onDelete: SetNull)
+  payment          YooKassaPayment?       @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+  @@index([usageEventId])
+  @@index([paymentId])
 }

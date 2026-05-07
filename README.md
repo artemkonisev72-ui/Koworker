@@ -84,6 +84,28 @@ OPENROUTER_REQUEST_TIMEOUT_MS="60000"               # optional
 
 OpenRouter is used only when an `openrouter:*` model is selected in the model dropdown.
 
+## Billing, subscriptions and YooKassa
+
+Billing stores subscription payments in RUB and AI provider cost in USD micros. Required variables for paid plans:
+
+```sh
+YOOKASSA_SHOP_ID="123456"
+YOOKASSA_SECRET_KEY="test_secret"
+YOOKASSA_BASE_URL="https://api.yookassa.ru/v3" # optional
+BILLING_CRON_SECRET="long-random-secret"
+AI_BILLING_ALLOW_UNPRICED="true" # dev only; production should use price snapshots
+```
+
+Operational endpoints:
+
+```sh
+POST /api/internal/billing/refresh-prices       # Bearer BILLING_CRON_SECRET, refreshes OpenRouter prices
+POST /api/internal/billing/renew-subscriptions  # Bearer BILLING_CRON_SECRET, runs YooKassa renewals
+POST /api/yookassa/webhook                      # YooKassa payment webhook target
+```
+
+After changing `prisma/schema.prisma`, apply the schema to the database with your usual Prisma flow (`prisma db push` locally or migrations in production) and run `npm run prisma:generate`.
+
 ## Building
 
 To create a production version of your app:

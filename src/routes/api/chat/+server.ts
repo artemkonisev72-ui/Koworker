@@ -54,6 +54,9 @@ import {
 	augmentPromptWithAttachments,
 	type ChatAttachmentInput
 } from '$lib/chat/attachments.js';
+import { assertCanStartAiRequest } from '$lib/server/billing/subscriptions.js';
+import { createBillingPipelineRunId, runWithAiBillingContext } from '$lib/server/billing/usage.js';
+import { BillingAccessError } from '$lib/server/billing/types.js';
 
 const MAX_MESSAGE_LENGTH = 8_000;
 const RATE_WINDOW_MS = 60_000;
@@ -103,7 +106,7 @@ type OutboundEvent = PipelineStatus | SandboxRequestEvent;
 export const POST: RequestHandler = async ({ locals, request }) => {
 	console.log('[SSE] POST /api/chat received');
 	if (!locals.user) return error(401, 'Нужно войти в аккаунт.');
-	
+
 	let body: {
 		chatId?: string;
 		message?: string;
@@ -131,7 +134,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const { chatId } = body;
 	const message = body.message ?? '';
 	const images = normalizeRequestImages(body);
-	const hasAttachments = Array.isArray(body.attachments) ? body.attachments.length > 0 : Boolean(body.attachments);
+	const hasAttachments = Array.isArray(body.attachments)
+		? body.attachments.length > 0
+		: Boolean(body.attachments);
 	if (body.modelPreference !== undefined && !isModelPreference(body.modelPreference)) {
 		return error(400, `Неподдерживаемая модель: ${String(body.modelPreference)}`);
 	}
@@ -175,6 +180,17 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		effectiveModelPreference,
 		forcedModel
 	});
+	try {
+		await assertCanStartAiRequest({
+			userId: locals.user.id,
+			modelPreference: effectiveModelPreference
+		});
+	} catch (billingError) {
+		if (billingError instanceof BillingAccessError) {
+			return error(billingError.status, billingError.message);
+		}
+		throw billingError;
+	}
 
 	let preparedAttachments: Awaited<ReturnType<typeof prepareMessageAttachments>>;
 	try {
@@ -184,8 +200,12 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			existingImageCount: images.length
 		});
 	} catch (attachmentError) {
-		const messageText = attachmentError instanceof Error ? attachmentError.message : String(attachmentError);
-		return error(messageText.includes('больш') || messageText.includes('размер') ? 413 : 400, messageText);
+		const messageText =
+			attachmentError instanceof Error ? attachmentError.message : String(attachmentError);
+		return error(
+			messageText.includes('больш') || messageText.includes('размер') ? 413 : 400,
+			messageText
+		);
 	}
 
 	const aiImages = [...images, ...preparedAttachments.renderedImages];
@@ -194,7 +214,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		maxTotalBase64Length: null
 	});
 	if (combinedImageError) {
-		return error(combinedImageError.toLowerCase().includes('больш') ? 413 : 400, combinedImageError);
+		return error(
+			combinedImageError.toLowerCase().includes('больш') ? 413 : 400,
+			combinedImageError
+		);
 	}
 	if (!hasPromptOrImages(preparedAttachments.augmentedPrompt, aiImages)) {
 		return error(400, 'Не удалось извлечь содержимое из прикреплённых файлов.');
@@ -222,7 +245,11 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		}
 	});
 
-	if (latestSolvedDraft?.id && latestSolvedDraft?.approvedSchema && latestSolvedDraft?.originalPrompt) {
+	if (
+		latestSolvedDraft?.id &&
+		latestSolvedDraft?.approvedSchema &&
+		latestSolvedDraft?.originalPrompt
+	) {
 		const latestSolvedMessage = await (prisma as any).message.findFirst({
 			where: {
 				chatId,
@@ -375,6 +402,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	}
 
 	const userId = locals.user.id;
+	const pipelineRunId = createBillingPipelineRunId('chat');
 
 	// ── SSE ReadableStream ────────────────────────────────────────────────────
 	const stream = new ReadableStream({
@@ -526,79 +554,92 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			}, 5000);
 
 			// Запускаем пайплайн асинхронно
-			runPipeline(
-				preparedAttachments.augmentedPrompt,
-				history,
-				async (event) => {
-					if (event.type === 'status') {
-						processingHandle.updateStatus(event.message);
-					}
-					if (event.type !== 'result') {
-						send(event);
-						return;
-					}
-
-					// Сохраняем финальный ответ в БД
-					if (request.signal.aborted) {
-							console.log('[SSE] Request aborted, skipping DB save for result');
-							return;
-					}
-					processingHandle.updateStatus('Сохраняю ответ...');
-					try {
-						if (event.draftId) {
-							await (prisma as any).message
-								.update({
-									where: { id: persistedUserMessageId },
-									data: { draftId: event.draftId }
-								})
-								.catch(() => undefined);
-						}
-
-						const assistantMessage = await (prisma as any).message.create({
-								data: {
-									chatId,
-									draftId: event.draftId ?? undefined,
-									role: 'ASSISTANT',
-									content: event.content,
-									generatedCode: event.generatedCode ?? null,
-									executionLogs: event.executionLogs ?? null,
-									graphData: event.graphData ? JSON.stringify(event.graphData) : undefined,
-									exactAnswers: event.exactAnswers ? JSON.stringify(event.exactAnswers) : undefined,
-									schemaData: event.schemaData ? JSON.stringify(event.schemaData) : undefined,
-									schemaDescription:
-										typeof event.schemaDescription === 'string' ? event.schemaDescription : undefined,
-									schemaVersion: event.schemaVersion ?? undefined,
-									usedModels: event.usedModels ? JSON.stringify(event.usedModels) : undefined
-								}
-							});
-
-							// Обновляем заголовок чата если это первое сообщение
-						const msgCount = await prisma.message.count({ where: { chatId } });
-						if (msgCount <= 2) {
-							const titleSource =
-								message.trim() ||
-								(preparedAttachments.attachments.length > 0
-									? `Задача из документа: ${preparedAttachments.attachments[0].fileName}`
-									: '');
-							const title = titleFromPromptOrImages(titleSource, aiImages);
-							await prisma.chat.update({ where: { id: chatId }, data: { title } });
-						}
-
-						send({
-							...event,
-							messageId: assistantMessage.id
-						});
-					} catch (dbErr) {
-						console.error('[SSE] DB save error:', dbErr);
-						send(event);
-					}
-				},
-				aiImages,
-				forcedModel,
+			runWithAiBillingContext(
 				{
-					approvedFollowupContext,
-					sandboxExecutor: requestSandboxExecution
-				}
+					userId,
+					chatId,
+					messageId: persistedUserMessageId,
+					pipelineRunId
+				},
+				() =>
+					runPipeline(
+						preparedAttachments.augmentedPrompt,
+						history,
+						async (event) => {
+							if (event.type === 'status') {
+								processingHandle.updateStatus(event.message);
+							}
+							if (event.type !== 'result') {
+								send(event);
+								return;
+							}
+
+							// Сохраняем финальный ответ в БД
+							if (request.signal.aborted) {
+								console.log('[SSE] Request aborted, skipping DB save for result');
+								return;
+							}
+							processingHandle.updateStatus('Сохраняю ответ...');
+							try {
+								if (event.draftId) {
+									await (prisma as any).message
+										.update({
+											where: { id: persistedUserMessageId },
+											data: { draftId: event.draftId }
+										})
+										.catch(() => undefined);
+								}
+
+								const assistantMessage = await (prisma as any).message.create({
+									data: {
+										chatId,
+										draftId: event.draftId ?? undefined,
+										role: 'ASSISTANT',
+										content: event.content,
+										generatedCode: event.generatedCode ?? null,
+										executionLogs: event.executionLogs ?? null,
+										graphData: event.graphData ? JSON.stringify(event.graphData) : undefined,
+										exactAnswers: event.exactAnswers
+											? JSON.stringify(event.exactAnswers)
+											: undefined,
+										schemaData: event.schemaData ? JSON.stringify(event.schemaData) : undefined,
+										schemaDescription:
+											typeof event.schemaDescription === 'string'
+												? event.schemaDescription
+												: undefined,
+										schemaVersion: event.schemaVersion ?? undefined,
+										usedModels: event.usedModels ? JSON.stringify(event.usedModels) : undefined
+									}
+								});
+
+								// Обновляем заголовок чата если это первое сообщение
+								const msgCount = await prisma.message.count({ where: { chatId } });
+								if (msgCount <= 2) {
+									const titleSource =
+										message.trim() ||
+										(preparedAttachments.attachments.length > 0
+											? `Задача из документа: ${preparedAttachments.attachments[0].fileName}`
+											: '');
+									const title = titleFromPromptOrImages(titleSource, aiImages);
+									await prisma.chat.update({ where: { id: chatId }, data: { title } });
+								}
+
+								send({
+									...event,
+									messageId: assistantMessage.id
+								});
+							} catch (dbErr) {
+								console.error('[SSE] DB save error:', dbErr);
+								send(event);
+							}
+						},
+						aiImages,
+						forcedModel,
+						{
+							approvedFollowupContext,
+							sandboxExecutor: requestSandboxExecution
+						}
+					)
 			)
 				.catch((pipelineErr) => {
 					console.error('[SSE] Pipeline error:', pipelineErr);

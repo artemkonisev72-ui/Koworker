@@ -12,6 +12,12 @@ import type { SchemeUnderstandingV1 } from '$lib/schema/understanding.js';
 import { parseSchemeUnderstandingResponse } from '$lib/schema/understanding.js';
 import { detectPromptLanguage } from '$lib/server/schema/language.js';
 import type { ChatImage } from '$lib/chat/images.js';
+import type { AiUsage } from '$lib/server/billing/types.js';
+import { normalizeTokenCount } from '$lib/server/billing/types.js';
+import {
+	assertActiveBillingContextCanUseModel,
+	recordAiUsageEvent
+} from '$lib/server/billing/usage.js';
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -183,7 +189,11 @@ function historyImages(entry: GeminiHistory): ChatImage[] {
 	return entry.imageData ? [entry.imageData] : [];
 }
 
-function buildContext(history: GeminiHistory[], systemPrompt: string, currentQuestion: string): GeminiMessage[] {
+function buildContext(
+	history: GeminiHistory[],
+	systemPrompt: string,
+	currentQuestion: string
+): GeminiMessage[] {
 	const messages: GeminiMessage[] = history
 		.filter((entry) => entry.content || historyImages(entry).length > 0)
 		.map((entry) => {
@@ -227,7 +237,11 @@ function getOpenRouterBaseUrl(): string {
 	return base.replace(/\/+$/, '');
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+function withTimeout<T>(
+	promise: Promise<T>,
+	timeoutMs: number,
+	timeoutMessage: string
+): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
 		const timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
 		promise.then(
@@ -255,7 +269,9 @@ interface OpenRouterContentImagePart {
 	};
 }
 
-type OpenRouterMessageContent = string | Array<OpenRouterContentTextPart | OpenRouterContentImagePart>;
+type OpenRouterMessageContent =
+	| string
+	| Array<OpenRouterContentTextPart | OpenRouterContentImagePart>;
 
 interface OpenRouterRequestMessage {
 	role: 'user' | 'assistant';
@@ -270,8 +286,82 @@ interface OpenRouterResponse {
 		};
 	}>;
 	usage?: {
+		prompt_tokens?: unknown;
+		completion_tokens?: unknown;
 		total_tokens?: unknown;
+		cost?: unknown;
+		prompt_tokens_details?: {
+			cached_tokens?: unknown;
+		};
+		completion_tokens_details?: {
+			reasoning_tokens?: unknown;
+		};
 	};
+}
+
+type GenerationUsage = Omit<AiUsage, 'stage'>;
+type GenerationResult = { text: string; model: string; tokens: number; usage: GenerationUsage };
+
+function providerCostUsdMicros(value: unknown): number | undefined {
+	const numeric = Number(value);
+	if (!Number.isFinite(numeric) || numeric < 0) return undefined;
+	return Math.round(numeric * 1_000_000);
+}
+
+function openRouterUsage(model: string, rawUsage: OpenRouterResponse['usage']): GenerationUsage {
+	const promptTokens = normalizeTokenCount(rawUsage?.prompt_tokens);
+	const completionTokens = normalizeTokenCount(rawUsage?.completion_tokens);
+	const cachedTokens = normalizeTokenCount(rawUsage?.prompt_tokens_details?.cached_tokens);
+	const reasoningTokens = normalizeTokenCount(
+		rawUsage?.completion_tokens_details?.reasoning_tokens
+	);
+	const totalTokens = normalizeTokenCount(rawUsage?.total_tokens);
+	return {
+		provider: 'openrouter',
+		model,
+		inputTokens: Math.max(0, promptTokens - cachedTokens),
+		outputTokens: completionTokens,
+		cachedInputTokens: cachedTokens,
+		reasoningTokens,
+		totalTokens: totalTokens || promptTokens + completionTokens + reasoningTokens,
+		rawUsage,
+		providerCostUsdMicros: providerCostUsdMicros(rawUsage?.cost)
+	};
+}
+
+function geminiUsage(model: string, rawUsage: unknown): GenerationUsage {
+	const usage =
+		rawUsage && typeof rawUsage === 'object' ? (rawUsage as Record<string, unknown>) : {};
+	const promptTokens = normalizeTokenCount(usage.promptTokenCount);
+	const outputTokens = normalizeTokenCount(usage.candidatesTokenCount);
+	const cachedTokens = normalizeTokenCount(usage.cachedContentTokenCount);
+	const reasoningTokens = normalizeTokenCount(usage.thoughtsTokenCount);
+	const totalTokens = normalizeTokenCount(usage.totalTokenCount);
+	return {
+		provider: 'gemini',
+		model,
+		inputTokens: Math.max(0, promptTokens - cachedTokens),
+		outputTokens,
+		cachedInputTokens: cachedTokens,
+		reasoningTokens,
+		totalTokens: totalTokens || promptTokens + outputTokens + reasoningTokens,
+		rawUsage
+	};
+}
+
+function billingProviderModel(model: ModelForGeneration): {
+	provider: 'gemini' | 'openrouter';
+	model: string;
+	modelPreference: string;
+} {
+	if (isOpenRouterModelPreference(model)) {
+		return {
+			provider: 'openrouter',
+			model: OPENROUTER_MODEL_BY_PREFERENCE[model],
+			modelPreference: model
+		};
+	}
+	return { provider: 'gemini', model, modelPreference: model };
 }
 
 function toOpenRouterMessages(messages: GeminiMessage[]): OpenRouterRequestMessage[] {
@@ -314,7 +404,12 @@ function extractOpenRouterText(content: unknown): string {
 			chunks.push(item);
 			continue;
 		}
-		if (typeof item === 'object' && item !== null && 'text' in item && typeof item.text === 'string') {
+		if (
+			typeof item === 'object' &&
+			item !== null &&
+			'text' in item &&
+			typeof item.text === 'string'
+		) {
 			chunks.push(item.text);
 		}
 	}
@@ -343,7 +438,7 @@ async function readOpenRouterErrorBody(response: Response): Promise<string> {
 async function generateWithOpenRouter(
 	modelPreference: OpenRouterModelPreference,
 	messages: GeminiMessage[]
-): Promise<{ text: string; model: string; tokens: number }> {
+): Promise<GenerationResult> {
 	const apiKey = process.env.OPENROUTER_API_KEY?.trim();
 	if (!apiKey) {
 		throw new Error('OPENROUTER_API_KEY is not configured');
@@ -387,19 +482,22 @@ async function generateWithOpenRouter(
 	}
 
 	const responseModel =
-		typeof payload.model === 'string' && payload.model.trim().length > 0 ? payload.model : openRouterModel;
+		typeof payload.model === 'string' && payload.model.trim().length > 0
+			? payload.model
+			: openRouterModel;
 	const totalTokens = Number(payload.usage?.total_tokens);
 	return {
 		text,
 		model: responseModel,
-		tokens: Number.isFinite(totalTokens) ? totalTokens : 0
+		tokens: Number.isFinite(totalTokens) ? totalTokens : 0,
+		usage: openRouterUsage(responseModel, payload.usage)
 	};
 }
 
 async function generate(
 	model: ModelForGeneration,
 	messages: GeminiMessage[]
-): Promise<{ text: string; model: string; tokens: number }> {
+): Promise<GenerationResult> {
 	if (isOpenRouterModelPreference(model)) {
 		return generateWithOpenRouter(model, messages);
 	}
@@ -416,7 +514,8 @@ async function generate(
 	return {
 		text: response.text,
 		model,
-		tokens: response.usageMetadata?.totalTokenCount || 0
+		tokens: response.usageMetadata?.totalTokenCount || 0,
+		usage: geminiUsage(model, response.usageMetadata)
 	};
 }
 
@@ -424,8 +523,9 @@ async function generateWithFallback(
 	startModel: GeminiModel,
 	chain: GeminiModel[],
 	messages: GeminiMessage[],
-	forcedModel?: string | null
-): Promise<{ text: string; model: string; tokens: number }> {
+	forcedModel?: string | null,
+	usageStage = 'LLM'
+): Promise<GenerationResult> {
 	const normalizedForcedModel =
 		typeof forcedModel === 'string' &&
 		(GEMINI_MODEL_SET.has(forcedModel as GeminiModel) || isOpenRouterModelPreference(forcedModel))
@@ -433,16 +533,13 @@ async function generateWithFallback(
 			: null;
 
 	const fallbackChain =
-		chain.indexOf(startModel) >= 0
-			? chain.slice(chain.indexOf(startModel))
-			: chain;
+		chain.indexOf(startModel) >= 0 ? chain.slice(chain.indexOf(startModel)) : chain;
 
-	const effectiveChain: ModelForGeneration[] =
-		normalizedForcedModel
-			? isOpenRouterModelPreference(normalizedForcedModel)
-				? [normalizedForcedModel]
-				: [normalizedForcedModel, ...fallbackChain.filter((model) => model !== normalizedForcedModel)]
-			: fallbackChain;
+	const effectiveChain: ModelForGeneration[] = normalizedForcedModel
+		? isOpenRouterModelPreference(normalizedForcedModel)
+			? [normalizedForcedModel]
+			: [normalizedForcedModel, ...fallbackChain.filter((model) => model !== normalizedForcedModel)]
+		: fallbackChain;
 	console.log('[ModelPreference:Gemini] fallback chain resolved', {
 		startModel,
 		forcedModel,
@@ -453,14 +550,23 @@ async function generateWithFallback(
 	for (let i = 0; i < effectiveChain.length; i++) {
 		const model = effectiveChain[i];
 		try {
+			const billingModel = billingProviderModel(model);
+			await assertActiveBillingContextCanUseModel(billingModel);
 			const generation = await generate(model, messages);
 			console.log(`[LLM] Using: ${generation.model}${normalizedForcedModel ? ' (FORCED)' : ''}`);
+			await recordAiUsageEvent({ ...generation.usage, stage: usageStage });
 			return generation;
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			const isRetryable = ['400', '404', '429', '503', 'not found', 'NOT_FOUND', 'Model not supported'].some((token) =>
-				msg.includes(token)
-			);
+			const isRetryable = [
+				'400',
+				'404',
+				'429',
+				'503',
+				'not found',
+				'NOT_FOUND',
+				'Model not supported'
+			].some((token) => msg.includes(token));
 			if (!isOpenRouterModelPreference(model) && isRetryable && i < effectiveChain.length - 1) {
 				console.warn(`[Gemini] Model ${model} unavailable, falling back...`);
 				continue;
@@ -519,13 +625,18 @@ function extractFirstJsonObject(text: string): string | null {
 
 function normalizeStringArray(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
-	return value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean);
+	return value
+		.filter((item): item is string => typeof item === 'string')
+		.map((item) => item.trim())
+		.filter(Boolean);
 }
 
 function isLikelySchemaDataObject(value: unknown): value is SchemaData | SchemaDataV2 {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
 	const maybe = value as Record<string, unknown>;
-	return Array.isArray(maybe.elements) || (Array.isArray(maybe.nodes) && Array.isArray(maybe.objects));
+	return (
+		Array.isArray(maybe.elements) || (Array.isArray(maybe.nodes) && Array.isArray(maybe.objects))
+	);
 }
 
 function tryParseJsonString(value: unknown): unknown {
@@ -590,9 +701,7 @@ function parseSchemaResult(rawText: string): {
 	const schemaCandidate = extractSchemaCandidate(payload);
 	if (!isLikelySchemaDataObject(schemaCandidate)) {
 		const knownKeys = Object.keys(payload).slice(0, 12).join(', ');
-		throw new Error(
-			`Schema response is missing schemaData object (keys: ${knownKeys || 'none'})`
-		);
+		throw new Error(`Schema response is missing schemaData object (keys: ${knownKeys || 'none'})`);
 	}
 
 	return {
@@ -638,10 +747,7 @@ function parseUnderstandingResult(
 	};
 }
 
-function attachInlineImages(
-	messages: GeminiMessage[],
-	images?: ChatImage[]
-): GeminiMessage[] {
+function attachInlineImages(messages: GeminiMessage[], images?: ChatImage[]): GeminiMessage[] {
 	if (!images || images.length === 0 || messages.length === 0) return messages;
 	const next = messages.map((message) => ({
 		...message,
@@ -660,12 +766,26 @@ async function generateSchemaStage(
 	systemPrompt: string,
 	question: string,
 	forcedModel?: string | null,
-	options?: { useFlashChain?: boolean }
-): Promise<{ parsed: { schemaData: SchemaData | SchemaDataV2; assumptions: string[]; ambiguities: string[] }; model: string; tokens: number }> {
+	options?: { useFlashChain?: boolean; stage?: string }
+): Promise<{
+	parsed: { schemaData: SchemaData | SchemaDataV2; assumptions: string[]; ambiguities: string[] };
+	model: string;
+	tokens: number;
+}> {
 	const messages = buildContext(history, systemPrompt, question);
 	const chain = options?.useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
-	const generation = await generateWithFallback(chain[0], chain, messages, forcedModel);
-	return { parsed: parseSchemaResult(generation.text), model: generation.model, tokens: generation.tokens };
+	const generation = await generateWithFallback(
+		chain[0],
+		chain,
+		messages,
+		forcedModel,
+		options?.stage ?? 'SchemaGen'
+	);
+	return {
+		parsed: parseSchemaResult(generation.text),
+		model: generation.model,
+		tokens: generation.tokens
+	};
 }
 
 async function generateIntentStage(
@@ -673,7 +793,7 @@ async function generateIntentStage(
 	systemPrompt: string,
 	question: string,
 	forcedModel?: string | null,
-	options?: { useFlashChain?: boolean; baseIntent?: SchemeIntentV1 }
+	options?: { useFlashChain?: boolean; baseIntent?: SchemeIntentV1; stage?: string }
 ): Promise<{
 	parsed: { intent: SchemeIntentV1; assumptions: string[]; ambiguities: string[] };
 	model: string;
@@ -681,7 +801,13 @@ async function generateIntentStage(
 }> {
 	const messages = buildContext(history, systemPrompt, question);
 	const chain = options?.useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
-	const generation = await generateWithFallback(chain[0], chain, messages, forcedModel);
+	const generation = await generateWithFallback(
+		chain[0],
+		chain,
+		messages,
+		forcedModel,
+		options?.stage ?? 'IntentGen'
+	);
 	return {
 		parsed: parseIntentResult(generation.text, {
 			baseIntent: options?.baseIntent
@@ -704,11 +830,7 @@ function languagePolicy(userText: string): string {
 }
 
 function normalizeRouteText(value: string): string {
-	return value
-		.toLowerCase()
-		.replace(/ё/g, 'е')
-		.replace(/\s+/g, ' ')
-		.trim();
+	return value.toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim();
 }
 
 function hasAnyPattern(text: string, patterns: RegExp[]): boolean {
@@ -889,24 +1011,41 @@ export function routeTaskByRules(userMessage: string): TaskRoute | null {
 	const routeText = intentText || text;
 
 	const hardNonSolve =
-		hasAnyPhrase(routeText, NON_SOLVE_HARD_PHRASES) || hasAnyPattern(routeText, NON_SOLVE_HARD_PATTERNS);
-	const extraction = hasAnyPhrase(routeText, EXTRACTION_PHRASES) || hasAnyPattern(routeText, EXTRACTION_PATTERNS);
-	const summary = hasAnyPhrase(routeText, SUMMARY_PHRASES) || hasAnyPattern(routeText, SUMMARY_PATTERNS);
+		hasAnyPhrase(routeText, NON_SOLVE_HARD_PHRASES) ||
+		hasAnyPattern(routeText, NON_SOLVE_HARD_PATTERNS);
+	const extraction =
+		hasAnyPhrase(routeText, EXTRACTION_PHRASES) || hasAnyPattern(routeText, EXTRACTION_PATTERNS);
+	const summary =
+		hasAnyPhrase(routeText, SUMMARY_PHRASES) || hasAnyPattern(routeText, SUMMARY_PATTERNS);
 	const documentTransform =
 		hasAnyPhrase(routeText, DOCUMENT_TRANSFORM_PHRASES) ||
 		hasAnyPattern(routeText, DOCUMENT_TRANSFORM_PATTERNS) ||
 		(hasAttachedDocuments && intentText.length === 0);
-	const writing = hasAnyPhrase(routeText, WRITING_PHRASES) || hasAnyPattern(routeText, WRITING_PATTERNS);
+	const writing =
+		hasAnyPhrase(routeText, WRITING_PHRASES) || hasAnyPattern(routeText, WRITING_PATTERNS);
 	const schemaDescription =
-		hasAnyPhrase(routeText, SCHEMA_DESCRIPTION_PHRASES) || hasAnyPattern(routeText, SCHEMA_DESCRIPTION_PATTERNS);
-	const strongSolve = hasAnyPhrase(routeText, STRONG_SOLVE_PHRASES) || hasAnyPattern(routeText, STRONG_SOLVE_PATTERNS);
+		hasAnyPhrase(routeText, SCHEMA_DESCRIPTION_PHRASES) ||
+		hasAnyPattern(routeText, SCHEMA_DESCRIPTION_PATTERNS);
+	const strongSolve =
+		hasAnyPhrase(routeText, STRONG_SOLVE_PHRASES) ||
+		hasAnyPattern(routeText, STRONG_SOLVE_PATTERNS);
 
 	if (hardNonSolve) {
 		if (schemaDescription) {
-			return makeTaskRoute('schema_description', 'rules', 0.98, 'Explicit request to describe without solving.');
+			return makeTaskRoute(
+				'schema_description',
+				'rules',
+				0.98,
+				'Explicit request to describe without solving.'
+			);
 		}
 		if (documentTransform) {
-			return makeTaskRoute('document_transform', 'rules', 0.98, 'Explicit document/report task without solving.');
+			return makeTaskRoute(
+				'document_transform',
+				'rules',
+				0.98,
+				'Explicit document/report task without solving.'
+			);
 		}
 		if (summary) {
 			return makeTaskRoute('summary', 'rules', 0.98, 'Explicit summary task without solving.');
@@ -917,16 +1056,23 @@ export function routeTaskByRules(userMessage: string): TaskRoute | null {
 		return makeTaskRoute('general_answer', 'rules', 0.96, 'Explicit non-solving instruction.');
 	}
 
-	if (extraction) return makeTaskRoute('document_transform', 'rules', 0.94, 'Document extraction request.');
+	if (extraction)
+		return makeTaskRoute('document_transform', 'rules', 0.94, 'Document extraction request.');
 	if (summary && !strongSolve) return makeTaskRoute('summary', 'rules', 0.93, 'Summary request.');
 	if (documentTransform && !strongSolve) {
-		return makeTaskRoute('document_transform', 'rules', 0.93, 'Document/report transformation request.');
+		return makeTaskRoute(
+			'document_transform',
+			'rules',
+			0.93,
+			'Document/report transformation request.'
+		);
 	}
 	if (writing && !strongSolve) return makeTaskRoute('writing', 'rules', 0.93, 'Writing request.');
 	if (schemaDescription && !strongSolve) {
 		return makeTaskRoute('schema_description', 'rules', 0.92, 'Scheme description request.');
 	}
-	if (strongSolve) return makeTaskRoute('solve_computation', 'rules', 0.9, 'Explicit solve/compute request.');
+	if (strongSolve)
+		return makeTaskRoute('solve_computation', 'rules', 0.9, 'Explicit solve/compute request.');
 
 	return null;
 }
@@ -950,7 +1096,8 @@ function parseTaskRoute(text: string): TaskRoute | null {
 			typeof parsed.confidence === 'number' && Number.isFinite(parsed.confidence)
 				? Math.max(0, Math.min(1, parsed.confidence))
 				: 0.7;
-		const reason = typeof parsed.reason === 'string' ? parsed.reason.trim().slice(0, 240) : undefined;
+		const reason =
+			typeof parsed.reason === 'string' ? parsed.reason.trim().slice(0, 240) : undefined;
 		return makeTaskRoute(rawKind as TaskRouteKind, 'model', confidence, reason);
 	} catch {
 		return null;
@@ -992,14 +1139,25 @@ Hard rules:
 ${languagePolicy(userMessage)}`;
 
 	const messages = buildContext(history, prompt, `Question: ${userMessage}`);
-	const generation = await generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
+	const generation = await generateWithFallback(
+		FLASH_CHAIN[0],
+		FLASH_CHAIN,
+		messages,
+		forcedModel,
+		'Router'
+	);
 	const parsed = parseTaskRoute(generation.text);
 	if (parsed) return { ...parsed, model: generation.model, tokens: generation.tokens };
 
 	const fallbackRule = routeTaskByRules(userMessage);
 	const fallback =
 		fallbackRule ??
-		makeTaskRoute('general_answer', 'fallback', 0.45, 'Router response was not valid JSON; used conservative text path.');
+		makeTaskRoute(
+			'general_answer',
+			'fallback',
+			0.45,
+			'Router response was not valid JSON; used conservative text path.'
+		);
 	return { ...fallback, source: 'fallback', model: generation.model, tokens: generation.tokens };
 }
 
@@ -1041,7 +1199,11 @@ export async function routeApprovedFollowup(
 	forcedModel?: string | null
 ): Promise<{ intent: ApprovedFollowupIntent; model: string; tokens: number }> {
 	const localRoute = routeTaskByRules(params.userMessage);
-	if (localRoute && !localRoute.requiresCodeGen && isLikelyApprovedTaskReference(params.userMessage)) {
+	if (
+		localRoute &&
+		!localRoute.requiresCodeGen &&
+		isLikelyApprovedTaskReference(params.userMessage)
+	) {
 		return { intent: 'noncomputational_followup', model: 'Локальные правила', tokens: 0 };
 	}
 
@@ -1081,7 +1243,13 @@ Rules:
 	].join('\n');
 
 	const messages = buildContext(history, prompt, question);
-	const { text, model, tokens } = await generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
+	const { text, model, tokens } = await generateWithFallback(
+		FLASH_CHAIN[0],
+		FLASH_CHAIN,
+		messages,
+		forcedModel,
+		'FollowupRouter'
+	);
 	return { intent: normalizeApprovedFollowupIntent(text), model, tokens };
 }
 
@@ -1174,7 +1342,13 @@ ${languagePolicy(userMessage)}`;
 	if (retryContext) userContent += `\n\nFix this error context:\n${retryContext}`;
 
 	const messages = buildContext(history, systemPrompt, userContent);
-	const { text, model, tokens } = await generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, forcedModel);
+	const { text, model, tokens } = await generateWithFallback(
+		PRO_CHAIN[0],
+		PRO_CHAIN,
+		messages,
+		forcedModel,
+		retryContext ? 'Fixer' : 'CodeGen'
+	);
 	const codeMatch = text.match(/```python\n([\s\S]*?)```/);
 	return { code: codeMatch ? codeMatch[1].trim() : text.trim(), model, tokens };
 }
@@ -1240,7 +1414,7 @@ ${params.graphSummaryJson}
 
 ${languagePolicy(params.taskContext)}`;
 	const messages = buildContext(history, prompt, `Task: ${params.taskContext}`);
-	return generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, forcedModel);
+	return generateWithFallback(PRO_CHAIN[0], PRO_CHAIN, messages, forcedModel, 'Finalizer');
 }
 
 export async function generateResultSchemaPatch(
@@ -1315,7 +1489,8 @@ ${params.graphSummaryJson}`;
 		FAST_SCHEMA_CHAIN[0],
 		FAST_SCHEMA_CHAIN,
 		messages,
-		forcedModel
+		forcedModel,
+		'SchemeOverlay'
 	);
 	const candidate = extractFirstJsonObject(generation.text);
 	if (!candidate) {
@@ -1351,7 +1526,7 @@ export async function answerGeneralQuestion(
 	const prompt = `Answer clearly and academically. Use LaTeX where formulas are needed.
 ${languagePolicy(userMessage)}`;
 	const messages = buildContext(history, prompt, `Question: ${userMessage}`);
-	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
+	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel, 'Text');
 }
 
 export async function answerNonComputationalTask(
@@ -1399,7 +1574,7 @@ ${languagePolicy(params.userMessage)}`;
 		.filter(Boolean)
 		.join('\n\n');
 	const messages = buildContext(history, prompt, question);
-	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel);
+	return generateWithFallback(FLASH_CHAIN[0], FLASH_CHAIN, messages, forcedModel, 'Text');
 }
 
 export async function analyzeImage(
@@ -1429,10 +1604,12 @@ export async function analyzeImages(
 				: 'Analyze the attached image. Extract the engineering/math task condition and describe the scheme relevant for solving. Return plain text only.';
 	const messages = buildContext(history, prompt, '');
 	for (const image of images) {
-		messages[messages.length - 1].parts.push({ inlineData: { mimeType: image.mimeType, data: image.base64 } });
+		messages[messages.length - 1].parts.push({
+			inlineData: { mimeType: image.mimeType, data: image.base64 }
+		});
 	}
 	const chain = options?.fastMode ? FAST_VISION_CHAIN : VISION_CHAIN;
-	return generateWithFallback(chain[0], chain, messages, forcedModel);
+	return generateWithFallback(chain[0], chain, messages, forcedModel, 'Vision');
 }
 
 export async function generateSchemeDescriptionFromFacts(
@@ -1467,7 +1644,13 @@ Use the exact language requested: ${languageSeed}.`;
 	const question = `[SCHEME_FACTS_JSON]\n${params.factsJson}`;
 	const messages = buildContext(history, prompt, question);
 	const chain = params.fastMode ? FAST_SCHEMA_CHAIN : FLASH_CHAIN;
-	const generation = await generateWithFallback(chain[0], chain, messages, params.forcedModel);
+	const generation = await generateWithFallback(
+		chain[0],
+		chain,
+		messages,
+		params.forcedModel,
+		'SchemeDescription'
+	);
 	const description = generation.text.trim();
 	if (!description) {
 		throw new Error('Scheme description response is empty');
@@ -1531,14 +1714,21 @@ ${languagePolicy(userMessage)}`;
 	const question = `Task:\n${userMessage}`;
 	const baseMessages = buildContext(history, basePrompt, question);
 	const messages = attachInlineImages(baseMessages, images);
-	const chain = images.length > 0
-		? useFastMode
-			? FAST_VISION_CHAIN
-			: VISION_CHAIN
-		: useFastMode
-			? FAST_SCHEMA_CHAIN
-			: FLASH_CHAIN;
-	const generation = await generateWithFallback(chain[0], chain, messages, params?.forcedModel);
+	const chain =
+		images.length > 0
+			? useFastMode
+				? FAST_VISION_CHAIN
+				: VISION_CHAIN
+			: useFastMode
+				? FAST_SCHEMA_CHAIN
+				: FLASH_CHAIN;
+	const generation = await generateWithFallback(
+		chain[0],
+		chain,
+		messages,
+		params?.forcedModel,
+		'UnderstandingGen'
+	);
 	const parsed = parseUnderstandingResult(generation.text);
 	return {
 		...parsed,
@@ -1574,7 +1764,13 @@ ${languagePolicy(languageSeed)}`;
 
 	const messages = buildContext(history, prompt, question);
 	const chain = params.fastMode ? FLASH_CHAIN : PRO_CHAIN;
-	const generation = await generateWithFallback(chain[0], chain, messages, params.forcedModel);
+	const generation = await generateWithFallback(
+		chain[0],
+		chain,
+		messages,
+		params.forcedModel,
+		'UnderstandingRevision'
+	);
 	const parsed = parseUnderstandingResult(generation.text, {
 		baseUnderstanding: params.currentUnderstanding
 	});
@@ -1582,7 +1778,9 @@ ${languagePolicy(languageSeed)}`;
 		...parsed,
 		model: generation.model,
 		tokens: generation.tokens,
-		usedModels: [formatTokenAttribution(generation.model, 'UnderstandingRevision', generation.tokens)]
+		usedModels: [
+			formatTokenAttribution(generation.model, 'UnderstandingRevision', generation.tokens)
+		]
 	};
 }
 
@@ -1602,12 +1800,9 @@ export async function generateInitialIntent(
 	const images = params?.images ?? (params?.imageData ? [params.imageData] : []);
 
 	if (images.length > 0) {
-		const vision = await analyzeImages(
-			history,
-			images,
-			params?.forcedModel,
-			{ fastMode: useFastMode }
-		);
+		const vision = await analyzeImages(history, images, params?.forcedModel, {
+			fastMode: useFastMode
+		});
 		usedModels.push(formatTokenAttribution(vision.model, 'Vision', vision.tokens));
 		contextMessage = `[IMAGE_DESCRIPTION]\n${vision.text}\n\n[USER_TASK]\n${userMessage}`;
 	}
@@ -1653,12 +1848,17 @@ ${languagePolicy(userMessage)}`;
 
 	if (useFastMode) {
 		const question = `Extract initial scheme intent for this task:\n${contextMessage}`;
-		const messages = buildContext(history, `${basePrompt}\nFast mode: answer in one pass.`, question);
+		const messages = buildContext(
+			history,
+			`${basePrompt}\nFast mode: answer in one pass.`,
+			question
+		);
 		const generation = await generateWithFallback(
 			FAST_SCHEMA_CHAIN[0],
 			FAST_SCHEMA_CHAIN,
 			messages,
-			params?.forcedModel
+			params?.forcedModel,
+			'IntentGen-Fast'
 		);
 		const parsed = parseIntentResult(generation.text);
 		usedModels.push(formatTokenAttribution(generation.model, 'IntentGen-Fast', generation.tokens));
@@ -1674,7 +1874,8 @@ ${languagePolicy(userMessage)}`;
 		history,
 		`${basePrompt}\nStage A objective: extract only semantic structure and topology assumptions.`,
 		`Task:\n${contextMessage}`,
-		params?.forcedModel
+		params?.forcedModel,
+		{ stage: 'IntentGen-A' }
 	);
 	usedModels.push(formatTokenAttribution(stageA.model, 'IntentGen-A', stageA.tokens));
 
@@ -1682,7 +1883,8 @@ ${languagePolicy(userMessage)}`;
 		history,
 		`${basePrompt}\nStage B objective: self-check and correct only contract violations in intent.`,
 		`Task:\n${contextMessage}\n\nCandidate intent:\n${JSON.stringify(stageA.parsed.intent, null, 2)}`,
-		params?.forcedModel
+		params?.forcedModel,
+		{ stage: 'IntentGen-B' }
 	);
 	usedModels.push(formatTokenAttribution(stageB.model, 'IntentGen-B', stageB.tokens));
 
@@ -1722,7 +1924,13 @@ ${languagePolicy(languageSeed)}`;
 	)}\n\nUser revision notes:\n${params.revisionNotes}`;
 	const messages = buildContext(history, prompt, question);
 	const chain = useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
-	const generation = await generateWithFallback(chain[0], chain, messages, params.forcedModel);
+	const generation = await generateWithFallback(
+		chain[0],
+		chain,
+		messages,
+		params.forcedModel,
+		params.fastMode ? 'IntentRevision-Fast' : 'IntentRevision'
+	);
 	const parsedRevision = parseIntentResult(generation.text, {
 		baseIntent: params.currentIntent
 	});
@@ -1732,7 +1940,9 @@ ${languagePolicy(languageSeed)}`;
 			...parsedRevision,
 			model: generation.model,
 			tokens: generation.tokens,
-			usedModels: [formatTokenAttribution(generation.model, 'IntentRevision-Fast', generation.tokens)]
+			usedModels: [
+				formatTokenAttribution(generation.model, 'IntentRevision-Fast', generation.tokens)
+			]
 		};
 	}
 
@@ -1748,7 +1958,7 @@ ${languagePolicy(languageSeed)}`,
 			2
 		)}`,
 		params.forcedModel,
-		{ useFlashChain, baseIntent: params.currentIntent }
+		{ useFlashChain, baseIntent: params.currentIntent, stage: 'IntentRevision-SelfCheck' }
 	);
 
 	return {
@@ -1790,7 +2000,13 @@ ${languagePolicy(languageSeed)}`;
 	)}`;
 	const messages = buildContext(history, prompt, question);
 	const chain = useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
-	const stage1 = await generateWithFallback(chain[0], chain, messages, params.forcedModel);
+	const stage1 = await generateWithFallback(
+		chain[0],
+		chain,
+		messages,
+		params.forcedModel,
+		params.skipSelfCheck ? 'IntentRepair-Fast' : 'IntentRepair'
+	);
 	const parsedStage1 = parseIntentResult(stage1.text, {
 		baseIntent: params.currentIntent
 	});
@@ -1812,7 +2028,7 @@ Keep only issue-driven changes.
 ${languagePolicy(languageSeed)}`,
 		`Issues:\n${issuesText}\n\nCandidate intent:\n${JSON.stringify(parsedStage1.intent, null, 2)}`,
 		params.forcedModel,
-		{ useFlashChain, baseIntent: params.currentIntent }
+		{ useFlashChain, baseIntent: params.currentIntent, stage: 'IntentRepair-SelfCheck' }
 	);
 
 	return {
@@ -1849,7 +2065,7 @@ export async function generateInitialSchema(
 		contextMessage = `[IMAGE_DESCRIPTION]\n${vision.text}\n\n[USER_TASK]\n${userMessage}`;
 	}
 
-const baseInstruction = `You build ONLY engineering schema data and must not solve the task.
+	const baseInstruction = `You build ONLY engineering schema data and must not solve the task.
 Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 schemaData MUST be version "2.0" with root keys:
 {
@@ -1919,7 +2135,8 @@ Do not run multi-stage refinement; output the best valid result immediately.`;
 			FAST_SCHEMA_CHAIN[0],
 			FAST_SCHEMA_CHAIN,
 			fastMessages,
-			params?.forcedModel
+			params?.forcedModel,
+			'SchemaGen-Fast'
 		);
 		const fastParsed = parseSchemaResult(fastStage.text);
 		usedModels.push(formatTokenAttribution(fastStage.model, 'SchemaGen-Fast', fastStage.tokens));
@@ -1936,7 +2153,15 @@ Stage A objective: create topology and constraints first.
 At this stage, prioritize node connectivity, object-node linkage, and member constraints.
 Avoid spending effort on decorative absolute coordinates.`;
 	const stageAQuestion = `Task for scheme generation (Stage A):\n${contextMessage}`;
-	const stageA = await generateSchemaStage(history, stageAPrompt, stageAQuestion, params?.forcedModel);
+	const stageA = await generateSchemaStage(
+		history,
+		stageAPrompt,
+		stageAQuestion,
+		params?.forcedModel,
+		{
+			stage: 'SchemaGen-A'
+		}
+	);
 	usedModels.push(formatTokenAttribution(stageA.model, 'SchemaGen-A', stageA.tokens));
 
 	const stageASchemaJson = JSON.stringify(stageA.parsed.schemaData, null, 2);
@@ -1967,7 +2192,15 @@ Fill canonical geometry per type:
 - if textual description names points/members/components/pairs, preserve matching labels in nodes/objects
 - T-shaped/shared joints: keep one shared nodeRef at the physical intersection for every incident member`;
 	const stageBQuestion = `Task context:\n${contextMessage}\n\nStage A schema JSON:\n${stageASchemaJson}\n\nNow return finalized schemaData v2.`;
-	const stageB = await generateSchemaStage(history, stageBPrompt, stageBQuestion, params?.forcedModel);
+	const stageB = await generateSchemaStage(
+		history,
+		stageBPrompt,
+		stageBQuestion,
+		params?.forcedModel,
+		{
+			stage: 'SchemaGen-B'
+		}
+	);
 	usedModels.push(formatTokenAttribution(stageB.model, 'SchemaGen-B', stageB.tokens));
 
 	const stageBSchemaJson = JSON.stringify(stageB.parsed.schemaData, null, 2);
@@ -1981,7 +2214,15 @@ Self-check rules:
 5) keep physical meaning from task and keep prior valid details
 6) for T-shaped/shared joints, incident members must share the actual node id; split a through member at the joint instead of using coincident nodes or member attach`;
 	const stageCQuestion = `Task context:\n${contextMessage}\n\nCandidate schema JSON:\n${stageBSchemaJson}\n\nReturn corrected final schemaData v2.`;
-	const stageC = await generateSchemaStage(history, stageCPrompt, stageCQuestion, params?.forcedModel);
+	const stageC = await generateSchemaStage(
+		history,
+		stageCPrompt,
+		stageCQuestion,
+		params?.forcedModel,
+		{
+			stage: 'SchemaGen-C'
+		}
+	);
 	usedModels.push(formatTokenAttribution(stageC.model, 'SchemaGen-C', stageC.tokens));
 
 	const parsed = stageC.parsed;
@@ -2008,7 +2249,7 @@ export async function reviseSchema(
 ): Promise<SchemaGenerationResult> {
 	const languageSeed = `${params.originalPrompt}\n${params.revisionNotes}`;
 	const useFlashChain = params.fastMode === true;
-const prompt = `You revise ONLY the engineering scheme and must not solve the task.
+	const prompt = `You revise ONLY the engineering scheme and must not solve the task.
 Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 Preserve correct existing elements and update only what is needed per revision notes.
 Keep schemaData.version = "2.0" and finite numbers.
@@ -2048,14 +2289,22 @@ ${languagePolicy(languageSeed)}`;
 	const messages = buildContext(history, prompt, question);
 
 	const generationChain = useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
-	const generation = await generateWithFallback(generationChain[0], generationChain, messages, params.forcedModel);
+	const generation = await generateWithFallback(
+		generationChain[0],
+		generationChain,
+		messages,
+		params.forcedModel,
+		params.fastMode ? 'SchemaRevision-Fast' : 'SchemaRevision'
+	);
 	const parsedRevision = parseSchemaResult(generation.text);
 	if (params.fastMode) {
 		return {
 			...parsedRevision,
 			model: generation.model,
 			tokens: generation.tokens,
-			usedModels: [formatTokenAttribution(generation.model, 'SchemaRevision-Fast', generation.tokens)]
+			usedModels: [
+				formatTokenAttribution(generation.model, 'SchemaRevision-Fast', generation.tokens)
+			]
 		};
 	}
 	const stage2Prompt = `You perform final schema self-check for contract v2.
@@ -2065,9 +2314,16 @@ Fix only structural issues: invalid/missing nodeRefs, wrong type names, empty id
 For T-shaped/shared joints, preserve or restore one shared nodeRef at the physical intersection for every incident member.
 ${languagePolicy(languageSeed)}`;
 	const stage2Question = `Original task:\n${params.originalPrompt}\n\nRevision notes:\n${params.revisionNotes}\n\nCandidate revised schema:\n${JSON.stringify(parsedRevision.schemaData, null, 2)}`;
-	const stage2 = await generateSchemaStage(history, stage2Prompt, stage2Question, params.forcedModel, {
-		useFlashChain
-	});
+	const stage2 = await generateSchemaStage(
+		history,
+		stage2Prompt,
+		stage2Question,
+		params.forcedModel,
+		{
+			useFlashChain,
+			stage: 'SchemaRevision-SelfCheck'
+		}
+	);
 
 	return {
 		...stage2.parsed,
@@ -2116,7 +2372,13 @@ ${languagePolicy(languageSeed)}`;
 	const question = `Original task:\n${params.originalPrompt}\n\nIssues to fix:\n${issuesText}\n\nCurrent schema JSON:\n${JSON.stringify(params.currentSchema, null, 2)}`;
 	const messages = buildContext(history, prompt, question);
 	const chain = useFlashChain ? FLASH_CHAIN : PRO_CHAIN;
-	const stage1 = await generateWithFallback(chain[0], chain, messages, params.forcedModel);
+	const stage1 = await generateWithFallback(
+		chain[0],
+		chain,
+		messages,
+		params.forcedModel,
+		params.skipSelfCheck ? 'SchemaRepair-Fast' : 'SchemaRepair'
+	);
 	const stage1Parsed = parseSchemaResult(stage1.text);
 	if (params.skipSelfCheck) {
 		return {
@@ -2132,9 +2394,16 @@ Return strict JSON object with keys: schemaData, assumptions, ambiguities.
 Keep only issue-driven changes and preserve previously valid structure.
 ${languagePolicy(languageSeed)}`;
 	const stage2Question = `Issues:\n${issuesText}\n\nCandidate schema:\n${JSON.stringify(stage1Parsed.schemaData, null, 2)}`;
-	const stage2 = await generateSchemaStage(history, stage2Prompt, stage2Question, params.forcedModel, {
-		useFlashChain
-	});
+	const stage2 = await generateSchemaStage(
+		history,
+		stage2Prompt,
+		stage2Question,
+		params.forcedModel,
+		{
+			useFlashChain,
+			stage: 'SchemaRepair-SelfCheck'
+		}
+	);
 
 	return {
 		...stage2.parsed,
@@ -2146,4 +2415,3 @@ ${languagePolicy(languageSeed)}`;
 		]
 	};
 }
-

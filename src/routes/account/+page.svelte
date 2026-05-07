@@ -2,11 +2,73 @@
 	import { resolve } from '$app/paths';
 
 	let { data, form } = $props();
+	let billingBusy = $state(false);
+	let billingMessage = $state('');
+
+	function formatUsd(value: unknown) {
+		const numeric = Number(value ?? 0);
+		return `$${(Number.isFinite(numeric) ? numeric : 0).toFixed(2)}`;
+	}
+
+	function formatRub(value: unknown) {
+		const numeric = Number(value ?? 0);
+		return `${(Number.isFinite(numeric) ? numeric : 0).toLocaleString('ru-RU')} ₽`;
+	}
+
+	function formatDate(value: unknown) {
+		if (!value) return '—';
+		const date = new Date(String(value));
+		if (Number.isNaN(date.getTime())) return '—';
+		return date.toLocaleDateString('ru-RU');
+	}
 
 	async function logout() {
 		const res = await fetch('/api/auth/logout', { method: 'POST' });
 		if (res.ok) {
 			window.location.href = '/login';
+		}
+	}
+
+	async function checkout(planCode: string) {
+		billingBusy = true;
+		billingMessage = '';
+		try {
+			const res = await fetch('/api/billing/checkout', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					planCode,
+					returnUrl: `${window.location.origin}/account?billing=return`
+				})
+			});
+			const payload = await res.json().catch(() => ({}));
+			if (!res.ok) {
+				billingMessage = payload?.message || 'Не удалось создать платеж.';
+				return;
+			}
+			if (payload.confirmationUrl) {
+				window.location.href = payload.confirmationUrl;
+				return;
+			}
+			billingMessage = 'Платеж создан.';
+		} finally {
+			billingBusy = false;
+		}
+	}
+
+	async function cancelSubscription() {
+		billingBusy = true;
+		billingMessage = '';
+		try {
+			const res = await fetch('/api/billing/cancel', { method: 'POST' });
+			if (res.ok) {
+				window.location.reload();
+				return;
+			}
+			const payload = await res.json().catch(() => ({}));
+			billingMessage = payload?.message || 'Не удалось отменить автопродление.';
+		} finally {
+			billingBusy = false;
 		}
 	}
 </script>
@@ -15,8 +77,15 @@
 	<div class="account-card">
 		<header class="account-header">
 			<a href={resolve('/')} class="back-link">
-				<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-					<path d="M19 12H5M12 19l-7-7 7-7"/>
+				<svg
+					width="20"
+					height="20"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+				>
+					<path d="M19 12H5M12 19l-7-7 7-7" />
 				</svg>
 				Назад к чату
 			</a>
@@ -50,10 +119,90 @@
 			</div>
 		</div>
 
+		<section class="billing-section">
+			<div class="billing-heading">
+				<h2>Тариф и использование</h2>
+				<span class="billing-plan">{data.billing?.subscription?.plan?.name ?? 'Free'}</span>
+			</div>
+			<div class="usage-grid">
+				<div>
+					<span>Период</span>
+					<strong
+						>{formatDate(data.billing?.subscription?.currentPeriodStart)} – {formatDate(
+							data.billing?.subscription?.currentPeriodEnd
+						)}</strong
+					>
+				</div>
+				<div>
+					<span>AI-бюджет</span>
+					<strong
+						>{formatUsd(data.billing?.usage?.usedUsd)} / {formatUsd(
+							data.billing?.usage?.includedUsd
+						)}</strong
+					>
+				</div>
+				<div>
+					<span>Остаток</span>
+					<strong>{formatUsd(data.billing?.usage?.remainingUsd)}</strong>
+				</div>
+				<div>
+					<span>Запросы</span>
+					<strong
+						>{data.billing?.usage?.requestCount ?? 0} / {data.billing?.usage?.monthlyRequestLimit ??
+							'∞'}</strong
+					>
+				</div>
+			</div>
+
+			{#if billingMessage}
+				<div class="form-message error">{billingMessage}</div>
+			{/if}
+
+			<div class="plan-list">
+				{#each data.plans ?? [] as plan}
+					<div class="plan-row">
+						<div>
+							<strong>{plan.name}</strong>
+							<span
+								>{formatRub(plan.priceRub)} / месяц · AI-бюджет {formatUsd(plan.includedUsd)}</span
+							>
+						</div>
+						{#if plan.code === data.billing?.subscription?.plan?.code}
+							<span class="current-plan">Текущий</span>
+						{:else if Number(plan.priceRubKopecks) > 0}
+							<button
+								class="compact-btn"
+								type="button"
+								disabled={billingBusy}
+								onclick={() => checkout(plan.code)}
+							>
+								Подключить
+							</button>
+						{/if}
+					</div>
+				{/each}
+			</div>
+
+			{#if data.billing?.subscription?.plan?.code !== 'free'}
+				<button
+					class="secondary-btn billing-cancel"
+					type="button"
+					disabled={billingBusy || data.billing?.subscription?.cancelAtPeriodEnd}
+					onclick={cancelSubscription}
+				>
+					{data.billing?.subscription?.cancelAtPeriodEnd
+						? 'Автопродление отключено'
+						: 'Отключить автопродление'}
+				</button>
+			{/if}
+		</section>
+
 		<form method="POST" action="?/updateName" class="account-form">
 			<h2>Никнейм</h2>
 			{#if form?.action === 'updateName' && form?.message}
-				<div class={form?.success ? 'form-message success' : 'form-message error'}>{form.message}</div>
+				<div class={form?.success ? 'form-message success' : 'form-message error'}>
+					{form.message}
+				</div>
 			{/if}
 			<div class="form-group">
 				<label for="name">Никнейм</label>
@@ -61,7 +210,9 @@
 					type="text"
 					id="name"
 					name="name"
-					value={form?.action === 'updateName' ? (form?.name ?? data.user?.name ?? '') : (data.user?.name ?? '')}
+					value={form?.action === 'updateName'
+						? (form?.name ?? data.user?.name ?? '')
+						: (data.user?.name ?? '')}
 					maxlength="80"
 					required
 				/>
@@ -72,7 +223,9 @@
 		<form method="POST" action="?/requestPasswordReset" class="account-form">
 			<h2>Пароль</h2>
 			{#if form?.action === 'requestPasswordReset' && form?.message}
-				<div class={form?.success ? 'form-message success' : 'form-message error'}>{form.message}</div>
+				<div class={form?.success ? 'form-message success' : 'form-message error'}>
+					{form.message}
+				</div>
 			{/if}
 			<p class="form-note">Ссылка для смены пароля придёт на вашу электронную почту.</p>
 			<p class="form-note">Письмо может прийти в папку "Спам".</p>
@@ -80,8 +233,15 @@
 		</form>
 
 		<button class="logout-btn" onclick={logout}>
-			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-				<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>
+			<svg
+				width="18"
+				height="18"
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="2"
+			>
+				<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />
 			</svg>
 			Выйти из системы
 		</button>
@@ -97,11 +257,8 @@
 		max-height: 100dvh;
 		overflow-y: auto;
 		background: var(--bg-base);
-		padding:
-			calc(1.5rem + env(safe-area-inset-top))
-			calc(1.5rem + env(safe-area-inset-right))
-			calc(1.5rem + env(safe-area-inset-bottom))
-			calc(1.5rem + env(safe-area-inset-left));
+		padding: calc(1.5rem + env(safe-area-inset-top)) calc(1.5rem + env(safe-area-inset-right))
+			calc(1.5rem + env(safe-area-inset-bottom)) calc(1.5rem + env(safe-area-inset-left));
 	}
 
 	.account-card {
@@ -195,6 +352,109 @@
 		flex-direction: column;
 		gap: 1rem;
 		margin-bottom: 2.5rem;
+	}
+
+	.billing-section {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+		padding-bottom: 1.8rem;
+		margin-bottom: 1.8rem;
+		border-bottom: 1px solid var(--border-subtle);
+	}
+
+	.billing-heading {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+	}
+
+	.billing-heading h2 {
+		margin: 0;
+		color: var(--text-primary);
+		font-size: 1.05rem;
+		font-weight: 700;
+	}
+
+	.billing-plan,
+	.current-plan {
+		color: var(--accent-primary);
+		font-size: 0.84rem;
+		font-weight: 800;
+	}
+
+	.usage-grid {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.75rem;
+	}
+
+	.usage-grid div {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		padding: 0.75rem 0;
+		border-bottom: 1px dashed var(--border-subtle);
+	}
+
+	.usage-grid span,
+	.plan-row span {
+		color: var(--text-secondary);
+		font-size: 0.82rem;
+		line-height: 1.35;
+	}
+
+	.usage-grid strong,
+	.plan-row strong {
+		color: var(--text-primary);
+		font-size: 0.9rem;
+	}
+
+	.plan-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+	}
+
+	.plan-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0.8rem 0;
+		border-bottom: 1px dashed var(--border-subtle);
+	}
+
+	.plan-row div {
+		display: flex;
+		min-width: 0;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.compact-btn {
+		flex: 0 0 auto;
+		padding: 0.55rem 0.8rem;
+		background: var(--accent-primary);
+		color: var(--bg-base);
+		border: none;
+		border-radius: var(--radius-md);
+		font-size: 0.82rem;
+		font-weight: 800;
+		cursor: pointer;
+	}
+
+	.compact-btn:disabled,
+	.billing-cancel:disabled {
+		cursor: not-allowed;
+		opacity: 0.6;
+	}
+
+	.billing-cancel {
+		background: transparent;
+		color: var(--text-primary);
+		border: 1px solid var(--border-subtle);
 	}
 
 	.detail-item {
@@ -335,18 +595,21 @@
 	}
 
 	@keyframes fadeInUp {
-		from { opacity: 0; transform: translateY(10px); }
-		to { opacity: 1; transform: translateY(0); }
+		from {
+			opacity: 0;
+			transform: translateY(10px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
 	}
 
 	@media (max-width: 640px) {
 		.account-container {
 			align-items: stretch;
-			padding:
-				calc(0.75rem + env(safe-area-inset-top))
-				calc(0.75rem + env(safe-area-inset-right))
-				calc(0.75rem + env(safe-area-inset-bottom))
-				calc(0.75rem + env(safe-area-inset-left));
+			padding: calc(0.75rem + env(safe-area-inset-top)) calc(0.75rem + env(safe-area-inset-right))
+				calc(0.75rem + env(safe-area-inset-bottom)) calc(0.75rem + env(safe-area-inset-left));
 		}
 
 		.account-card {
@@ -397,6 +660,21 @@
 		.account-details {
 			gap: 0;
 			margin-bottom: 2rem;
+		}
+
+		.usage-grid {
+			grid-template-columns: 1fr;
+			gap: 0;
+		}
+
+		.plan-row {
+			align-items: flex-start;
+			flex-direction: column;
+		}
+
+		.compact-btn {
+			width: 100%;
+			min-height: 44px;
 		}
 
 		.detail-item {

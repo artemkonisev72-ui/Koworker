@@ -22,10 +22,20 @@ import {
 	ChatProcessingConflictError,
 	type ChatProcessingHandle
 } from '$lib/server/chat-processing.js';
-import { canConfirmStatus, loadGeminiHistory, logSchemaCheck, parseImageData } from '$lib/server/schema/flow.js';
+import {
+	canConfirmStatus,
+	loadGeminiHistory,
+	logSchemaCheck,
+	parseImageData
+} from '$lib/server/schema/flow.js';
 import type { ChatImage } from '$lib/chat/images.js';
+import { assertCanStartAiRequest } from '$lib/server/billing/subscriptions.js';
+import { createBillingPipelineRunId, runWithAiBillingContext } from '$lib/server/billing/usage.js';
+import { BillingAccessError } from '$lib/server/billing/types.js';
 
-function isResultEvent(event: PipelineStatus): event is Extract<PipelineStatus, { type: 'result' }> {
+function isResultEvent(
+	event: PipelineStatus
+): event is Extract<PipelineStatus, { type: 'result' }> {
 	return event.type === 'result';
 }
 
@@ -104,6 +114,7 @@ if (!globalSolveState._schemaSolveTasks) {
 }
 
 function launchSchemaSolveInBackground(params: {
+	userId: string;
 	draftId: string;
 	chatId: string;
 	userMessage: string;
@@ -114,6 +125,7 @@ function launchSchemaSolveInBackground(params: {
 	revisionNotes: string[];
 	images?: ChatImage[];
 	forcedModel?: string | null;
+	pipelineRunId: string;
 	startedAt: number;
 	processingHandle: ChatProcessingHandle;
 }): void {
@@ -127,17 +139,27 @@ function launchSchemaSolveInBackground(params: {
 	const task = (async () => {
 		try {
 			const history = await loadGeminiHistory(params.chatId);
-			const resultEvent = await runSolveWithGate({
-				userMessage: params.userMessage,
-				approvedSchema: params.approvedSchema,
-				approvedSchemeDescription: params.approvedSchemeDescription,
-				solverModel: params.solverModel,
-				revisionNotes: params.revisionNotes,
-				history,
-				images: params.images,
-				forcedModel: params.forcedModel,
-				onStatus: (status) => params.processingHandle.updateStatus(status)
-			});
+			const resultEvent = await runWithAiBillingContext(
+				{
+					userId: params.userId,
+					chatId: params.chatId,
+					draftId: params.draftId,
+					pipelineRunId: params.pipelineRunId
+				},
+				() => {
+					return runSolveWithGate({
+						userMessage: params.userMessage,
+						approvedSchema: params.approvedSchema,
+						approvedSchemeDescription: params.approvedSchemeDescription,
+						solverModel: params.solverModel,
+						revisionNotes: params.revisionNotes,
+						history,
+						images: params.images,
+						forcedModel: params.forcedModel,
+						onStatus: (status) => params.processingHandle.updateStatus(status)
+					});
+				}
+			);
 			params.processingHandle.updateStatus('Сохраняю результат решения...');
 			logSchemaCheck('confirm.pipeline_result', {
 				draftId: params.draftId,
@@ -163,7 +185,9 @@ function launchSchemaSolveInBackground(params: {
 						generatedCode: resultEvent.generatedCode ?? null,
 						executionLogs: resultEvent.executionLogs ?? null,
 						graphData: resultEvent.graphData ? JSON.stringify(resultEvent.graphData) : undefined,
-						exactAnswers: resultEvent.exactAnswers ? JSON.stringify(resultEvent.exactAnswers) : undefined,
+						exactAnswers: resultEvent.exactAnswers
+							? JSON.stringify(resultEvent.exactAnswers)
+							: undefined,
 						schemaData: resultEvent.schemaData ? JSON.stringify(resultEvent.schemaData) : undefined,
 						schemaDescription:
 							typeof resultEvent.schemaDescription === 'string'
@@ -234,7 +258,8 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	});
 
 	if (!draft) return error(404, 'Draft not found');
-	if (draft.userId !== locals.user.id || draft.chat.userId !== locals.user.id) return error(403, 'Нет доступа к этому черновику.');
+	if (draft.userId !== locals.user.id || draft.chat.userId !== locals.user.id)
+		return error(403, 'Нет доступа к этому черновику.');
 	logSchemaCheck('confirm.draft_loaded', {
 		draftId: draft.id,
 		chatId: draft.chatId,
@@ -323,7 +348,10 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 					draftId: draft.id,
 					errors: schemaValidation.errors
 				});
-				return error(422, `Approved schema validation failed: ${schemaValidation.errors.join('; ')}`);
+				return error(
+					422,
+					`Approved schema validation failed: ${schemaValidation.errors.join('; ')}`
+				);
 			}
 			approvedSchemaValue = schemaValidation.value;
 			approvedSchemaVersion = schemaValidation.version ?? '2.0';
@@ -356,6 +384,18 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 				? normalizeModelPreference(requestedModelPreference)
 				: normalizeModelPreference(draft.chat.modelPreference);
 		const forcedModel = toForcedModel(effectiveModelPreference);
+		try {
+			await assertCanStartAiRequest({
+				userId: locals.user.id,
+				modelPreference: effectiveModelPreference
+			});
+		} catch (billingError) {
+			if (billingError instanceof BillingAccessError) {
+				return error(billingError.status, billingError.message);
+			}
+			throw billingError;
+		}
+		const pipelineRunId = createBillingPipelineRunId('schema_confirm');
 		logSchemaCheck('confirm.model_resolved', {
 			draftId: draft.id,
 			chatId: draft.chatId,
@@ -368,18 +408,31 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 			.map((revision: { userNotes?: string | null }) => revision.userNotes?.trim())
 			.filter((note: string | undefined): note is string => Boolean(note));
 		let approvedSchemeDescription =
-			typeof draft.currentSchemeDescription === 'string' ? draft.currentSchemeDescription.trim() : '';
+			typeof draft.currentSchemeDescription === 'string'
+				? draft.currentSchemeDescription.trim()
+				: '';
 		if (!approvedSchemeDescription && approvedUnderstanding) {
 			const understandingValidation = validateSchemeUnderstanding(approvedUnderstanding);
 			if (understandingValidation.ok && understandingValidation.value) {
-				const descriptionResult = await buildAdaptiveSchemeDescription({
-					schema: approvedSchemaValue,
-					language: understandingValidation.value.source.language,
-					understanding: understandingValidation.value,
-					assumptions: understandingValidation.value.assumptions,
-					forcedModel,
-					fastMode: true
-				});
+				const understanding = understandingValidation.value;
+				const descriptionResult = await runWithAiBillingContext(
+					{
+						userId: locals.user.id,
+						chatId: draft.chatId,
+						draftId: draft.id,
+						pipelineRunId
+					},
+					() => {
+						return buildAdaptiveSchemeDescription({
+							schema: approvedSchemaValue,
+							language: understanding.source.language,
+							understanding,
+							assumptions: understanding.assumptions,
+							forcedModel,
+							fastMode: true
+						});
+					}
+				);
 				approvedSchemeDescription = descriptionResult.description;
 			}
 		}
@@ -404,6 +457,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 
 		processingHandle.updateStatus('Solve started. Waiting for result...');
 		launchSchemaSolveInBackground({
+			userId: locals.user.id,
 			draftId: draft.id,
 			chatId: draft.chatId,
 			userMessage: draft.originalPrompt,
@@ -414,6 +468,7 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 			revisionNotes,
 			images: parseImageData(draft.originalImageData),
 			forcedModel,
+			pipelineRunId,
 			startedAt,
 			processingHandle
 		});

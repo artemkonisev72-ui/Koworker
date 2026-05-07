@@ -26,7 +26,12 @@ import {
 	ChatProcessingConflictError,
 	type ChatProcessingHandle
 } from '$lib/server/chat-processing.js';
-import { canConfirmStatus, loadGeminiHistory, logSchemaCheck, parseImageData } from '$lib/server/schema/flow.js';
+import {
+	canConfirmStatus,
+	loadGeminiHistory,
+	logSchemaCheck,
+	parseImageData
+} from '$lib/server/schema/flow.js';
 import {
 	ClientSandboxResultError,
 	cancelClientSandboxRequest,
@@ -34,6 +39,9 @@ import {
 } from '$lib/server/sandbox/client-bridge.js';
 import { executeFallbackSandbox } from '$lib/server/sandbox/fallback-executor.js';
 import { SandboxError } from '$lib/server/sandbox/worker-pool.js';
+import { assertCanStartAiRequest } from '$lib/server/billing/subscriptions.js';
+import { createBillingPipelineRunId, runWithAiBillingContext } from '$lib/server/billing/usage.js';
+import { BillingAccessError } from '$lib/server/billing/types.js';
 
 const CLIENT_SANDBOX_TIMEOUT_MS = 20_000;
 const CLIENT_SANDBOX_EXECUTION_TIMEOUT_MS = 18_000;
@@ -55,7 +63,9 @@ type SandboxRequestEvent = {
 
 type OutboundEvent = PipelineStatus | SandboxRequestEvent;
 
-function isResultEvent(event: PipelineStatus): event is Extract<PipelineStatus, { type: 'result' }> {
+function isResultEvent(
+	event: PipelineStatus
+): event is Extract<PipelineStatus, { type: 'result' }> {
 	return event.type === 'result';
 }
 
@@ -127,7 +137,8 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 	});
 
 	if (!draft) return error(404, 'Draft not found');
-	if (draft.userId !== userId || draft.chat.userId !== userId) return error(403, 'Нет доступа к этому черновику.');
+	if (draft.userId !== userId || draft.chat.userId !== userId)
+		return error(403, 'Нет доступа к этому черновику.');
 	if (draft.status === 'SOLVING') return error(409, 'Draft is already solving');
 	if (draft.status === 'SOLVED') return error(409, 'Draft is already solved');
 	if (!canConfirmStatus(draft.status)) {
@@ -185,7 +196,10 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 		if (!approvedSchemaValue) {
 			const schemaValidation = validateSchemaAny(draft.currentSchema);
 			if (!schemaValidation.ok || !schemaValidation.value) {
-				return error(422, `Approved schema validation failed: ${schemaValidation.errors.join('; ')}`);
+				return error(
+					422,
+					`Approved schema validation failed: ${schemaValidation.errors.join('; ')}`
+				);
 			}
 			approvedSchemaValue = schemaValidation.value;
 			approvedSchemaVersion = schemaValidation.version ?? '2.0';
@@ -215,23 +229,45 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 				? normalizeModelPreference(requestedModelPreference)
 				: normalizeModelPreference(draft.chat.modelPreference);
 		const forcedModel = toForcedModel(effectiveModelPreference);
+		try {
+			await assertCanStartAiRequest({ userId, modelPreference: effectiveModelPreference });
+		} catch (billingError) {
+			if (billingError instanceof BillingAccessError) {
+				return error(billingError.status, billingError.message);
+			}
+			throw billingError;
+		}
+		const pipelineRunId = createBillingPipelineRunId('schema_confirm_stream');
 		const revisionNotes = draft.revisions
 			.map((revision: { userNotes?: string | null }) => revision.userNotes?.trim())
 			.filter((note: string | undefined): note is string => Boolean(note));
 
 		let approvedSchemeDescription =
-			typeof draft.currentSchemeDescription === 'string' ? draft.currentSchemeDescription.trim() : '';
+			typeof draft.currentSchemeDescription === 'string'
+				? draft.currentSchemeDescription.trim()
+				: '';
 		if (!approvedSchemeDescription && approvedUnderstanding) {
 			const understandingValidation = validateSchemeUnderstanding(approvedUnderstanding);
 			if (understandingValidation.ok && understandingValidation.value) {
-				const descriptionResult = await buildAdaptiveSchemeDescription({
-					schema: approvedSchemaValue,
-					language: understandingValidation.value.source.language,
-					understanding: understandingValidation.value,
-					assumptions: understandingValidation.value.assumptions,
-					forcedModel,
-					fastMode: true
-				});
+				const understanding = understandingValidation.value;
+				const descriptionResult = await runWithAiBillingContext(
+					{
+						userId,
+						chatId: draft.chatId,
+						draftId: draft.id,
+						pipelineRunId
+					},
+					() => {
+						return buildAdaptiveSchemeDescription({
+							schema: approvedSchemaValue,
+							language: understanding.source.language,
+							understanding,
+							assumptions: understanding.assumptions,
+							forcedModel,
+							fastMode: true
+						});
+					}
+				);
 				approvedSchemeDescription = descriptionResult.description;
 			}
 		}
@@ -402,68 +438,82 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 				void (async () => {
 					try {
 						const history = await loadGeminiHistory(draft.chatId);
-						await runPipelineWithApprovedSchema(
+						await runWithAiBillingContext(
 							{
-								userMessage: draft.originalPrompt,
-								approvedSchema: approvedSchemaValue!,
-								approvedSchemeDescription: approvedSchemeDescription || null,
-								solverModel,
-								revisionNotes
+								userId,
+								chatId: draft.chatId,
+								draftId: draft.id,
+								pipelineRunId
 							},
-							history,
-							async (event) => {
-								if (event.type === 'status') {
-									processingHandle.updateStatus(event.message);
-									send(event);
-									return;
-								}
+							() =>
+								runPipelineWithApprovedSchema(
+									{
+										userMessage: draft.originalPrompt,
+										approvedSchema: approvedSchemaValue!,
+										approvedSchemeDescription: approvedSchemeDescription || null,
+										solverModel,
+										revisionNotes
+									},
+									history,
+									async (event) => {
+										if (event.type === 'status') {
+											processingHandle.updateStatus(event.message);
+											send(event);
+											return;
+										}
 
-								if (event.type === 'error') {
-									await rollbackCurrentSolve(event.message ?? 'Schema solve failed');
-									send(event);
-									return;
-								}
+										if (event.type === 'error') {
+											await rollbackCurrentSolve(event.message ?? 'Schema solve failed');
+											send(event);
+											return;
+										}
 
-								if (!isResultEvent(event)) {
-									send(event);
-									return;
-								}
+										if (!isResultEvent(event)) {
+											send(event);
+											return;
+										}
 
-								const assistantMessage = await db.message.create({
-									data: {
-										chatId: draft.chatId,
-										draftId: draft.id,
-										role: 'ASSISTANT',
-										content: event.content,
-										generatedCode: event.generatedCode ?? null,
-										executionLogs: event.executionLogs ?? null,
-										graphData: event.graphData ? JSON.stringify(event.graphData) : undefined,
-										exactAnswers: event.exactAnswers ? JSON.stringify(event.exactAnswers) : undefined,
-										schemaData: event.schemaData ? JSON.stringify(event.schemaData) : undefined,
-										schemaDescription:
-											typeof event.schemaDescription === 'string' ? event.schemaDescription : undefined,
-										schemaVersion: event.schemaVersion ?? approvedSchemaVersion,
-										usedModels: event.usedModels ? JSON.stringify(event.usedModels) : undefined
-									}
-								});
+										const assistantMessage = await db.message.create({
+											data: {
+												chatId: draft.chatId,
+												draftId: draft.id,
+												role: 'ASSISTANT',
+												content: event.content,
+												generatedCode: event.generatedCode ?? null,
+												executionLogs: event.executionLogs ?? null,
+												graphData: event.graphData ? JSON.stringify(event.graphData) : undefined,
+												exactAnswers: event.exactAnswers
+													? JSON.stringify(event.exactAnswers)
+													: undefined,
+												schemaData: event.schemaData ? JSON.stringify(event.schemaData) : undefined,
+												schemaDescription:
+													typeof event.schemaDescription === 'string'
+														? event.schemaDescription
+														: undefined,
+												schemaVersion: event.schemaVersion ?? approvedSchemaVersion,
+												usedModels: event.usedModels ? JSON.stringify(event.usedModels) : undefined
+											}
+										});
 
-								await db.taskDraft.update({
-									where: { id: draft.id },
-									data: { status: 'SOLVED' }
-								});
-								solveSucceeded = true;
+										await db.taskDraft.update({
+											where: { id: draft.id },
+											data: { status: 'SOLVED' }
+										});
+										solveSucceeded = true;
 
-								send({
-									...event,
-									messageId: assistantMessage.id
-								});
-							},
-							parseImageData(draft.originalImageData),
-							forcedModel,
-							{ sandboxExecutor: requestSandboxExecution }
+										send({
+											...event,
+											messageId: assistantMessage.id
+										});
+									},
+									parseImageData(draft.originalImageData),
+									forcedModel,
+									{ sandboxExecutor: requestSandboxExecution }
+								)
 						);
 					} catch (pipelineError) {
-						const messageText = pipelineError instanceof Error ? pipelineError.message : String(pipelineError);
+						const messageText =
+							pipelineError instanceof Error ? pipelineError.message : String(pipelineError);
 						await rollbackCurrentSolve(messageText);
 						send({ type: 'error', message: messageText });
 					} finally {

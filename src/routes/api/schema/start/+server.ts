@@ -1,10 +1,7 @@
 import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
 import { prisma } from '$lib/server/db.js';
-import {
-	generateInitialSchemeUnderstanding,
-	repairIntentByIssues
-} from '$lib/server/ai/gemini.js';
+import { generateInitialSchemeUnderstanding, repairIntentByIssues } from '$lib/server/ai/gemini.js';
 import {
 	isModelPreference,
 	normalizeModelPreference,
@@ -40,6 +37,9 @@ import {
 } from '$lib/chat/images.js';
 import { prepareMessageAttachments } from '$lib/server/attachments.js';
 import type { ChatAttachmentInput } from '$lib/chat/attachments.js';
+import { assertCanStartAiRequest } from '$lib/server/billing/subscriptions.js';
+import { createBillingPipelineRunId, runWithAiBillingContext } from '$lib/server/billing/usage.js';
+import { BillingAccessError } from '$lib/server/billing/types.js';
 
 interface StartSchemaBody {
 	chatId?: string;
@@ -68,14 +68,20 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	const chatId = body.chatId;
 	const message = body.message ?? '';
 	const images = normalizeRequestImages(body);
-	const hasAttachments = Array.isArray(body.attachments) ? body.attachments.length > 0 : Boolean(body.attachments);
+	const hasAttachments = Array.isArray(body.attachments)
+		? body.attachments.length > 0
+		: Boolean(body.attachments);
 	logSchemaCheck('start.request', {
 		userId,
 		chatId,
 		mode: body.mode ?? 'schema_check',
 		messageLength: message.length,
 		imageCount: images.length,
-		attachmentCount: Array.isArray(body.attachments) ? body.attachments.length : hasAttachments ? 1 : 0
+		attachmentCount: Array.isArray(body.attachments)
+			? body.attachments.length
+			: hasAttachments
+				? 1
+				: 0
 	});
 
 	if (!chatId) return error(400, 'Нужен идентификатор чата.');
@@ -123,6 +129,14 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 		effectiveModelPreference,
 		forcedModel
 	});
+	try {
+		await assertCanStartAiRequest({ userId, modelPreference: effectiveModelPreference });
+	} catch (billingError) {
+		if (billingError instanceof BillingAccessError) {
+			return error(billingError.status, billingError.message);
+		}
+		throw billingError;
+	}
 
 	let preparedAttachments: Awaited<ReturnType<typeof prepareMessageAttachments>>;
 	try {
@@ -132,9 +146,13 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			existingImageCount: images.length
 		});
 	} catch (attachmentError) {
-		const messageText = attachmentError instanceof Error ? attachmentError.message : String(attachmentError);
+		const messageText =
+			attachmentError instanceof Error ? attachmentError.message : String(attachmentError);
 		logSchemaCheck('start.validation_error', { userId, chatId, reason: messageText });
-		return error(messageText.includes('больш') || messageText.includes('размер') ? 413 : 400, messageText);
+		return error(
+			messageText.includes('больш') || messageText.includes('размер') ? 413 : 400,
+			messageText
+		);
 	}
 
 	const aiImages = [...images, ...preparedAttachments.renderedImages];
@@ -158,7 +176,10 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 	});
 	if (combinedImageError) {
 		logSchemaCheck('start.validation_error', { userId, chatId, reason: combinedImageError });
-		return error(combinedImageError.toLowerCase().includes('больш') ? 413 : 400, combinedImageError);
+		return error(
+			combinedImageError.toLowerCase().includes('больш') ? 413 : 400,
+			combinedImageError
+		);
 	}
 
 	let processingHandle: ChatProcessingHandle;
@@ -222,203 +243,226 @@ export const POST: RequestHandler = async ({ locals, request }) => {
 			status: draft.status
 		});
 
-		const generatedUnderstanding = await generateInitialSchemeUnderstanding([], preparedAttachments.augmentedPrompt, {
-			images: aiImages,
-			forcedModel,
-			fastMode: false
-		});
-		processingHandle.updateStatus('Compiling initial scheme...');
-		logSchemaCheck('start.understanding_generated', {
-			draftId: draft.id,
-			model: generatedUnderstanding.model,
-			tokens: generatedUnderstanding.tokens,
-			assumptions: generatedUnderstanding.assumptions.length,
-			ambiguities: generatedUnderstanding.ambiguities.length
-		});
-
-		let finalUnderstanding = generatedUnderstanding.understanding;
-		let finalIntent = schemeUnderstandingToIntent(finalUnderstanding);
-		let assumptions = [...generatedUnderstanding.assumptions];
-		let ambiguities = [...generatedUnderstanding.ambiguities];
-		const usedModels = [...generatedUnderstanding.usedModels];
-		let compiledSchema: ReturnType<typeof compileSchemeIntent> | null = null;
-
-		try {
-			compiledSchema = compileSchemeIntent(finalIntent);
-		} catch (compileErr) {
-			if (!(compileErr instanceof SchemeIntentCompileError)) throw compileErr;
-			const repairIssues = compileErr.issues.slice(0, 6);
-			logSchemaCheck('start.intent_repair_requested', {
+		return await runWithAiBillingContext(
+			{
+				userId,
+				chatId,
+				messageId: userMessage.id,
 				draftId: draft.id,
-				errorCount: compileErr.issues.length,
-				issues: repairIssues
-			});
-			if (repairIssues.length > 0) {
-				try {
-					const repaired = await repairIntentByIssues([], {
-						originalPrompt: message,
-						currentIntent: finalIntent,
-						issues: repairIssues,
+				pipelineRunId: createBillingPipelineRunId('schema_start')
+			},
+			async () => {
+				const generatedUnderstanding = await generateInitialSchemeUnderstanding(
+					[],
+					preparedAttachments.augmentedPrompt,
+					{
+						images: aiImages,
 						forcedModel,
-						fastMode: true,
-						skipSelfCheck: true
-					});
-					compiledSchema = compileSchemeIntent(repaired.intent);
-					finalIntent = repaired.intent;
-					finalUnderstanding = schemeUnderstandingFromIntent(repaired.intent);
-					assumptions = repaired.assumptions.length > 0 ? repaired.assumptions : assumptions;
-					ambiguities = repaired.ambiguities.length > 0 ? repaired.ambiguities : ambiguities;
-					usedModels.push(...repaired.usedModels);
-					logSchemaCheck('start.intent_repair_applied', {
-						draftId: draft.id,
-						fixed: true,
-						compileWarnings: compiledSchema.warnings.length
-					});
-				} catch (repairErr) {
-					logSchemaCheck('start.intent_repair_failed', {
-						draftId: draft.id,
-						error: repairErr instanceof Error ? repairErr.message : String(repairErr)
-					});
-				}
-			}
-		}
-
-		if (!compiledSchema) {
-			await db.taskDraft.update({ where: { id: draft.id }, data: { status: 'FAILED' } });
-			return error(422, 'Intent compilation failed');
-		}
-
-		const finalValidation = validateSchemaAny(compiledSchema.schemaData);
-		if (!finalValidation.ok || !finalValidation.value) {
-			await db.taskDraft.update({ where: { id: draft.id }, data: { status: 'FAILED' } });
-			logSchemaCheck('start.schema_invalid', {
-				draftId: draft.id,
-				errors: finalValidation.errors
-			});
-			return error(422, `Generated schema validation failed: ${finalValidation.errors.join('; ')}`);
-		}
-
-		const layoutDetails = getSchemaLayoutLogDetails(finalValidation.value);
-		if (layoutDetails) {
-			const schemaMeta = (finalValidation.value as any)?.meta;
-			logSchemaCheck('start.layout_metrics', {
-				draftId: draft.id,
-				...layoutDetails,
-				layoutAutoCorrected: schemaMeta?.layoutAutoCorrected === true,
-				layoutCorrections: Array.isArray(schemaMeta?.layoutCorrections)
-					? schemaMeta.layoutCorrections
-					: []
-			});
-		}
-
-		const language = detectPromptLanguage(message);
-		const descriptionResult = await buildAdaptiveSchemeDescription({
-			schema: finalValidation.value,
-			language,
-			understanding: finalUnderstanding,
-			assumptions,
-			forcedModel,
-			fastMode: true
-		});
-		processingHandle.updateStatus('Saving scheme draft...');
-		const schemeDescription = descriptionResult.description;
-		if (
-			descriptionResult.source === 'llm' &&
-			descriptionResult.model &&
-			typeof descriptionResult.tokens === 'number'
-		) {
-			usedModels.push(
-				`${descriptionResult.model} (SchemeDescription): ${descriptionResult.tokens.toLocaleString('ru-RU')} tokens`
-			);
-		}
-
-		const assistantContent = formatSchemaAssistantContent({
-			revisionIndex: 0,
-			assumptions,
-			ambiguities,
-			language
-		});
-
-		const result = await db.$transaction(async (txRaw: any) => {
-			const tx = txRaw as any;
-			const updatedDraft = await tx.taskDraft.update({
-				where: { id: draft.id },
-				data: {
-					status: 'AWAITING_REVIEW',
-					currentUnderstanding: finalUnderstanding,
-					currentIntent: finalIntent,
-					currentSchema: finalValidation.value,
-					currentSchemeDescription: schemeDescription,
-					schemaVersion: finalValidation.version ?? '2.0',
-					revisionCount: 0
-				}
-			});
-
-			await tx.taskDraftRevision.create({
-				data: {
+						fastMode: false
+					}
+				);
+				processingHandle.updateStatus('Compiling initial scheme...');
+				logSchemaCheck('start.understanding_generated', {
 					draftId: draft.id,
-					revisionIndex: 0,
-					schemaVersion: finalValidation.version ?? '2.0',
+					model: generatedUnderstanding.model,
+					tokens: generatedUnderstanding.tokens,
+					assumptions: generatedUnderstanding.assumptions.length,
+					ambiguities: generatedUnderstanding.ambiguities.length
+				});
+
+				let finalUnderstanding = generatedUnderstanding.understanding;
+				let finalIntent = schemeUnderstandingToIntent(finalUnderstanding);
+				let assumptions = [...generatedUnderstanding.assumptions];
+				let ambiguities = [...generatedUnderstanding.ambiguities];
+				const usedModels = [...generatedUnderstanding.usedModels];
+				let compiledSchema: ReturnType<typeof compileSchemeIntent> | null = null;
+
+				try {
+					compiledSchema = compileSchemeIntent(finalIntent);
+				} catch (compileErr) {
+					if (!(compileErr instanceof SchemeIntentCompileError)) throw compileErr;
+					const repairIssues = compileErr.issues.slice(0, 6);
+					logSchemaCheck('start.intent_repair_requested', {
+						draftId: draft.id,
+						errorCount: compileErr.issues.length,
+						issues: repairIssues
+					});
+					if (repairIssues.length > 0) {
+						try {
+							const repaired = await repairIntentByIssues([], {
+								originalPrompt: message,
+								currentIntent: finalIntent,
+								issues: repairIssues,
+								forcedModel,
+								fastMode: true,
+								skipSelfCheck: true
+							});
+							compiledSchema = compileSchemeIntent(repaired.intent);
+							finalIntent = repaired.intent;
+							finalUnderstanding = schemeUnderstandingFromIntent(repaired.intent);
+							assumptions = repaired.assumptions.length > 0 ? repaired.assumptions : assumptions;
+							ambiguities = repaired.ambiguities.length > 0 ? repaired.ambiguities : ambiguities;
+							usedModels.push(...repaired.usedModels);
+							logSchemaCheck('start.intent_repair_applied', {
+								draftId: draft.id,
+								fixed: true,
+								compileWarnings: compiledSchema.warnings.length
+							});
+						} catch (repairErr) {
+							logSchemaCheck('start.intent_repair_failed', {
+								draftId: draft.id,
+								error: repairErr instanceof Error ? repairErr.message : String(repairErr)
+							});
+						}
+					}
+				}
+
+				if (!compiledSchema) {
+					await db.taskDraft.update({ where: { id: draft.id }, data: { status: 'FAILED' } });
+					return error(422, 'Intent compilation failed');
+				}
+
+				const finalValidation = validateSchemaAny(compiledSchema.schemaData);
+				if (!finalValidation.ok || !finalValidation.value) {
+					await db.taskDraft.update({ where: { id: draft.id }, data: { status: 'FAILED' } });
+					logSchemaCheck('start.schema_invalid', {
+						draftId: draft.id,
+						errors: finalValidation.errors
+					});
+					return error(
+						422,
+						`Generated schema validation failed: ${finalValidation.errors.join('; ')}`
+					);
+				}
+
+				const layoutDetails = getSchemaLayoutLogDetails(finalValidation.value);
+				if (layoutDetails) {
+					const schemaMeta = (finalValidation.value as any)?.meta;
+					logSchemaCheck('start.layout_metrics', {
+						draftId: draft.id,
+						...layoutDetails,
+						layoutAutoCorrected: schemaMeta?.layoutAutoCorrected === true,
+						layoutCorrections: Array.isArray(schemaMeta?.layoutCorrections)
+							? schemaMeta.layoutCorrections
+							: []
+					});
+				}
+
+				const language = detectPromptLanguage(message);
+				const descriptionResult = await buildAdaptiveSchemeDescription({
+					schema: finalValidation.value,
+					language,
 					understanding: finalUnderstanding,
-					intent: finalIntent,
+					assumptions,
+					forcedModel,
+					fastMode: true
+				});
+				processingHandle.updateStatus('Saving scheme draft...');
+				const schemeDescription = descriptionResult.description;
+				if (
+					descriptionResult.source === 'llm' &&
+					descriptionResult.model &&
+					typeof descriptionResult.tokens === 'number'
+				) {
+					usedModels.push(
+						`${descriptionResult.model} (SchemeDescription): ${descriptionResult.tokens.toLocaleString('ru-RU')} tokens`
+					);
+				}
+
+				const assistantContent = formatSchemaAssistantContent({
+					revisionIndex: 0,
+					assumptions,
+					ambiguities,
+					language
+				});
+
+				const result = await db.$transaction(async (txRaw: any) => {
+					const tx = txRaw as any;
+					const updatedDraft = await tx.taskDraft.update({
+						where: { id: draft.id },
+						data: {
+							status: 'AWAITING_REVIEW',
+							currentUnderstanding: finalUnderstanding,
+							currentIntent: finalIntent,
+							currentSchema: finalValidation.value,
+							currentSchemeDescription: schemeDescription,
+							schemaVersion: finalValidation.version ?? '2.0',
+							revisionCount: 0
+						}
+					});
+
+					await tx.taskDraftRevision.create({
+						data: {
+							draftId: draft.id,
+							revisionIndex: 0,
+							schemaVersion: finalValidation.version ?? '2.0',
+							understanding: finalUnderstanding,
+							intent: finalIntent,
+							schema: finalValidation.value,
+							schemeDescription,
+							assumptions,
+							ambiguities
+						}
+					});
+
+					const assistantMessage = await tx.message.create({
+						data: {
+							chatId,
+							draftId: draft.id,
+							role: 'ASSISTANT',
+							content: assistantContent,
+							schemaData: JSON.stringify(finalValidation.value),
+							schemaDescription: schemeDescription,
+							schemaVersion: finalValidation.version ?? '2.0',
+							usedModels: JSON.stringify(usedModels)
+						}
+					});
+
+					const msgCount = await tx.message.count({ where: { chatId } });
+					if (msgCount <= 2) {
+						const titleSource =
+							message.trim() ||
+							(preparedAttachments.attachments.length > 0
+								? `Задача из документа: ${preparedAttachments.attachments[0].fileName}`
+								: '');
+						const title = titleFromPromptOrImages(titleSource, aiImages);
+						await tx.chat.update({ where: { id: chatId }, data: { title } });
+					}
+
+					return { updatedDraft, assistantMessage };
+				});
+
+				return json({
+					draftId: draft.id,
+					userMessageId: userMessage.id,
+					status: result.updatedDraft.status,
+					schemaVersion: finalValidation.version ?? '2.0',
+					revisionIndex: result.updatedDraft.revisionCount,
 					schema: finalValidation.value,
 					schemeDescription,
 					assumptions,
-					ambiguities
-				}
-			});
-
-			const assistantMessage = await tx.message.create({
-				data: {
-					chatId,
-					draftId: draft.id,
-					role: 'ASSISTANT',
-					content: assistantContent,
-					schemaData: JSON.stringify(finalValidation.value),
-					schemaDescription: schemeDescription,
-					schemaVersion: finalValidation.version ?? '2.0',
-					usedModels: JSON.stringify(usedModels)
-				}
-			});
-
-			const msgCount = await tx.message.count({ where: { chatId } });
-			if (msgCount <= 2) {
-				const titleSource =
-					message.trim() ||
-					(preparedAttachments.attachments.length > 0
-						? `Задача из документа: ${preparedAttachments.attachments[0].fileName}`
-						: '');
-				const title = titleFromPromptOrImages(titleSource, aiImages);
-				await tx.chat.update({ where: { id: chatId }, data: { title } });
+					ambiguities,
+					assistantMessage: {
+						id: result.assistantMessage.id,
+						role: result.assistantMessage.role,
+						content: result.assistantMessage.content,
+						schemaData: finalValidation.value,
+						schemaDescription: schemeDescription,
+						usedModels,
+						draftId: result.assistantMessage.draftId,
+						createdAt: result.assistantMessage.createdAt
+					}
+				});
 			}
-
-			return { updatedDraft, assistantMessage };
-		});
-
-		return json({
-			draftId: draft.id,
-			userMessageId: userMessage.id,
-			status: result.updatedDraft.status,
-			schemaVersion: finalValidation.version ?? '2.0',
-			revisionIndex: result.updatedDraft.revisionCount,
-			schema: finalValidation.value,
-			schemeDescription,
-			assumptions,
-			ambiguities,
-			assistantMessage: {
-				id: result.assistantMessage.id,
-				role: result.assistantMessage.role,
-				content: result.assistantMessage.content,
-				schemaData: finalValidation.value,
-				schemaDescription: schemeDescription,
-				usedModels,
-				draftId: result.assistantMessage.draftId,
-				createdAt: result.assistantMessage.createdAt
-			}
-		});
+		);
 	} catch (err) {
 		if (draft?.id) {
-			await db.taskDraft.update({ where: { id: draft.id }, data: { status: 'FAILED' } }).catch(() => undefined);
+			await db.taskDraft
+				.update({ where: { id: draft.id }, data: { status: 'FAILED' } })
+				.catch(() => undefined);
+		}
+		if (err instanceof BillingAccessError) {
+			return error(err.status, err.message);
 		}
 		const messageText = err instanceof Error ? err.message : String(err);
 		logSchemaCheck('start.failed', {
