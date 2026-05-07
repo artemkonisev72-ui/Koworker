@@ -145,13 +145,6 @@
 					<span>Остаток</span>
 					<strong>{formatUsd(data.billing?.usage?.remainingUsd)}</strong>
 				</div>
-				<div>
-					<span>Запросы</span>
-					<strong
-						>{data.billing?.usage?.requestCount ?? 0} / {data.billing?.usage?.monthlyRequestLimit ??
-							'∞'}</strong
-					>
-				</div>
 			</div>
 
 			{#if billingMessage}
@@ -164,7 +157,8 @@
 						<div>
 							<strong>{plan.name}</strong>
 							<span
-								>{formatRub(plan.priceRub)} / месяц · AI-бюджет {formatUsd(plan.includedUsd)}</span
+								>{formatRub(plan.priceRub)} / месяц · AI-бюджет 60%:
+								{formatUsd(plan.includedUsd)}</span
 							>
 						</div>
 						{#if plan.code === data.billing?.subscription?.plan?.code}

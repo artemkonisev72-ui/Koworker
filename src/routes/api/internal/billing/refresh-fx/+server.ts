@@ -1,10 +1,6 @@
 import type { RequestHandler } from './$types';
 import { env } from '$env/dynamic/private';
 import { error, json } from '@sveltejs/kit';
-import {
-	ensureDefaultPriceSnapshots,
-	refreshOpenRouterPriceSnapshots
-} from '$lib/server/billing/pricing.js';
 import { refreshSubscriptionPlanBudgets } from '$lib/server/billing/subscriptions.js';
 
 function authorized(request: Request): boolean {
@@ -17,8 +13,6 @@ function authorized(request: Request): boolean {
 
 export const POST: RequestHandler = async ({ request }) => {
 	if (!authorized(request)) return error(401, 'Unauthorized');
-	await ensureDefaultPriceSnapshots();
-	const openRouter = await refreshOpenRouterPriceSnapshots();
-	const fx = await refreshSubscriptionPlanBudgets();
-	return json({ openRouter, fx });
+	const result = await refreshSubscriptionPlanBudgets();
+	return json(result);
 };

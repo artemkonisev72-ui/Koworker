@@ -2,21 +2,25 @@ import {
 	DEFAULT_MODEL_PREFERENCE,
 	MODEL_PREFERENCE_OPTIONS
 } from '$lib/server/ai/model-preference.js';
-import { ensureDefaultPriceSnapshots, providerModelFromPreference } from './pricing.js';
+import { refreshUsdRubRateIfStale, getLatestUsdRubRate } from './fx.js';
+import {
+	ensureDefaultPriceSnapshots,
+	isProviderModelBudgetExempt,
+	providerModelFromPreference
+} from './pricing.js';
 import { BillingAccessError, bigintToNumber, bigintToString } from './types.js';
 
 export const FREE_PLAN_CODE = 'free';
 export const PRO_PLAN_CODE = 'pro';
+export const ULTRA_PLAN_CODE = 'ultra';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const FREE_MODEL_ALLOWLIST = [
-	DEFAULT_MODEL_PREFERENCE,
-	'gemini-3.1-flash-preview',
-	'gemini-3-flash-preview',
-	'gemini-2.5-flash',
-	'gemini-2.5-flash-lite',
-	'openrouter:google/gemma-4-31b-it:free'
-];
+const PAID_AI_BUDGET_PERCENT = 60n;
+const PRO_PRICE_RUB_KOPECKS = 44_900n;
+const ULTRA_PRICE_RUB_KOPECKS = 99_000n;
+const FREE_MODEL_ALLOWLIST = [DEFAULT_MODEL_PREFERENCE, 'openrouter:google/gemma-4-31b-it:free'];
+const PAID_MODEL_ALLOWLIST = [...MODEL_PREFERENCE_OPTIONS];
+const PAID_FEATURE_FLAGS = { attachments: true, exports: true, paidModels: true, priority: true };
 
 async function getDb() {
 	const { prisma } = await import('$lib/server/db.js');
@@ -39,57 +43,113 @@ function jsonRecord(value: unknown): Record<string, unknown> {
 	return value as Record<string, unknown>;
 }
 
-export async function ensureDefaultPlans(): Promise<void> {
-	const db = await getDb();
-	await ensureDefaultPriceSnapshots();
-	await db.subscriptionPlan.upsert({
-		where: { code: FREE_PLAN_CODE },
-		update: {
-			name: 'Free',
-			priceRubKopecks: 0n,
-			billingPeriod: 'MONTH',
-			includedUsdMicros: 50_000n,
-			monthlyRequestLimit: 50,
-			modelAllowlist: FREE_MODEL_ALLOWLIST,
-			featureFlags: { attachments: true, exports: true, paidModels: false },
-			isActive: true
-		},
-		create: {
+export function includedUsdMicrosFromPaidRubKopecks(
+	priceRubKopecks: bigint | number | string,
+	usdRubRate: number
+): bigint {
+	const price = typeof priceRubKopecks === 'bigint' ? priceRubKopecks : BigInt(priceRubKopecks);
+	if (price <= 0n || !Number.isFinite(usdRubRate) || usdRubRate <= 0) return 0n;
+	const budgetRubKopecks = (price * PAID_AI_BUDGET_PERCENT) / 100n;
+	const budgetUsdMicros = Math.floor((Number(budgetRubKopecks) / 100 / usdRubRate) * 1_000_000);
+	return BigInt(Math.max(0, budgetUsdMicros));
+}
+
+async function getBillingUsdRubRate(): Promise<{ rate: number; observedAt: Date }> {
+	try {
+		return await refreshUsdRubRateIfStale();
+	} catch (err) {
+		const latest = await getLatestUsdRubRate();
+		if (latest) return latest;
+		if (process.env.NODE_ENV !== 'production') {
+			return { rate: 100, observedAt: new Date(0) };
+		}
+		throw err;
+	}
+}
+
+function buildPlanData(params: {
+	name: string;
+	priceRubKopecks: bigint;
+	includedUsdMicros: bigint;
+	modelAllowlist: string[];
+	featureFlags: Record<string, unknown>;
+}) {
+	return {
+		name: params.name,
+		priceRubKopecks: params.priceRubKopecks,
+		billingPeriod: 'MONTH',
+		includedUsdMicros: params.includedUsdMicros,
+		modelAllowlist: params.modelAllowlist,
+		featureFlags: params.featureFlags,
+		isActive: true
+	};
+}
+
+function defaultPlanDefinitions(rate: number) {
+	return [
+		{
 			code: FREE_PLAN_CODE,
-			name: 'Free',
-			priceRubKopecks: 0n,
-			billingPeriod: 'MONTH',
-			includedUsdMicros: 50_000n,
-			monthlyRequestLimit: 50,
-			modelAllowlist: FREE_MODEL_ALLOWLIST,
-			featureFlags: { attachments: true, exports: true, paidModels: false },
-			isActive: true
-		}
-	});
-	await db.subscriptionPlan.upsert({
-		where: { code: PRO_PLAN_CODE },
-		update: {
-			name: 'Pro',
-			priceRubKopecks: 99_000n,
-			billingPeriod: 'MONTH',
-			includedUsdMicros: 2_000_000n,
-			monthlyRequestLimit: 1000,
-			modelAllowlist: [...MODEL_PREFERENCE_OPTIONS],
-			featureFlags: { attachments: true, exports: true, paidModels: true, priority: true },
-			isActive: true
+			...buildPlanData({
+				name: 'Free',
+				priceRubKopecks: 0n,
+				includedUsdMicros: 0n,
+				modelAllowlist: FREE_MODEL_ALLOWLIST,
+				featureFlags: { attachments: true, exports: true, paidModels: false }
+			})
 		},
-		create: {
+		{
 			code: PRO_PLAN_CODE,
-			name: 'Pro',
-			priceRubKopecks: 99_000n,
-			billingPeriod: 'MONTH',
-			includedUsdMicros: 2_000_000n,
-			monthlyRequestLimit: 1000,
-			modelAllowlist: [...MODEL_PREFERENCE_OPTIONS],
-			featureFlags: { attachments: true, exports: true, paidModels: true, priority: true },
-			isActive: true
+			...buildPlanData({
+				name: 'Pro',
+				priceRubKopecks: PRO_PRICE_RUB_KOPECKS,
+				includedUsdMicros: includedUsdMicrosFromPaidRubKopecks(PRO_PRICE_RUB_KOPECKS, rate),
+				modelAllowlist: PAID_MODEL_ALLOWLIST,
+				featureFlags: PAID_FEATURE_FLAGS
+			})
+		},
+		{
+			code: ULTRA_PLAN_CODE,
+			...buildPlanData({
+				name: 'Ultra',
+				priceRubKopecks: ULTRA_PRICE_RUB_KOPECKS,
+				includedUsdMicros: includedUsdMicrosFromPaidRubKopecks(ULTRA_PRICE_RUB_KOPECKS, rate),
+				modelAllowlist: PAID_MODEL_ALLOWLIST,
+				featureFlags: { ...PAID_FEATURE_FLAGS, ultra: true }
+			})
 		}
-	});
+	];
+}
+
+async function upsertDefaultPlans(rate: number): Promise<number> {
+	const db = await getDb();
+	let plans = 0;
+	for (const plan of defaultPlanDefinitions(rate)) {
+		const { code, ...data } = plan;
+		await db.subscriptionPlan.upsert({
+			where: { code },
+			update: data,
+			create: { code, ...data }
+		});
+		plans += 1;
+	}
+	return plans;
+}
+
+export async function ensureDefaultPlans(): Promise<void> {
+	await ensureDefaultPriceSnapshots();
+	const { rate } = await getBillingUsdRubRate();
+	await upsertDefaultPlans(rate);
+}
+
+export async function refreshSubscriptionPlanBudgets(): Promise<{
+	rate: number;
+	observedAt: Date;
+	plans: number;
+}> {
+	await ensureDefaultPriceSnapshots();
+	const { rate, observedAt } = await refreshUsdRubRateIfStale();
+	const plans = await upsertDefaultPlans(rate);
+	return { rate, observedAt, plans };
 }
 
 async function createFreeSubscription(userId: string) {
@@ -171,7 +231,6 @@ function serializePlan(plan: any) {
 		billingPeriod: plan.billingPeriod,
 		includedUsdMicros: bigintToString(plan.includedUsdMicros),
 		includedUsd: bigintToNumber(plan.includedUsdMicros) / 1_000_000,
-		monthlyRequestLimit: plan.monthlyRequestLimit,
 		modelAllowlist: jsonStringArray(plan.modelAllowlist),
 		featureFlags: jsonRecord(plan.featureFlags),
 		isActive: plan.isActive
@@ -181,29 +240,16 @@ function serializePlan(plan: any) {
 export async function getBillingSummary(userId: string) {
 	const db = await getDb();
 	const subscription = await getActiveSubscription(userId);
-	const [usageAggregate, requestRows] = await Promise.all([
-		db.aiUsageEvent.aggregate({
-			where: {
-				userId,
-				createdAt: {
-					gte: subscription.currentPeriodStart,
-					lt: subscription.currentPeriodEnd
-				}
-			},
-			_sum: { costUsdMicros: true }
-		}),
-		db.aiUsageEvent.findMany({
-			where: {
-				userId,
-				createdAt: {
-					gte: subscription.currentPeriodStart,
-					lt: subscription.currentPeriodEnd
-				}
-			},
-			distinct: ['pipelineRunId'],
-			select: { pipelineRunId: true }
-		})
-	]);
+	const usageAggregate = await db.aiUsageEvent.aggregate({
+		where: {
+			userId,
+			createdAt: {
+				gte: subscription.currentPeriodStart,
+				lt: subscription.currentPeriodEnd
+			}
+		},
+		_sum: { costUsdMicros: true }
+	});
 	const usedUsdMicros = bigintToNumber(usageAggregate._sum.costUsdMicros);
 	const includedUsdMicros = bigintToNumber(subscription.plan.includedUsdMicros);
 	const remainingUsdMicros = Math.max(0, includedUsdMicros - usedUsdMicros);
@@ -223,9 +269,7 @@ export async function getBillingSummary(userId: string) {
 			includedUsdMicros: includedUsdMicros.toString(),
 			includedUsd: includedUsdMicros / 1_000_000,
 			remainingUsdMicros: remainingUsdMicros.toString(),
-			remainingUsd: remainingUsdMicros / 1_000_000,
-			requestCount: requestRows.length,
-			monthlyRequestLimit: subscription.plan.monthlyRequestLimit
+			remainingUsd: remainingUsdMicros / 1_000_000
 		}
 	};
 }
@@ -235,6 +279,7 @@ export async function assertCanStartAiRequest(params: {
 	modelPreference: string;
 }): Promise<void> {
 	const summary = await getBillingSummary(params.userId);
+	const providerModel = providerModelFromPreference(params.modelPreference);
 	const allowlist = summary.subscription.plan.modelAllowlist;
 	if (allowlist.length > 0 && !allowlist.includes(params.modelPreference)) {
 		throw new BillingAccessError(
@@ -244,16 +289,11 @@ export async function assertCanStartAiRequest(params: {
 		);
 	}
 
-	const limit = summary.usage.monthlyRequestLimit;
-	if (typeof limit === 'number' && summary.usage.requestCount >= limit) {
-		throw new BillingAccessError(
-			429,
-			'request_limit_exceeded',
-			'Месячный лимит запросов на текущем тарифе исчерпан.'
-		);
-	}
-
-	if (Number(summary.usage.remainingUsdMicros) <= 0) {
+	const isBudgetExempt = await isProviderModelBudgetExempt(
+		providerModel.provider,
+		providerModel.model
+	);
+	if (!isBudgetExempt && Number(summary.usage.remainingUsdMicros) <= 0) {
 		throw new BillingAccessError(
 			402,
 			'ai_budget_exceeded',

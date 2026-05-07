@@ -3,6 +3,9 @@ async function getDb() {
 	return prisma as any;
 }
 
+export const USD_RUB_REFRESH_INTERVAL_MS = 3 * 60 * 60 * 1000;
+export const CBR_DAILY_XML_URL = 'https://www.cbr.ru/scripts/XML_daily.asp';
+
 function extractUsdRubFromCbrXml(xml: string): number | null {
 	const usdBlock = xml.match(/<Valute[^>]*ID="R01235"[\s\S]*?<\/Valute>/);
 	if (!usdBlock) return null;
@@ -16,7 +19,7 @@ function extractUsdRubFromCbrXml(xml: string): number | null {
 }
 
 export async function refreshUsdRubRate(): Promise<{ rate: number; observedAt: Date }> {
-	const response = await fetch('https://www.cbr.ru/scripts/XML_daily.asp');
+	const response = await fetch(CBR_DAILY_XML_URL);
 	if (!response.ok) throw new Error(`CBR FX request failed (${response.status})`);
 	const xml = await response.text();
 	const rate = extractUsdRubFromCbrXml(xml);
@@ -28,7 +31,7 @@ export async function refreshUsdRubRate(): Promise<{ rate: number; observedAt: D
 			baseCurrency: 'USD',
 			quoteCurrency: 'RUB',
 			rate,
-			source: 'cbr.ru XML_daily',
+			source: 'cbr.ru XML_daily.asp',
 			observedAt,
 			rawPayload: { xml }
 		}
@@ -44,4 +47,16 @@ export async function getLatestUsdRubRate(): Promise<{ rate: number; observedAt:
 	});
 	if (!snapshot) return null;
 	return { rate: Number(snapshot.rate), observedAt: snapshot.observedAt };
+}
+
+export async function refreshUsdRubRateIfStale(
+	maxAgeMs = USD_RUB_REFRESH_INTERVAL_MS,
+	now = new Date()
+): Promise<{ rate: number; observedAt: Date; refreshed: boolean }> {
+	const latest = await getLatestUsdRubRate();
+	if (latest && now.getTime() - latest.observedAt.getTime() < maxAgeMs) {
+		return { ...latest, refreshed: false };
+	}
+	const refreshed = await refreshUsdRubRate();
+	return { ...refreshed, refreshed: true };
 }

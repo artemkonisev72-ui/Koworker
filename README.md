@@ -99,10 +99,13 @@ AI_BILLING_ALLOW_UNPRICED="true" # dev only; production should use price snapsho
 Operational endpoints:
 
 ```sh
-POST /api/internal/billing/refresh-prices       # Bearer BILLING_CRON_SECRET, refreshes OpenRouter prices
+POST /api/internal/billing/refresh-fx           # Bearer BILLING_CRON_SECRET, refresh every 3h from Bank of Russia
+POST /api/internal/billing/refresh-prices       # Bearer BILLING_CRON_SECRET, refreshes OpenRouter prices and FX budgets
 POST /api/internal/billing/renew-subscriptions  # Bearer BILLING_CRON_SECRET, runs YooKassa renewals
 POST /api/yookassa/webhook                      # YooKassa payment webhook target
 ```
+
+Default plans are `Free`, `Pro` (449 RUB/month) and `Ultra` (990 RUB/month). Paid AI budget is recalculated as 60% of the RUB subscription price converted to USD by the latest USD/RUB snapshot from the official Bank of Russia `XML_daily.asp` feed. Direct Gemini `gemini-3.1-flash-lite-preview` usage is recorded with zero AI-budget cost.
 
 After changing `prisma/schema.prisma`, apply the schema to the database with your usual Prisma flow (`prisma db push` locally or migrations in production) and run `npm run prisma:generate`.
 

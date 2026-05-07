@@ -282,19 +282,18 @@ model AiUsageEvent {
 }
 
 model SubscriptionPlan {
-  id                  String             @id @default(cuid())
-  code                String             @unique
-  name                String
-  priceRubKopecks     BigInt             @default(0)
-  billingPeriod       BillingPeriod      @default(MONTH)
-  includedUsdMicros   BigInt             @default(0)
-  monthlyRequestLimit Int?
-  modelAllowlist      Json?
-  featureFlags        Json?
-  isActive            Boolean            @default(true)
-  createdAt           DateTime           @default(now())
-  updatedAt           DateTime           @updatedAt
-  subscriptions       UserSubscription[]
+  id                String             @id @default(cuid())
+  code              String             @unique
+  name              String
+  priceRubKopecks   BigInt             @default(0)
+  billingPeriod     BillingPeriod      @default(MONTH)
+  includedUsdMicros BigInt             @default(0)
+  modelAllowlist    Json?
+  featureFlags      Json?
+  isActive          Boolean            @default(true)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  subscriptions     UserSubscription[]
 
   @@index([isActive])
 }

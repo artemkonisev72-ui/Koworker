@@ -111,5 +111,7 @@ export async function recordAiUsageEvent(usage: AiUsage): Promise<void> {
 		}
 	});
 
-	await assertBudgetAfterUsage(context.userId);
+	if (costUsdMicros > 0n) {
+		await assertBudgetAfterUsage(context.userId);
+	}
 }

@@ -4,6 +4,10 @@ import { BillingAccessError, type AiProvider, type AiUsage } from './types.js';
 const PRICE_DENOMINATOR = 1_000_000n;
 const USD_MICROS_PER_USD = 1_000_000;
 const TOKENS_PER_MILLION = 1_000_000;
+const BUDGET_FREE_PROVIDER_MODELS = new Set<string>([
+	'gemini:gemini-3.1-flash-lite-preview',
+	'gemini:gemini-3.1-flash-lite'
+]);
 
 async function getDb() {
 	const { prisma } = await import('$lib/server/db.js');
@@ -60,6 +64,29 @@ export function providerModelFromPreference(preference: string): {
 	return { provider: 'gemini', model: preference };
 }
 
+export function isBudgetFreeProviderModel(provider: AiProvider, model: string): boolean {
+	return BUDGET_FREE_PROVIDER_MODELS.has(`${provider}:${model}`);
+}
+
+function isZeroCostSnapshot(snapshot: PriceInput | null | undefined): boolean {
+	if (!snapshot) return false;
+	return (
+		toBigInt(snapshot.inputUsdMicrosPerMillion) === 0n &&
+		toBigInt(snapshot.outputUsdMicrosPerMillion) === 0n &&
+		toBigInt(snapshot.cachedUsdMicrosPerMillion) === 0n &&
+		toBigInt(snapshot.reasoningUsdMicrosPerMillion) === 0n
+	);
+}
+
+export async function isProviderModelBudgetExempt(
+	provider: AiProvider,
+	model: string
+): Promise<boolean> {
+	if (isBudgetFreeProviderModel(provider, model)) return true;
+	const snapshot = await getActivePriceSnapshot(provider, model);
+	return isZeroCostSnapshot(snapshot);
+}
+
 export async function getActivePriceSnapshot(provider: AiProvider, model: string, at = new Date()) {
 	const db = await getDb();
 	return db.aiModelPriceSnapshot.findFirst({
@@ -77,6 +104,7 @@ export async function assertProviderModelPriced(
 	provider: AiProvider,
 	model: string
 ): Promise<void> {
+	if (isBudgetFreeProviderModel(provider, model)) return;
 	const snapshot = await getActivePriceSnapshot(provider, model);
 	if (snapshot || isUnpricedBillingAllowed()) return;
 	throw new BillingAccessError(
@@ -90,6 +118,14 @@ export async function resolveUsageCost(usage: AiUsage): Promise<{
 	costUsdMicros: bigint;
 	priceSnapshotId: string | null;
 }> {
+	const isBudgetFree = isBudgetFreeProviderModel(usage.provider, usage.model);
+	if (isBudgetFree) {
+		return {
+			costUsdMicros: 0n,
+			priceSnapshotId: null
+		};
+	}
+
 	const snapshot = await getActivePriceSnapshot(usage.provider, usage.model);
 	if (snapshot) {
 		return {
@@ -166,20 +202,44 @@ async function upsertOpenRouterSnapshot(
 
 export async function ensureDefaultPriceSnapshots(): Promise<void> {
 	const db = await getDb();
-	const freeModels = ['google/gemma-4-31b-it:free'];
-	for (const model of freeModels) {
-		const current = await getActivePriceSnapshot('openrouter', model);
+	const freeModels: Array<{
+		provider: AiProvider;
+		model: string;
+		source: string;
+		rawPricing: unknown;
+	}> = [
+		{
+			provider: 'openrouter',
+			model: 'google/gemma-4-31b-it:free',
+			source: 'default-free-model',
+			rawPricing: { free: true }
+		},
+		{
+			provider: 'gemini',
+			model: 'gemini-3.1-flash-lite-preview',
+			source: 'default-free-gemini-flash-lite',
+			rawPricing: { budgetFree: true }
+		},
+		{
+			provider: 'gemini',
+			model: 'gemini-3.1-flash-lite',
+			source: 'default-free-gemini-flash-lite',
+			rawPricing: { budgetFree: true }
+		}
+	];
+	for (const { provider, model, source, rawPricing } of freeModels) {
+		const current = await getActivePriceSnapshot(provider, model);
 		if (current) continue;
 		await db.aiModelPriceSnapshot.create({
 			data: {
-				provider: 'openrouter',
+				provider,
 				model,
-				source: 'default-free-model',
+				source,
 				inputUsdMicrosPerMillion: 0n,
 				outputUsdMicrosPerMillion: 0n,
 				cachedUsdMicrosPerMillion: 0n,
 				reasoningUsdMicrosPerMillion: 0n,
-				rawPricing: { free: true }
+				rawPricing
 			}
 		});
 	}
